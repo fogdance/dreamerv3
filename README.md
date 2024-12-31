@@ -80,11 +80,17 @@ pip install box2d-py==2.3.5
 ```
 
 ```sh
-
-
 python dreamerv3/main.py \
   --logdir ~/logdir/car_racing \
   --configs car_racing \
+  --run.train_ratio 32
+```
+
+For gymnasium
+```sh
+python dreamerv3/main.py \
+  --logdir ~/logdir/car_racing3 \
+  --configs car_racing3 \
   --run.train_ratio 32
 ```
 

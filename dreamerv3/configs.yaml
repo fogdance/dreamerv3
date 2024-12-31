@@ -163,6 +163,11 @@ atari:
   task: atari_pong
   run: {steps: 5.1e7, train_ratio: 32}
 
+car_racing3:
+  batch_size: 8
+  task: gymnasium_CarRacing-v3
+  run: {steps: 1.1e5, train_ratio: 64}
+
 car_racing:
   batch_size: 8
   task: gym_CarRacing-v2
