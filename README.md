@@ -67,8 +67,24 @@ Training script:
 
 ```sh
 python dreamerv3/main.py \
-  --logdir ~/logdir/{timestamp} \
+  --logdir ~/logdir/crafter \
   --configs crafter \
+  --run.train_ratio 32
+```
+
+For gym, install deps:
+```sh
+pip install pygame --pre # 2.6.1
+pip install gym==0.25.2
+pip install box2d-py==2.3.5
+```
+
+```sh
+
+
+python dreamerv3/main.py \
+  --logdir ~/logdir/car_racing \
+  --configs car_racing \
   --run.train_ratio 32
 ```
 

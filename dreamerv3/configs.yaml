@@ -20,7 +20,7 @@ defaults:
   errfile: False
 
   logger:
-    outputs: [jsonl, scope]
+    outputs: [tensorboard, jsonl, scope]
     filter: 'score|length|fps|ratio|train/loss/|train/rand/'
     timer: True
     fps: 15
@@ -162,6 +162,11 @@ dmlab:
 atari:
   task: atari_pong
   run: {steps: 5.1e7, train_ratio: 32}
+
+car_racing:
+  batch_size: 8
+  task: gym_CarRacing-v2
+  run: {steps: 1.1e5, train_ratio: 64}
 
 procgen:
   task: procgen_coinrun
