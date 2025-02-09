@@ -64,7 +64,7 @@ class FromGymnasium(embodied.Env):
     else:
       action = action[self._act_key]
     obs, reward, terminated, truncated, self._info = self._env.step(action)
-    self.done = terminated or truncated
+    self._done = terminated or truncated
     return self._obs(
         obs, reward,
         is_last=bool(self._done),
