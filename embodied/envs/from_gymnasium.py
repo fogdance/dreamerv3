@@ -84,8 +84,8 @@ class FromGymnasium(embodied.Env):
     return obs
 
   def render(self):
-    image = self._env.render('rgb_array')
-    assert image is not None
+    image = self._env.render()
+    # assert image is not None
     return image
 
   def close(self):

@@ -92,6 +92,13 @@ def main(argv=None):
         bind(make_logger, config),
         args)
 
+  elif config.script == 'render_only':
+    embodied.run.render_only(
+        bind(make_agent, config),
+        bind(make_env, config),
+        bind(make_logger, config),
+        args)
+    
   elif config.script == 'parallel':
     embodied.run.parallel.combined(
         bind(make_agent, config),
