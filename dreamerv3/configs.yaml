@@ -35,6 +35,7 @@ defaults:
     minecraft: {size: [64, 64], break_speed: 100.0, logs: False, length: 36000}
     dmc: {size: [64, 64], repeat: 1, proprio: True, image: True, camera: -1}
     loconav: {size: [64, 64], repeat: 1, camera: -1}
+    gymnasium: {config_path: data/trading.yaml}
 
   replay:
     size: 5e6
@@ -153,6 +154,8 @@ size400m: &size400m
   .*\.units: 1536
 
 minecraft:
+  run: {steps: 1e6, train_ratio: 64, envs: 8}
+  batch_size: 4
   task: minecraft_diamond
 
 dmlab:
@@ -160,18 +163,76 @@ dmlab:
   run: {steps: 2.6e7, train_ratio: 32}
 
 atari:
+  batch_size: 12
   task: atari_pong
   run: {steps: 5.1e7, train_ratio: 32}
 
+forex:
+  <<: *size50m
+  batch_size: 1
+  task: gymnasium_CustomTradingEnv-v0
+  run: {steps: 1e7, train_ratio: 64}
+  jax: {prealloc: True}
+
+forex_opt:
+  <<: *size200m
+  task: gymnasium_CustomTradingEnv-v0
+  run: {steps: 1e6, train_ratio: 8, envs: 16, eval_envs: 4, actor_threads: 1}
+  agent: {imag_length: 15, horizon: 333}
+  batch_length: 32
+  batch_size: 10
+  replay.size: 1e5
+  jax: {prealloc: True}
+
+forex_opt_100m:
+  <<: *size100m
+  task: gymnasium_CustomTradingEnv-v0
+  run: {steps: 1e6, train_ratio: 32, envs: 16, eval_envs: 4, actor_threads: 1}
+  agent: {imag_length: 15, horizon: 333}
+  batch_length: 64
+  batch_size: 16
+  replay.size: 2e5
+  jax: {prealloc: True}
+
+forex_opt_parallel:
+  <<: *size100m
+  task: gymnasium_CustomTradingEnv-v0
+  run: {steps: 1e6, train_ratio: 32, envs: 16, eval_envs: 4, actor_threads: 1}
+  agent: {imag_length: 15, horizon: 333}
+  script: parallel
+  batch_size: 16
+  replay.size: 1e5
+  jax: {prealloc: False}
+
 car_racing3:
-  batch_size: 8
+  <<: *size50m
+  batch_size: 16
   task: gymnasium_CarRacing-v3
-  run: {steps: 1.1e5, train_ratio: 64}
+  run: {steps: 1e7, train_ratio: 64}
+
+car_racing3_cpu:
+  <<: *size50m
+  jax: {platform: cpu}
+  batch_size: 16
+  task: gymnasium_CarRacing-v3
+  run: {steps: 1e7, train_ratio: 64}
 
 car_racing:
   batch_size: 8
   task: gym_CarRacing-v2
   run: {steps: 1.1e5, train_ratio: 64}
+
+fast_car_racing:
+  <<: *size50m
+  batch_size: 16
+  task: gymnasium_FastCarRacing-v0
+  run: {steps: 1.e6, train_ratio: 64}
+
+fast_car_racing_eval_only:
+  <<: *size50m
+  batch_size: 16
+  task: gymnasium_FastCarRacing-v0
+  run: {steps: 1.e6, train_ratio: 64, envs: 1}
 
 procgen:
   task: procgen_coinrun

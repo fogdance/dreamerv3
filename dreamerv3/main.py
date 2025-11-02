@@ -3,6 +3,8 @@ import os
 import pathlib
 import sys
 from functools import partial as bind
+import gym_fast_car_racing
+import gym_trading_env
 
 folder = pathlib.Path(__file__).parent
 sys.path.insert(0, str(folder.parent))

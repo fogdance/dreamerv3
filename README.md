@@ -89,9 +89,99 @@ python dreamerv3/main.py \
 For gymnasium
 ```sh
 python dreamerv3/main.py \
+  --logdir ~/logdir/car_racing3_cpu \
+  --configs car_racing3_cpu \
+  --run.train_ratio 32
+
+打开# gymnasium: {config_path: data/trading.yaml}
+  env:
+    atari: {size: [96, 96], repeat: 4, sticky: True, gray: True, actions: all, lives: unused, noops: 30, autostart: False, pooling: 2, aggregate: max, resize: pillow, clip_reward: False}
+    procgen: {size: [96, 96], resize: pillow}
+    crafter: {size: [64, 64], logs: False}
+    atari100k: {size: [64, 64], repeat: 4, sticky: False, gray: False, actions: needed, lives: unused, noops: 30, autostart: False, resize: pillow, clip_reward: False}
+    dmlab: {size: [64, 64], repeat: 4, episodic: True, use_seed: True}
+    minecraft: {size: [64, 64], break_speed: 100.0, logs: False, length: 36000}
+    dmc: {size: [64, 64], repeat: 1, proprio: True, image: True, camera: -1}
+    loconav: {size: [64, 64], repeat: 1, camera: -1}
+    # gymnasium: {config_path: data/trading.yaml}
+
+export PYTHONPATH=$PYTHONPATH:~/Documents/work/fastcarracing-v0
+export PYTHONPATH=$PYTHONPATH:/home/v/Documents/work/gym-trading-env/src
+
+python dreamerv3/main.py \
+  --logdir ~/logdir/fast_car_racing2 \
+  --configs fast_car_racing
+
+# 将render_mode改为human
+python dreamerv3/main.py \
+  --logdir ~/logdir/fast_car_racing_eval_only \
+  --configs fast_car_racing_eval_only \
+  --run.from_checkpoint ~/logdir/fast_car_racing/checkpoint.pkl \
+  --script eval_only
+
+python dreamerv3/main.py \
+  --logdir ~/logdir/fast_car_racing \
+  --configs fast_car_racing \
+  --run.from_checkpoint ~/logdir/fast_car_racing/checkpoint.pkl \
+  --script eval_only  
+
+python dreamerv3/main.py \
   --logdir ~/logdir/car_racing3 \
   --configs car_racing3 \
-  --run.train_ratio 32
+  --run.from_checkpoint ~/logdir/car_racing3/checkpoint.pkl \
+  --script eval_only
+
+# forex
+
+  python dreamerv3/main.py \
+  --logdir ~/logdir/forex \
+  --configs forex 
+
+  python dreamerv3/main.py \
+  --logdir ~/logdir/forex \
+  --configs forex \
+  --run.from_checkpoint ~/logdir/forex/ckpt
+
+  python dreamerv3/main.py \
+  --logdir ~/logdir/forex \
+  --configs forex \
+  --run.from_checkpoint ~/logdir/forex/ckpt \
+  --script render_only  
+
+## forex_opt_parallel
+
+  python dreamerv3/main.py \
+  --logdir ~/logdir/forex_opt_parallel \
+  --configs forex_opt_parallel
+
+  python dreamerv3/main.py \
+  --logdir ~/logdir/forex_opt_parallel \
+  --configs forex_opt_parallel \
+  --run.from_checkpoint ~/logdir/forex_opt_parallel/checkpoint.pkl \
+  --script render_only  
+
+
+# forex_opt
+
+  python dreamerv3/main.py \
+  --logdir ~/logdir/forex_opt \
+  --configs forex_opt
+
+
+  python dreamerv3/main.py \
+  --logdir ~/logdir/forex_opt_100m \
+  --configs forex_opt_100m
+
+
+  python dreamerv3/main.py \
+  --logdir ~/logdir/forex_opt_100m \
+  --configs forex_opt_100m \
+  --run.from_checkpoint ~/logdir/forex_opt_100m/ckpt \
+  --script render_only  
+
+# minecraft
+
+  python dreamerv3/main.py --logdir ~/logdir/minecraft --configs minecraft  
 ```
 
 To reproduce results, train on the desired task using the corresponding config,
