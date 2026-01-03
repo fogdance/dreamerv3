@@ -191,7 +191,7 @@ future_live:
   batch_size: 12
   task: gymnasium_CustomTradingEnv-v0
   run: {steps: 2e7, train_ratio: 64, envs: 1, eval_envs: 0, actor_threads: 1}
-  jax: {prealloc: True}
+  jax: {prealloc: False}
   env.gymnasium.config_path: data/live.yaml
 
 future_monte_carlo:
@@ -199,7 +199,7 @@ future_monte_carlo:
   batch_size: 12
   task: gymnasium_CustomTradingEnv-v0
   run: {steps: 2e7, train_ratio: 64, envs: 1, eval_envs: 0, actor_threads: 1}
-  jax: {prealloc: True}
+  jax: {prealloc: False}
   env.gymnasium.config_path: data/monte_carlo.yaml
 
 forex:
