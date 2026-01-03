@@ -123,7 +123,21 @@ class Agent(embodied.jax.Agent):
     if dec_carry:
       dec_carry, dec_entry, recons = self.dec(dec_carry, feat, reset, **kw)
     policy = self.pol(self.feat2tensor(feat), bdims=1)
-    act = sample(policy)
+      # ---- action selection depends on mode ----
+    if mode == 'train':
+      act = sample(policy)
+    else:
+      # deterministic: try .mode() then .mean(); fallback to sample()
+      def det(dist):
+        if hasattr(dist, 'mode'):
+          return dist.mode()
+        if hasattr(dist, 'mean'):
+          return dist.mean()
+        # Some dist types use pred() for point estimate
+        if hasattr(dist, 'pred'):
+          return dist.pred()
+        return dist.sample(nj.seed())
+      act = jax.tree.map(det, policy)
     out = {}
     out['finite'] = elements.tree.flatdict(jax.tree.map(
         lambda x: jnp.isfinite(x).all(range(1, x.ndim)),

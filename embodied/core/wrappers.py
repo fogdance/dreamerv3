@@ -253,6 +253,8 @@ class CheckSpaces(Wrapper):
       self._check(value, self.env.act_space[key], key)
     obs = self.env.step(action)
     for key, value in obs.items():
+      if isinstance(key, str) and key.startswith('log/'):
+        continue
       self._check(value, self.env.obs_space[key], key)
     return obs
 

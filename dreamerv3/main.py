@@ -14,7 +14,7 @@ import embodied
 import numpy as np
 import portal
 import ruamel.yaml as yaml
-
+import gym_trading_env
 
 def main(argv=None):
   from .agent import Agent
@@ -35,6 +35,7 @@ def main(argv=None):
   print('Replica:', config.replica, '/', config.replicas)
 
   logdir = elements.Path(config.logdir)
+  os.environ["DREAMER_RUN_DIR"] = str(logdir)
   print('Logdir:', logdir)
   print('Run script:', config.script)
   if not config.script.endswith(('_env', '_replay')):
@@ -87,6 +88,20 @@ def main(argv=None):
 
   elif config.script == 'eval_only':
     embodied.run.eval_only(
+        bind(make_agent, config),
+        bind(make_env, config),
+        bind(make_logger, config),
+        args)
+    
+  elif config.script == 'live_trading':
+    embodied.run.live_trading(
+        bind(make_agent, config),
+        bind(make_env, config),
+        bind(make_logger, config),
+        args)
+
+  elif config.script == 'monte_carlo':
+    embodied.run.monte_carlo(
         bind(make_agent, config),
         bind(make_env, config),
         bind(make_logger, config),
@@ -217,6 +232,7 @@ def make_env(config, index, **overrides):
   ctor = {
       'dummy': 'embodied.envs.dummy:Dummy',
       'gym': 'embodied.envs.from_gym:FromGym',
+      'gymnasium': 'embodied.envs.from_gymnasium:FromGymnasium',
       'dm': 'embodied.envs.from_dmenv:FromDM',
       'crafter': 'embodied.envs.crafter:Crafter',
       'dmc': 'embodied.envs.dmc:DMC',

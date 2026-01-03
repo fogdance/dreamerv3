@@ -9,13 +9,11 @@ hyperparameters.
 If you find this code useful, please reference in your paper:
 
 ```
-@article{hafner2025dreamerv3,
-  title={Mastering diverse control tasks through world models},
+@article{hafner2023dreamerv3,
+  title={Mastering Diverse Domains through World Models},
   author={Hafner, Danijar and Pasukonis, Jurgis and Ba, Jimmy and Lillicrap, Timothy},
-  journal={Nature},
-  pages={1--7},
-  year={2025},
-  publisher={Nature Publishing Group}
+  journal={arXiv preprint arXiv:2301.04104},
+  year={2023}
 }
 ```
 
@@ -69,22 +67,231 @@ Training script:
 
 ```sh
 python dreamerv3/main.py \
-  --logdir ~/logdir/dreamer/{timestamp} \
+  --logdir ~/logdir/crafter \
   --configs crafter \
   --run.train_ratio 32
 ```
 
-To reproduce results, train on the desired task using the corresponding config,
-such as `--configs atari --task atari_pong`.
-
-View results:
-
+For gym, install deps:
 ```sh
-pip install -U scope
-python -m scope.viewer --basedir ~/logdir --port 8000
+pip install pygame --pre # 2.6.1
+pip install gym==0.25.2
+pip install box2d-py==2.3.5
 ```
 
-Scalar metrics are also writting as JSONL files.
+```sh
+python dreamerv3/main.py \
+  --logdir ~/logdir/car_racing \
+  --configs car_racing \
+  --run.train_ratio 32
+```
+
+For gymnasium
+```sh
+python dreamerv3/main.py \
+  --logdir ~/logdir/car_racing3_cpu \
+  --configs car_racing3_cpu \
+  --run.train_ratio 32
+
+打开# gymnasium: {config_path: data/trading.yaml}
+  env:
+    atari: {size: [96, 96], repeat: 4, sticky: True, gray: True, actions: all, lives: unused, noops: 30, autostart: False, pooling: 2, aggregate: max, resize: pillow, clip_reward: False}
+    procgen: {size: [96, 96], resize: pillow}
+    crafter: {size: [64, 64], logs: False}
+    atari100k: {size: [64, 64], repeat: 4, sticky: False, gray: False, actions: needed, lives: unused, noops: 30, autostart: False, resize: pillow, clip_reward: False}
+    dmlab: {size: [64, 64], repeat: 4, episodic: True, use_seed: True}
+    minecraft: {size: [64, 64], break_speed: 100.0, logs: False, length: 36000}
+    dmc: {size: [64, 64], repeat: 1, proprio: True, image: True, camera: -1}
+    loconav: {size: [64, 64], repeat: 1, camera: -1}
+    # gymnasium: {config_path: data/trading.yaml}
+
+export PYTHONPATH=$PYTHONPATH:~/Documents/work/fastcarracing-v0
+export PYTHONPATH=$PYTHONPATH:/home/v/Documents/work/gym-trading-env/src
+
+python dreamerv3/main.py \
+  --logdir ~/logdir/fast_car_racing2 \
+  --configs fast_car_racing
+
+# 将render_mode改为human
+python dreamerv3/main.py \
+  --logdir ~/logdir/fast_car_racing_eval_only \
+  --configs fast_car_racing_eval_only \
+  --run.from_checkpoint ~/logdir/fast_car_racing/checkpoint.pkl \
+  --script eval_only
+
+python dreamerv3/main.py \
+  --logdir ~/logdir/fast_car_racing \
+  --configs fast_car_racing \
+  --run.from_checkpoint ~/logdir/fast_car_racing/checkpoint.pkl \
+  --script eval_only  
+
+python dreamerv3/main.py \
+  --logdir ~/logdir/car_racing3 \
+  --configs car_racing3 \
+  --run.from_checkpoint ~/logdir/car_racing3/checkpoint.pkl \
+  --script eval_only
+
+# future 训练 v1
+# window_size 60
+# 模型大小50m
+# 无效操作不惩罚
+# 先训练180天的
+# 再训练8年
+# obs
+
+SECONDS=0
+  python dreamerv3/main.py \
+  --logdir ~/logdir/future \
+  --configs future 
+  echo "Total: ${SECONDS}s"
+
+#实盘
+  python dreamerv3/main.py \
+  --logdir ~/logdir/future_live \
+  --configs future_live \
+  --run.from_checkpoint ~/logdir/future/ckpt/$(cat ~/logdir/future/ckpt/latest) \
+  --script live_trading
+
+# 蒙特卡洛
+  python dreamerv3/main.py \
+  --logdir ~/logdir/future_monte_carlo \
+  --configs future_monte_carlo \
+  --run.from_checkpoint ~/logdir/future/ckpt/$(cat ~/logdir/future/ckpt/latest) \
+  --script monte_carlo
+
+# v1.1 只改obs
+# (0,70w) 180d
+# (70w,270w) all
+# (270w, 330w)tp sl
+SECONDS=0
+  python dreamerv3/main.py \
+  --logdir /data/logdir/future_jm3 \
+  --configs future
+  echo "Total: ${SECONDS}s"
+
+# 蒙特卡洛, 不开启tp,sl，期望正,开启tpsl，期望负
+  python dreamerv3/main.py \
+  --logdir /data/logdir/future_jm3_monte_carlo \
+  --configs future_monte_carlo \
+  --run.from_checkpoint /data/logdir/future_jm3/ckpt/$(cat /data/logdir/future_jm3/ckpt/latest) \
+  --script monte_carlo
+
+# 去跑其他品种，螺纹钢
+  python dreamerv3/main.py \
+  --logdir /data/logdir/future_jm3_monte_carlo \
+  --configs future_monte_carlo \
+  --run.from_checkpoint /data/logdir/future_jm3/ckpt/$(cat /data/logdir/future_jm3/ckpt/latest) \
+  --script monte_carlo
+
+# v2.1
+# (0,50w) 180d/tp,sl/无惩罚，手续费6
+
+SECONDS=0
+  python dreamerv3/main.py \
+  --logdir /data/logdir/future_jm2.1 \
+  --configs futurev2_stage1
+  echo "Total: ${SECONDS}s"
+
+# v2.1
+# (0,50w) 180d/无惩罚，手续费6
+
+SECONDS=0
+  python dreamerv3/main.py \
+  --logdir /data/logdir/future_jm2.2 \
+  --configs futurev2_stage1
+  echo "Total: ${SECONDS}s"
+
+# v2版本，25w次后agent不开仓
+# future 训练 v1
+# window_size 90
+# 模型大小100m
+# 无效操作惩罚 0.002
+# 训练8年
+# 手续费3->6
+# obs 改变
+# 180天数据最后1天只有夜盘，删掉
+
+# v2.1版本，
+# future 训练 v1
+# window_size 90
+# 模型大小100m
+# 无效操作惩罚 0.0001
+# 手续费3->6
+# obs 改变
+# 180天数据最后1天只有夜盘，删掉
+
+
+#训练rb
+SECONDS=0
+  python dreamerv3/main.py \
+  --logdir /data/logdir/future_rb2 \
+  --configs futurev2 
+  echo "Total: ${SECONDS}s"
+
+#训练焦煤
+SECONDS=0
+  python dreamerv3/main.py \
+  --logdir /data/logdir/future_jm2.1 \
+  --configs futurev2
+  echo "Total: ${SECONDS}s"
+
+
+# forex
+
+  python dreamerv3/main.py \
+  --logdir ~/logdir/forex \
+  --configs forex 
+
+  python dreamerv3/main.py \
+  --logdir ~/logdir/forex \
+  --configs forex \
+  --run.from_checkpoint ~/logdir/forex/ckpt/$(cat ~/logdir/forex/ckpt/latest)
+
+
+  python dreamerv3/main.py \
+  --logdir ~/logdir/forex \
+  --configs forex \
+  --run.from_checkpoint ~/logdir/forex/ckpt \
+  --script render_only  
+
+## forex_opt_parallel
+
+  python dreamerv3/main.py \
+  --logdir ~/logdir/forex_opt_parallel \
+  --configs forex_opt_parallel
+
+  python dreamerv3/main.py \
+  --logdir ~/logdir/forex_opt_parallel \
+  --configs forex_opt_parallel \
+  --run.from_checkpoint ~/logdir/forex_opt_parallel/checkpoint.pkl \
+  --script render_only  
+
+
+# forex_opt
+
+  python dreamerv3/main.py \
+  --logdir ~/logdir/forex_opt \
+  --configs forex_opt
+
+
+  python dreamerv3/main.py \
+  --logdir ~/logdir/forex_opt_100m \
+  --configs forex_opt_100m
+
+
+  python dreamerv3/main.py \
+  --logdir ~/logdir/forex_opt_100m \
+  --configs forex_opt_100m \
+  --run.from_checkpoint ~/logdir/forex_opt_100m/ckpt \
+  --script render_only  
+
+# minecraft
+
+  python dreamerv3/main.py --logdir ~/logdir/minecraft --configs minecraft  
+```
+
+To reproduce results, train on the desired task using the corresponding config,
+such as `--configs atari --task atari_pong`.
 
 # Tips
 
@@ -118,6 +325,6 @@ implementation has been tested to reproduce the official results on a range of
 environments.
 
 [jax]: https://github.com/google/jax#pip-installation-gpu-cuda
-[paper]: https://arxiv.org/pdf/2301.04104
+[paper]: https://arxiv.org/pdf/2301.04104v1.pdf
 [website]: https://danijar.com/dreamerv3
 [tweet]: https://twitter.com/danijarh/status/1613161946223677441

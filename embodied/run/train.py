@@ -29,6 +29,29 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
 
   @elements.timer.section('logfn')
   def logfn(tran, worker):
+    # try:
+    #   # 只打印 worker==0，且每 200 步或回合结束时打印一次，避免刷屏
+    #   if worker == 0 and ((int(step) % 200) == 0 or bool(tran.get('is_last', False))):
+    #     elements.printing.print_("\n[DEBUG] Dump of tran keys/values:", flush=True)
+    #     for k, v in tran.items():
+    #       # 兼容 numpy/jax 标量和数组
+    #       if hasattr(v, 'dtype') and hasattr(v, 'shape'):
+    #         if getattr(v, 'ndim', None) == 0:
+    #           # 标量：直接打印数值
+    #           try:
+    #             elements.printing.print_(f"  - {k}: scalar {float(v)} (dtype={v.dtype})")
+    #           except Exception:
+    #             elements.printing.print_(f"  - {k}: scalar {v} (dtype={v.dtype})")
+    #         else:
+    #           # 向量/图片/视频：只打印形状与 dtype，避免巨量输出
+    #           elements.printing.print_(f"  - {k}: array shape={v.shape} dtype={v.dtype}")
+    #       else:
+    #         # Python 原生类型（bool/int/float/str 等）
+    #         elements.printing.print_(f"  - {k}: {type(v).__name__} = {v}")
+    #     elements.printing.print_("--------------------------------------\n", flush=True)
+    # except Exception as e:
+    #   elements.printing.print_(f"[DEBUG] tran dump failed: {e}")
+  
     episode = episodes[worker]
     tran['is_first'] and episode.reset()
     episode.add('score', tran['reward'], agg='sum')
@@ -85,8 +108,9 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
   cp.agent = agent
   cp.replay = replay
   if args.from_checkpoint:
+    regex = args.get('from_checkpoint_regex', None)
     elements.checkpoint.load(args.from_checkpoint, dict(
-        agent=bind(agent.load, regex=args.from_checkpoint_regex)))
+        agent=bind(agent.load, regex=regex)))
   cp.load_or_save()
 
   print('Start training loop')

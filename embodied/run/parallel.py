@@ -85,26 +85,73 @@ def parallel_actor(agent, barrier, args):
   logger = portal.Client(args.logger_addr, 'ActorLogger', maxinflight=backlog)
   replay = portal.Client(args.replay_addr, 'ActorReplay', maxinflight=backlog)
 
+  def _gather_carry(envid_batch):
+    # envid_batch: (N,)
+    carry_list = [carries[int(a)] for a in list(envid_batch)]
+    return elements.tree.map(lambda *xs: list(xs), *carry_list)
+
+  def _scatter_carry(envid_batch, carry_batch):
+    # carry_batch is batched; write back per env id
+    for i, a in enumerate(list(envid_batch)):
+      carries[int(a)] = elements.tree.map(lambda x: x[i], carry_batch, isleaf=islist)
+
+  def _ensure_out_slot(full, key, sample_arr, batch_size):
+    if key in full:
+      return
+    sample_arr = np.asarray(sample_arr)
+    full[key] = np.zeros((batch_size,) + sample_arr.shape[1:], sample_arr.dtype)
+
   @elements.timer.section('workfn')
   def workfn(obs):
     envid = obs.pop('envid')
     assert envid.shape == (args.actor_batch,)
     is_eval = obs.pop('is_eval')
+    is_eval = np.asarray(is_eval).astype(bool)  # (B,)
+
     fps.step(obs['is_first'].size)
-    with elements.timer.section('get_states'):
-      carry = [carries[a] for a in envid]
-      carry = elements.tree.map(lambda *xs: list(xs), *carry)
+
     logs = {k: v for k, v in obs.items() if k.startswith('log/')}
     obs = {k: v for k, v in obs.items() if not k.startswith('log/')}
-    carry, acts, outs = agent.policy(carry, obs)
-    assert all(k not in acts for k in outs), (
-        list(outs.keys()), list(acts.keys()))
-    with elements.timer.section('put_states'):
-      for i, a in enumerate(envid):
-        carries[a] = elements.tree.map(lambda x: x[i], carry, isleaf=islist)
-    trans = {'envid': envid, 'is_eval': is_eval, **obs, **acts, **outs, **logs}
+
+    # Pre-allocate actions (without reset)
+    acts_full = {
+      k: np.zeros((args.actor_batch,) + tuple(space.shape), space.dtype)
+      for k, space in agent.act_space.items()
+    }
+    outs_full = {}
+
+    def run_group(idx, mode):
+      if idx.size == 0:
+        return
+      envid_g = envid[idx]
+      obs_g = {k: v[idx] for k, v in obs.items()}
+
+      carry_g = _gather_carry(envid_g)
+      carry_out, acts_g, outs_g = agent.policy(carry_g, obs_g, mode=mode)
+
+      _scatter_carry(envid_g, carry_out)
+
+      # Fill actions
+      for k, v in acts_g.items():
+        acts_full[k][idx] = np.asarray(v)
+
+      # Fill outs (dynamic keys)
+      for k, v in outs_g.items():
+        _ensure_out_slot(outs_full, k, v, args.actor_batch)
+        outs_full[k][idx] = np.asarray(v)
+
+    # Split batch into eval/train
+    idx_eval = np.where(is_eval)[0]
+    idx_train = np.where(~is_eval)[0]
+
+    run_group(idx_eval, mode='eval')
+    run_group(idx_train, mode='train')
+
+    trans = {'envid': envid, 'is_eval': is_eval, **obs, **acts_full, **outs_full, **logs}
     [x.setflags(write=False) for x in trans.values()]
-    acts = {**acts, 'reset': obs['is_last'].copy()}
+
+    # reset action: env resets on is_last
+    acts = {**acts_full, 'reset': obs['is_last'].copy()}
     return acts, trans
 
   @elements.timer.section('donefn')
