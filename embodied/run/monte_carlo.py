@@ -7,18 +7,32 @@ from functools import partial as bind
 import elements
 import embodied
 import numpy as np
+from decimal import Decimal
 
-
-def _scalar(x, default=np.nan):
+def _scalar(x, default=float("nan")):
   if x is None:
     return default
   try:
+    # numpy array
     if isinstance(x, np.ndarray):
       if x.shape == ():
         return x.item()
-      # safety: if accidentally non-scalar, take last element
       return float(np.asarray(x).reshape(-1)[-1])
-    return x
+
+    # numpy scalar (np.float32/np.int32/np.bool_ ...)
+    if isinstance(x, np.generic):
+      return x.item()
+
+    # Decimal -> float (or str if you prefer exact)
+    if isinstance(x, Decimal):
+      return float(x)
+
+    # already JSON-friendly
+    if isinstance(x, (bool, int, float, str)):
+      return x
+
+    # last resort
+    return float(x)
   except Exception:
     return default
 
@@ -113,23 +127,24 @@ def monte_carlo(make_agent, make_env, make_logger, args):
         "terminated": terminated,
         "truncated": truncated,
         "log_is_truncated": None if trunc_raw is None else bool(np.asarray(trunc_raw).item()),
-
-        # ---- metrics from env info (your env already emits log/env/*) ----
-        "equity": float(_get(tran, "log/env/equity", np.nan)),
-        "return_pct": float(_get(tran, "log/env/return_pct", np.nan)),
-        "max_drawdown_pct": float(_get(tran, "log/env/max_drawdown_pct", np.nan)),
-        "profit_factor": float(_get(tran, "log/env/profit_factor", np.nan)),
-        "trades_opened": float(_get(tran, "log/env/trades_opened", np.nan)),
-        "fee_total": float(_get(tran, "log/env/fee_total", np.nan)),
-
-        # counters (these are top-level in your env info)
-        "stop_loss_fired": int(_get(tran, "stop_loss_fired", 0)),
-        "take_profit_fired": int(_get(tran, "take_profit_fired", 0)),
       }
+
+      # NEW: dump ALL env metrics
+      env_dump = {}
+      for k, v in tran.items():
+        if isinstance(k, str) and k.startswith("log/env/"):
+          kk = k[len("log/env/"):]
+          env_dump[kk] = _scalar(v)
+      row.update(env_dump)
+
+      # (optional) keep top-level counters if you want int versions
+      row["stop_loss_fired"] = int(_get(tran, "stop_loss_fired", 0))
+      row["take_profit_fired"] = int(_get(tran, "take_profit_fired", 0))
 
       _file(worker).write(json.dumps(row, ensure_ascii=False) + "\n")
       ep_index[worker] += 1
       total_done["n"] += 1
+
 
   driver.on_step(on_step)
 
@@ -199,6 +214,15 @@ def monte_carlo(make_agent, make_env, make_logger, args):
       "profit_factor": summarize("profit_factor"),
       "trades_opened": summarize("trades_opened"),
       "fee_total": summarize("fee_total"),
+      "trades_closed": summarize("trades_closed"),
+      "total_trades": summarize("total_trades"),
+      "winning_trades": summarize("winning_trades"),
+      "win_rate": summarize("win_rate"),
+      "expectancy": summarize("expectancy"),
+      "opens_per_1000_steps": summarize("opens_per_1000_steps"),
+      "fee_drag_ratio": summarize("fee_drag_ratio"),
+      "invalid_action_total": summarize("invalid_action_total"),
+      "invalid_action_ratio": summarize("invalid_action_ratio"),
     },
     "risk": {
       "VaR_5_return_pct": var5,

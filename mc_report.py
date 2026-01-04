@@ -1,4 +1,3 @@
-# mc_report.py
 from __future__ import annotations
 
 import argparse
@@ -8,6 +7,78 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+
+# --- NEW: canonical keys we care about (episode-level) ---
+EXTRA_EP_KEYS = [
+    "total_trades",
+    "winning_trades",
+    "win_rate",
+    "trades_closed",
+    "opens_per_1000_steps",
+    "fee_drag_ratio",
+    "expectancy",
+    "invalid_action",
+    "invalid_action_total",
+    "invalid_action_ratio",
+]
+
+CORE_KEYS = [
+    "equity",
+    "return_pct",
+    "max_drawdown_pct",
+    "profit_factor",
+    "trades_opened",
+    "fee_total",
+    "stop_loss_fired",
+    "take_profit_fired",
+    "length",
+    "score",
+    "steps",
+]
+
+ALL_KEYS = CORE_KEYS + EXTRA_EP_KEYS
+
+
+def _coerce_numeric(s: pd.Series) -> pd.Series:
+    return pd.to_numeric(s, errors="coerce")
+
+
+def _ensure_canonical_cols(df: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
+    """
+    Ensure df has canonical columns for keys.
+    Accepts aliases like:
+      - key
+      - log/env/key
+      - env/key
+    If only alias exists, copy to canonical key.
+    """
+    alias_prefixes = ["log/env/", "env/", "log_env/", "log-env/"]
+
+    for k in keys:
+        if k in df.columns:
+            continue
+
+        found = None
+        # exact alias matches
+        for pref in alias_prefixes:
+            ak = f"{pref}{k}"
+            if ak in df.columns:
+                found = ak
+                break
+
+        # sometimes flattened with dot notation
+        if found is None:
+            for pref in ["log.env.", "env."]:
+                ak = f"{pref}{k}"
+                if ak in df.columns:
+                    found = ak
+                    break
+
+        if found is not None:
+            df[k] = df[found]
+
+    return df
 
 
 def _read_all_jsonl(run_dir: Path) -> pd.DataFrame:
@@ -22,15 +93,13 @@ def _read_all_jsonl(run_dir: Path) -> pd.DataFrame:
         dfs.append(df)
     out = pd.concat(dfs, ignore_index=True)
 
+    # NEW: normalize canonical columns (handles log/env/* aliases)
+    out = _ensure_canonical_cols(out, ALL_KEYS)
+
     # Normalize numeric columns (coerce errors -> NaN)
-    num_cols = [
-        "equity", "return_pct", "max_drawdown_pct", "profit_factor",
-        "trades_opened", "fee_total", "stop_loss_fired", "take_profit_fired",
-        "length", "score", "steps",
-    ]
-    for c in num_cols:
+    for c in ALL_KEYS:
         if c in out.columns:
-            out[c] = pd.to_numeric(out[c], errors="coerce")
+            out[c] = _coerce_numeric(out[c])
 
     # Normalize bool columns
     for c in ["terminated", "truncated"]:
@@ -85,10 +154,24 @@ def _fmt(d: dict, pct: bool = False) -> str:
     )
 
 
+def _safe_idx(df: pd.DataFrame, col: str, fn: str):
+    if col not in df.columns:
+        return None
+    s = pd.to_numeric(df[col], errors="coerce").astype(float)
+    s = s[np.isfinite(s)]
+    if len(s) == 0:
+        return None
+    if fn == "min":
+        return int(pd.to_numeric(df[col], errors="coerce").astype(float).idxmin())
+    if fn == "max":
+        return int(pd.to_numeric(df[col], errors="coerce").astype(float).idxmax())
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("run_dir", type=str, help="MC run dir containing episodes_w*.jsonl and summary.json")
-    ap.add_argument("--save", action="store_true", help="Save report.csv and report.json into run_dir")
+    ap.add_argument("--save", action="store_true", help="Save episodes_merged.csv and report.json into run_dir")
     ap.add_argument("--alpha", type=float, default=0.05, help="VaR/CVaR alpha, default 0.05")
     args = ap.parse_args()
 
@@ -108,6 +191,17 @@ def main():
     s_tr = _summarize_series(df.get("trades_opened", pd.Series(dtype=float)))
     s_fee = _summarize_series(df.get("fee_total", pd.Series(dtype=float)))
 
+    # NEW: extra summaries
+    s_total_trades = _summarize_series(df.get("total_trades", pd.Series(dtype=float)))
+    s_win_trades = _summarize_series(df.get("winning_trades", pd.Series(dtype=float)))
+    s_win_rate = _summarize_series(df.get("win_rate", pd.Series(dtype=float)))
+    s_tr_closed = _summarize_series(df.get("trades_closed", pd.Series(dtype=float)))
+    s_opens_1k = _summarize_series(df.get("opens_per_1000_steps", pd.Series(dtype=float)))
+    s_fee_drag = _summarize_series(df.get("fee_drag_ratio", pd.Series(dtype=float)))
+    s_exp = _summarize_series(df.get("expectancy", pd.Series(dtype=float)))
+    s_invalid_total = _summarize_series(df.get("invalid_action_total", pd.Series(dtype=float)))
+    s_invalid_ratio = _summarize_series(df.get("invalid_action_ratio", pd.Series(dtype=float)))
+
     # Risk stats on daily returns
     rets = pd.to_numeric(df.get("return_pct", pd.Series(dtype=float)), errors="coerce").astype(float)
     rets = rets[np.isfinite(rets)]
@@ -121,8 +215,34 @@ def main():
     tp_days = int((pd.to_numeric(df.get("take_profit_fired", 0), errors="coerce").fillna(0) > 0).sum())
 
     # Best / worst days
-    worst = df.loc[df["return_pct"].astype(float).idxmin()] if "return_pct" in df.columns and df["return_pct"].notna().any() else None
-    best = df.loc[df["return_pct"].astype(float).idxmax()] if "return_pct" in df.columns and df["return_pct"].notna().any() else None
+    worst_i = _safe_idx(df, "return_pct", "min")
+    best_i = _safe_idx(df, "return_pct", "max")
+    worst = df.loc[worst_i] if worst_i is not None else None
+    best = df.loc[best_i] if best_i is not None else None
+
+    # NEW: diagnostics around PF / fees
+    pf = pd.to_numeric(df.get("profit_factor", pd.Series(dtype=float)), errors="coerce").astype(float)
+    pf_valid = pf[np.isfinite(pf)]
+    pf_valid_n = int(len(pf_valid))
+    pf_none_n = int(n - pf_valid_n)
+
+    total_trades = pd.to_numeric(df.get("total_trades", pd.Series(dtype=float)), errors="coerce").fillna(0).astype(float)
+    winning_trades = pd.to_numeric(df.get("winning_trades", pd.Series(dtype=float)), errors="coerce").fillna(0).astype(float)
+
+    # episodes where all close trades are wins (but PF may be None)
+    all_wins = (total_trades > 0) & (winning_trades >= total_trades)
+    all_wins_n = int(all_wins.sum())
+
+    # fee-drag suspicion: all wins but return < 0 (net negative)
+    ret = pd.to_numeric(df.get("return_pct", pd.Series(dtype=float)), errors="coerce").astype(float)
+    fee_drag_loss = all_wins & (ret < 0)
+    fee_drag_loss_n = int(fee_drag_loss.sum())
+
+    # open without close anomaly
+    tr_open = pd.to_numeric(df.get("trades_opened", pd.Series(dtype=float)), errors="coerce").fillna(0).astype(float)
+    tr_close = pd.to_numeric(df.get("trades_closed", pd.Series(dtype=float)), errors="coerce").fillna(0).astype(float)
+    open_no_close = (tr_open > 0) & (tr_close == 0)
+    open_no_close_n = int(open_no_close.sum())
 
     # Print report
     print("=" * 80)
@@ -134,7 +254,16 @@ def main():
     print(f"MaxDrawdown_pct: {_fmt(s_dd, pct=False)}  (already in % units from env)")
     print(f"ProfitFactor:    {_fmt(s_pf, pct=False)}")
     print(f"Trades_opened:   {_fmt(s_tr, pct=False)}")
+    print(f"Trades_closed:   {_fmt(s_tr_closed, pct=False)}")
+    print(f"Total_trades:    {_fmt(s_total_trades, pct=False)}")
+    print(f"Winning_trades:  {_fmt(s_win_trades, pct=False)}")
+    print(f"Win_rate:        {_fmt(s_win_rate, pct=False)}")
+    print(f"Expectancy:      {_fmt(s_exp, pct=False)}")
     print(f"Fee_total:       {_fmt(s_fee, pct=False)}")
+    print(f"Fee_drag_ratio:  {_fmt(s_fee_drag, pct=False)}")
+    print(f"Opens/1000steps:  {_fmt(s_opens_1k, pct=False)}")
+    print(f"Invalid_total:   {_fmt(s_invalid_total, pct=False)}")
+    print(f"Invalid_ratio:   {_fmt(s_invalid_ratio, pct=False)}")
     print("-" * 80)
     if np.isfinite(p_loss):
         print(f"P(return<0):     {p_loss*100:.2f}%")
@@ -144,24 +273,36 @@ def main():
     print(f"StopLoss fired:  total={sl_total}  days_with_SL>0={sl_days}/{n}")
     print(f"TakeProfit fired: total={tp_total}  days_with_TP>0={tp_days}/{n}")
     print("-" * 80)
+    print("Diagnostics:")
+    print(f"  ProfitFactor valid: {pf_valid_n}/{n}  (None/NaN: {pf_none_n})")
+    print(f"  All-wins episodes (winning_trades==total_trades>0): {all_wins_n}/{n}")
+    print(f"  All-wins but return<0 (fee drag suspicion): {fee_drag_loss_n}/{n}")
+    print(f"  trades_opened>0 but trades_closed==0 (anomaly): {open_no_close_n}/{n}")
+    print("-" * 80)
+
+    def _print_day(tag: str, row: pd.Series):
+        r = float(row.get("return_pct", np.nan)) * 100.0
+        dd = float(row.get("max_drawdown_pct", np.nan))
+        pfv = float(row.get("profit_factor", np.nan))
+        tr_o = float(row.get("trades_opened", np.nan))
+        tr_c = float(row.get("trades_closed", np.nan))
+        tt = float(row.get("total_trades", np.nan))
+        wr = float(row.get("win_rate", np.nan))
+        fee = float(row.get("fee_total", np.nan))
+        fdr = float(row.get("fee_drag_ratio", np.nan))
+        inv = float(row.get("invalid_action_total", np.nan))
+        print(f"{tag} day:")
+        print(
+            f"  return={r:.4f}% dd={dd:.4f} pf={pfv:.4f} "
+            f"open={tr_o:.0f} close={tr_c:.0f} total_trades={tt:.0f} win_rate={wr:.4f} "
+            f"fee={fee:.4f} fee_drag={fdr:.4f} invalid_total={inv:.0f} "
+            f"file={row.get('__src_file','')}, worker={row.get('worker','')}, ep={row.get('episode_index','')}"
+        )
+
     if worst is not None:
-        print("Worst day:")
-        print(
-            f"  return={float(worst['return_pct'])*100:.4f}% "
-            f"dd={float(worst.get('max_drawdown_pct', np.nan)):.4f} "
-            f"pf={float(worst.get('profit_factor', np.nan)):.4f} "
-            f"trades={float(worst.get('trades_opened', np.nan)):.0f} "
-            f"file={worst.get('__src_file','')}, worker={worst.get('worker','')}, ep={worst.get('episode_index','')}"
-        )
+        _print_day("Worst", worst)
     if best is not None:
-        print("Best day:")
-        print(
-            f"  return={float(best['return_pct'])*100:.4f}% "
-            f"dd={float(best.get('max_drawdown_pct', np.nan)):.4f} "
-            f"pf={float(best.get('profit_factor', np.nan)):.4f} "
-            f"trades={float(best.get('trades_opened', np.nan)):.0f} "
-            f"file={best.get('__src_file','')}, worker={best.get('worker','')}, ep={best.get('episode_index','')}"
-        )
+        _print_day("Best", best)
     print("=" * 80)
 
     report = {
@@ -175,7 +316,16 @@ def main():
             "max_drawdown_pct": s_dd,
             "profit_factor": s_pf,
             "trades_opened": s_tr,
+            "trades_closed": s_tr_closed,
+            "total_trades": s_total_trades,
+            "winning_trades": s_win_trades,
+            "win_rate": s_win_rate,
+            "expectancy": s_exp,
             "fee_total": s_fee,
+            "fee_drag_ratio": s_fee_drag,
+            "opens_per_1000_steps": s_opens_1k,
+            "invalid_action_total": s_invalid_total,
+            "invalid_action_ratio": s_invalid_ratio,
         },
         "risk": {
             "p_return_negative": p_loss,
@@ -188,10 +338,16 @@ def main():
             "days_with_stop_loss": sl_days,
             "days_with_take_profit": tp_days,
         },
+        "diagnostics": {
+            "profit_factor_valid_n": pf_valid_n,
+            "profit_factor_none_n": pf_none_n,
+            "all_wins_n": all_wins_n,
+            "all_wins_but_return_negative_n": fee_drag_loss_n,
+            "open_no_close_n": open_no_close_n,
+        },
     }
 
     if args.save:
-        # save merged episodes (csv) + report json
         out_csv = run_dir / "episodes_merged.csv"
         out_json = run_dir / "report.json"
         df.to_csv(out_csv, index=False)
@@ -200,7 +356,6 @@ def main():
         print(f"[OK] wrote {out_csv}")
         print(f"[OK] wrote {out_json}")
 
-# python mc_report.py /home/v/logdir/future_monte_carlo/mc/20251231_205606 --save
 
 if __name__ == "__main__":
     main()

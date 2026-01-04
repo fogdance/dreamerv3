@@ -45,7 +45,7 @@ EURUSD: &EURUSD
 DCE_JM2601: &JM
   currency_pair: "JM2601"
   initial_balance: 10000.0
-  trading_fee_per_lot: 6
+  trading_fee_per_lot: 3
   is_round_turn: true
   spread: 0.5
   leverage: 10
@@ -89,7 +89,7 @@ SHFE_RB: &RB
   stop_loss_enabled: false
   stop_loss_mode: pct  # pct | abs
   stop_loss_value: 0.02 # pct=2%
-  take_profit_enabled: False
+  take_profit_enabled: false
   take_profit_mode: rr  
   take_profit_rr: 1.5
   is_future: true

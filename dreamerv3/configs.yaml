@@ -172,11 +172,27 @@ atari:
 futurev2_stage1:
   <<: *size50m
   batch_size: 32
-  batch_length: 128
   task: gymnasium_CustomTradingEnv-v0
-  run: {steps: 5e6, train_ratio: 64, envs: 16, eval_envs: 4, actor_threads: 16}
-  jax: {prealloc: False}
+  run: {steps: 7e5, train_ratio: 64, envs: 12, eval_envs: 4, actor_threads: 1}
+  jax: {prealloc: True}
   env.gymnasium.config_path: data/trading_stage1.yaml
+
+
+futurev2_stage2:
+  <<: *size50m
+  batch_size: 32
+  task: gymnasium_CustomTradingEnv-v0
+  run: {steps: 3e6, train_ratio: 64, envs: 12, eval_envs: 4, actor_threads: 1}
+  jax: {prealloc: True}
+  env.gymnasium.config_path: data/trading_stage2.yaml
+
+futurev2_stage3:
+  <<: *size50m
+  batch_size: 32
+  task: gymnasium_CustomTradingEnv-v0
+  run: {steps: 4e6, train_ratio: 64, envs: 12, eval_envs: 4, actor_threads: 1}
+  jax: {prealloc: True}
+  env.gymnasium.config_path: data/trading_stage3.yaml
 
 future:
   <<: *size50m
@@ -191,7 +207,7 @@ future_live:
   batch_size: 12
   task: gymnasium_CustomTradingEnv-v0
   run: {steps: 2e7, train_ratio: 64, envs: 1, eval_envs: 0, actor_threads: 1}
-  jax: {prealloc: False}
+  jax: {prealloc: True}
   env.gymnasium.config_path: data/live.yaml
 
 future_monte_carlo:
@@ -199,8 +215,16 @@ future_monte_carlo:
   batch_size: 12
   task: gymnasium_CustomTradingEnv-v0
   run: {steps: 2e7, train_ratio: 64, envs: 1, eval_envs: 0, actor_threads: 1}
-  jax: {prealloc: False}
+  jax: {prealloc: True}
   env.gymnasium.config_path: data/monte_carlo.yaml
+
+future_monte_carlo_rb:
+  <<: *size50m
+  batch_size: 12
+  task: gymnasium_CustomTradingEnv-v0
+  run: {steps: 2e7, train_ratio: 64, envs: 1, eval_envs: 0, actor_threads: 1}
+  jax: {prealloc: True}
+  env.gymnasium.config_path: data/monte_carlo_rb.yaml
 
 forex:
   <<: *size50m
