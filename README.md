@@ -131,12 +131,14 @@ python dreamerv3/main.py \
   --run.from_checkpoint ~/logdir/car_racing3/checkpoint.pkl \
   --script eval_only
 
+# 有进展，agent在50w后，依然继续开仓
 # future 训练 v1
 # window_size 60
 # 模型大小50m
 # 无效操作不惩罚
 # 先训练180天的
 # 再训练8年
+# 手续费3
 # obs
 
 SECONDS=0
@@ -159,7 +161,7 @@ SECONDS=0
   --run.from_checkpoint ~/logdir/future/ckpt/$(cat ~/logdir/future/ckpt/latest) \
   --script monte_carlo
 
-# v1.1 只改obs
+# v1.1 只改obs， 成功
 # (0,70w) 180d
 # (70w,270w) all
 # (270w, 330w)tp sl
@@ -183,7 +185,14 @@ SECONDS=0
   --run.from_checkpoint /data/logdir/future_jm3/ckpt/$(cat /data/logdir/future_jm3/ckpt/latest) \
   --script monte_carlo
 
-# v2.1
+# live
+  python dreamerv3/main.py \
+  --logdir /data/logdir/future_jm3_live \
+  --configs future_live \
+  --run.from_checkpoint /data/logdir/future_jm3/ckpt/$(cat /data/logdir/future_jm3/ckpt/latest) \
+  --script live_trading
+
+# v2.1 失败
 # (0,50w) 180d/tp,sl/无惩罚，手续费6
 
 SECONDS=0
@@ -192,13 +201,56 @@ SECONDS=0
   --configs futurev2_stage1
   echo "Total: ${SECONDS}s"
 
-# v2.1
-# (0,50w) 180d/无惩罚，手续费6
+# v2.3, 
+# (0,70w) 180d/无惩罚，手续费6
+#（70w, 200w) 无惩罚，手续费3
 
 SECONDS=0
   python dreamerv3/main.py \
-  --logdir /data/logdir/future_jm2.2 \
+  --logdir /data/logdir/future_jm2.3 \
   --configs futurev2_stage1
+  echo "Total: ${SECONDS}s"
+
+SECONDS=0
+  python dreamerv3/main.py \
+  --logdir /data/logdir/future_jm2.3 \
+  --configs futurev2_stage2
+  echo "Total: ${SECONDS}s"
+
+
+# 蒙特卡洛 jm
+  python dreamerv3/main.py \
+  --logdir /data/logdir/future_jm2.3_monte_carlo \
+  --configs future_monte_carlo \
+  --run.from_checkpoint /data/logdir/future_jm2.3/ckpt/$(cat /data/logdir/future_jm2.3/ckpt/latest) \
+  --script monte_carlo
+
+# 蒙特卡洛 rb
+  python dreamerv3/main.py \
+  --logdir /data/logdir/future_jm2.3_monte_carlo \
+  --configs future_monte_carlo_rb \
+  --run.from_checkpoint /data/logdir/future_jm2.3/ckpt/$(cat /data/logdir/future_jm2.3/ckpt/latest) \
+  --script monte_carlo
+
+# v2.4
+# (0,70w) 180d/无惩罚，手续费3
+
+SECONDS=0
+  python dreamerv3/main.py \
+  --logdir /data/logdir/future_jm2.3 \
+  --configs futurev2_stage1
+  echo "Total: ${SECONDS}s"
+
+SECONDS=0
+  python dreamerv3/main.py \
+  --logdir /data/logdir/future_jm2.3 \
+  --configs futurev2_stage2
+  echo "Total: ${SECONDS}s"
+
+  SECONDS=0
+  python dreamerv3/main.py \
+  --logdir /data/logdir/future_jm2.3 \
+  --configs futurev2_stage3
   echo "Total: ${SECONDS}s"
 
 # v2版本，25w次后agent不开仓
