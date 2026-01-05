@@ -182,6 +182,14 @@ SECONDS=0
   --configs future_monte_carlo \
   --run.from_checkpoint /data/logdir/future_jm3/ckpt/$(cat /data/logdir/future_jm3/ckpt/latest) \
   --script monte_carlo
+  
+#实盘
+  python dreamerv3/main.py \
+  --logdir /data/logdir/future_jm3_live \
+  --configs future_live \
+  --run.from_checkpoint /data/logdir/future_jm3/ckpt/$(cat /data/logdir/future_jm3/ckpt/latest) \
+  --script live_trading
+
 
 # v2.1
 # (0,50w) 180d/tp,sl/无惩罚，手续费6
