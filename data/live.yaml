@@ -65,6 +65,7 @@ DCE_JM2605: &JM
   #trading_date: "2025-12-24"
   future_symbol: "DCE.jm2605"
   live_mode: true
+  live_replay_on_reset: true
   session_policy:
     near_eod_bars: 2
     block_open_near_eod: true
