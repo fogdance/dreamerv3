@@ -207,7 +207,8 @@ def make_replay(config, folder, mode='train'):
     directory /= f'{config.replica:05}'
   kwargs = dict(
       length=length, capacity=int(capacity), online=config.replay.online,
-      chunksize=config.replay.chunksize, directory=directory)
+      chunksize=config.replay.chunksize, directory=directory,
+      name=f'{folder}-{mode}')
 
   if config.replay.fracs.uniform < 1 and mode == 'train':
     assert config.jax.compute_dtype in ('bfloat16', 'float32'), (

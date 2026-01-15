@@ -84,6 +84,10 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
   driver.on_step(replay.add)
   driver.on_step(logfn)
 
+  replay.load()
+  print(f'[replay] dir={replay.directory} items={len(replay.items)} sampler={len(replay.sampler)} chunks={len(replay.chunks)} length={replay.length}')
+
+
   stream_train = iter(agent.stream(make_stream(replay, 'train')))
   stream_report = iter(agent.stream(make_stream(replay, 'report')))
 
