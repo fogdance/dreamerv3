@@ -54,7 +54,7 @@ DCE_JM2601: &JM
   max_long_position: 1
   max_short_position: 1
   # data_path: "180D_DCE_JM2601"
-  data_path: "8Y_DCE_JM2601"
+  data_path: "1Y_DCE_JM2601"
   data_interval: "1m"
   stop_loss_enabled: false
   stop_loss_mode: abs  # pct | abs
@@ -63,6 +63,8 @@ DCE_JM2601: &JM
   take_profit_mode: rr  
   take_profit_rr: 1.5
   is_future: true
+  # invalid_action_punish: 0.02
+  # invalid_time_cost_total: 0.2  
   obs_feature_mode: "obs"
   use_daily_context: true
   use_daily_seq_7: true
@@ -73,8 +75,8 @@ DCE_JM2601: &JM
     block_open_near_eod: true
     force_flatten_eod: true
 
-SHFE_RB: &RB
-  currency_pair: "SHFE_RB"
+SHFE_RB2605: &RB
+  currency_pair: "RB2605"
   initial_balance: 10000.0
   trading_fee_per_lot: 3
   is_round_turn: true
@@ -84,7 +86,7 @@ SHFE_RB: &RB
   trade_lot: 1
   max_long_position: 1
   max_short_position: 1
-  data_path: "SHFE_RB"
+  data_path: "1Y_SHFE_RB"
   data_interval: "1m"
   stop_loss_enabled: false
   stop_loss_mode: pct  # pct | abs
@@ -97,14 +99,14 @@ SHFE_RB: &RB
   use_daily_context: true
   use_daily_seq_7: true
   # trading_date: "2025-12-23"
-  future_symbol: "SHFE.RB"
+  future_symbol: "SHFE.rb2605"
   session_policy:
     near_eod_bars: 2
     block_open_near_eod: true
     force_flatten_eod: true
 
 trading:
-  <<: *JM
+  <<: *RB
 
 risk:
   max_drawdown_ratio: 0.5
@@ -114,7 +116,7 @@ risk:
 
 training:
   reward_function: "futures_intraday_reward_function"
-  window_size: 60
+  window_size: 120
   max_episode_steps: 345
   randomize_start: true
   render_mode: "none"
