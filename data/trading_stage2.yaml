@@ -45,7 +45,7 @@ EURUSD: &EURUSD
 DCE_JM2601: &JM
   currency_pair: "JM2601"
   initial_balance: 10000.0
-  trading_fee_per_lot: 3
+  trading_fee_per_lot: 6
   is_round_turn: true
   spread: 0.5
   leverage: 10
@@ -106,7 +106,7 @@ SHFE_RB2605: &RB
     force_flatten_eod: true
 
 trading:
-  <<: *RB
+  <<: *JM
 
 risk:
   max_drawdown_ratio: 0.5
