@@ -169,6 +169,14 @@ atari:
   task: atari_pong
   run: {steps: 5.1e7, train_ratio: 32}
 
+offline_pretrain:
+  <<: *size50m
+  batch_size: 32
+  task: gymnasium_CustomTradingEnv-v0
+  run: {steps: 7e5, train_ratio: 64, envs: 12, eval_envs: 4, actor_threads: 1}
+  jax: {prealloc: True}
+  env.gymnasium.config_path: data/trading_stage1.yaml
+
 futurev2_stage1:
   <<: *size50m
   batch_size: 32

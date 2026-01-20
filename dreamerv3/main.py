@@ -75,6 +75,14 @@ def main(argv=None):
         bind(make_logger, config),
         args)
 
+  elif config.script == 'offline_pretrain':
+    embodied.run.offline_pretrain(
+        bind(make_agent, config),
+        bind(make_replay, config, 'replay'),
+        bind(make_stream, config),
+        bind(make_logger, config),
+        args)
+
   elif config.script == 'train_eval':
     embodied.run.train_eval(
         bind(make_agent, config),
