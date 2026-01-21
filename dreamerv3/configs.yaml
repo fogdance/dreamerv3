@@ -173,7 +173,7 @@ offline_pretrain:
   <<: *size50m
   batch_size: 32
   task: gymnasium_CustomTradingEnv-v0
-  run: {steps: 7e5, train_ratio: 64, envs: 12, eval_envs: 4, actor_threads: 1}
+  run: {steps: 8000, train_ratio: 64, envs: 12, eval_envs: 4, actor_threads: 1}
   jax: {prealloc: False}
   env.gymnasium.config_path: data/trading_stage1.yaml
 

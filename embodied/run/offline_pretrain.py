@@ -19,6 +19,10 @@ def offline_pretrain(
   - 不创建 env；
   - 不调用 replay.add(...)；
   - 只从已有 replay 中 sample batch，反复调用 agent.train(...)。
+
+  约定：
+  - logger.step（即 step）直接表示“已经做了多少次梯度更新”；
+  - config.run.steps 就是“希望做多少个 gradient steps”。
   """
 
   # -----------------------------
@@ -29,7 +33,7 @@ def offline_pretrain(
   logger = make_logger()
 
   logdir = elements.Path(args.logdir)
-  step = logger.step
+  step = logger.step            # 现在用它表示 'num_gradient_updates'
   usage = elements.Usage(**args.usage)
   train_agg = elements.Agg()
   report_agg = elements.Agg()
@@ -37,8 +41,7 @@ def offline_pretrain(
 
   batch_steps = args.batch_size * args.batch_length
 
-  # 和在线训练保持一致的节奏控制
-  should_train = elements.when.Ratio(args.train_ratio / batch_steps)
+  # 只保留 log / report / save 的节奏控制
   should_log = embodied.LocalClock(args.log_every)
   should_report = embodied.LocalClock(args.report_every)
   should_save = embodied.LocalClock(args.save_every)
@@ -62,10 +65,9 @@ def offline_pretrain(
 
   stats = replay.stats()
   print(
-    f'[offline_pretrain] loaded: items={len(replay)} '
-    f'chunks={len(replay.chunks)} ram_gb={stats["ram_gb"]:.2f}'
+      f'[offline_pretrain] loaded: items={len(replay)} '
+      f'chunks={len(replay.chunks)} ram_gb={stats["ram_gb"]:.2f}'
   )
-
 
   # 没有足够数据就直接退出（生产环境最好直接抛错）
   min_items = args.batch_size * args.batch_length
@@ -106,36 +108,37 @@ def offline_pretrain(
   cp.load_or_save()
 
   print('Start OFFLINE pretrain loop')
+  print(
+      f'[offline_pretrain] target gradient steps = {int(args.steps)} '
+      f'(logger.step will count gradient updates directly)'
+  )
 
   # -----------------------------
   # 5. 纯离线训练主循环（无 env，无 driver）
   # -----------------------------
-  # 注意：这里没有 driver(policy, steps=10)，完全是：
+  # 现在的逻辑：
   #   while step < args.steps:
-  #       for _ in range(should_train):
-  #           batch = next(stream_train)
-  #           agent.train(...)
+  #       batch = next(stream_train)
+  #       agent.train(...)
+  #       step.increment()
   #
   # 所有数据都来自之前加载好的 replay。
   # -----------------------------
   while step < args.steps:
 
-    # 训练若干次（和在线逻辑保持一致）
-    num_train = should_train(step)
-    for _ in range(num_train):
-      # 取一个 batch
-      with elements.timer.section('offline_stream_next'):
-        batch = next(stream_train)
-      # 做一次训练更新
-      carry_train[0], outs, mets = agent.train(carry_train[0], batch)
-      train_fps.step(batch_steps)
+    # 1 个 batch = 1 次 gradient update
+    with elements.timer.section('offline_stream_next'):
+      batch = next(stream_train)
 
-      # 如果 agent 产生了 priority update，则更新 replay.sampler
-      if 'replay' in outs:
-        replay.update(outs['replay'])
+    carry_train[0], outs, mets = agent.train(carry_train[0], batch)
+    train_fps.step(batch_steps)
 
-      train_agg.add(mets, prefix='train')
-      step.increment()
+    # 如果 agent 产生了 priority update，则更新 replay.sampler
+    if 'replay' in outs:
+      replay.update(outs['replay'])
+
+    train_agg.add(mets, prefix='train')
+    step.increment()  # 这里 +1 就是 “多做了一次梯度更新”
 
     # 报表（可选）：在离线 pretrain 阶段也可以看 open-loop 等指标
     if should_report(step):
@@ -149,6 +152,10 @@ def offline_pretrain(
 
     # 写日志
     if should_log(step):
+      print(
+          f'\n[offline_pretrain] global_step={int(step)} / target={int(args.steps)}',
+          flush=True,
+      )
       logger.add(train_agg.result())
       logger.add(replay.stats(), prefix='replay')
       logger.add(usage.stats(), prefix='usage')
