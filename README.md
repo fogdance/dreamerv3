@@ -244,6 +244,24 @@ SECONDS=0
   echo "Total: ${SECONDS}s"
 
 
+# 基准模型 A
+# jm3
+  python dreamerv3/main.py \
+  --logdir /data/logdir/future_jm3_monte_carlo \
+  --configs future_monte_carlo \
+  --run.from_checkpoint /data/logdir/future_jm3/ckpt/$(cat /data/logdir/future_jm3/ckpt/latest) \
+  --script monte_carlo
+
+
+# 基准模型 B
+# 蒙特卡洛 jm 0.1.0_2.6
+  python dreamerv3/main.py \
+  --logdir /data/logdir/future_jmv0.1.0_2.6_monte_carlo \
+  --configs future_monte_carlo \
+  --run.from_checkpoint /data/logdir/future_jmv0.1.0_2.6/ckpt/$(cat /data/logdir/future_jmv0.1.0_2.6/ckpt/latest) \
+  --script monte_carlo
+
+
 # forex
 
   python dreamerv3/main.py \

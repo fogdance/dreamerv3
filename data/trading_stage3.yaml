@@ -54,7 +54,7 @@ DCE_JM2601: &JM
   max_long_position: 1
   max_short_position: 1
   # data_path: "180D_DCE_JM2601"
-  data_path: "8Y_DCE_JM2601"
+  data_path: "2Y_DCE_JM2601"
   data_interval: "1m"
   stop_loss_enabled: true
   stop_loss_mode: abs  # pct | abs

@@ -173,7 +173,7 @@ offline_pretrain:
   <<: *size50m
   batch_size: 32
   task: gymnasium_CustomTradingEnv-v0
-  run: {steps: 8000, train_ratio: 64, envs: 12, eval_envs: 4, actor_threads: 1}
+  run: {steps: 13000, train_ratio: 64, envs: 12, eval_envs: 4, actor_threads: 1}
   jax: {prealloc: False}
   env.gymnasium.config_path: data/trading_stage1.yaml
 
@@ -181,7 +181,7 @@ futurev2_stage1:
   <<: *size50m
   batch_size: 32
   task: gymnasium_CustomTradingEnv-v0
-  run: {steps: 7e5, train_ratio: 64, envs: 12, eval_envs: 4, actor_threads: 1}
+  run: {steps: 1e6, train_ratio: 64, envs: 12, eval_envs: 4, actor_threads: 1}
   jax: {prealloc: False}
   env.gymnasium.config_path: data/trading_stage1.yaml
 
@@ -190,7 +190,7 @@ futurev2_stage2:
   <<: *size50m
   batch_size: 32
   task: gymnasium_CustomTradingEnv-v0
-  run: {steps: 3e6, train_ratio: 64, envs: 12, eval_envs: 4, actor_threads: 1}
+  run: {steps: 2e6, train_ratio: 64, envs: 12, eval_envs: 4, actor_threads: 1}
   jax: {prealloc: False}
   env.gymnasium.config_path: data/trading_stage2.yaml
 
@@ -198,9 +198,25 @@ futurev2_stage3:
   <<: *size50m
   batch_size: 32
   task: gymnasium_CustomTradingEnv-v0
-  run: {steps: 4e6, train_ratio: 64, envs: 12, eval_envs: 4, actor_threads: 1}
+  run: {steps: 3e6, train_ratio: 64, envs: 12, eval_envs: 4, actor_threads: 1}
   jax: {prealloc: False}
   env.gymnasium.config_path: data/trading_stage3.yaml
+
+futurev2_stage4:
+  <<: *size50m
+  batch_size: 32
+  task: gymnasium_CustomTradingEnv-v0
+  run: {steps: 4e6, train_ratio: 64, envs: 12, eval_envs: 4, actor_threads: 1}
+  jax: {prealloc: False}
+  env.gymnasium.config_path: data/trading_stage4.yaml
+
+futurev2_stage5:
+  <<: *size50m
+  batch_size: 32
+  task: gymnasium_CustomTradingEnv-v0
+  run: {steps: 5e6, train_ratio: 64, envs: 12, eval_envs: 4, actor_threads: 1}
+  jax: {prealloc: False}
+  env.gymnasium.config_path: data/trading_stage5.yaml  
 
 future:
   <<: *size50m

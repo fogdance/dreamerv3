@@ -54,12 +54,12 @@ DCE_JM2601: &JM
   max_long_position: 1
   max_short_position: 1
   # data_path: "180D_DCE_JM2601"
-  data_path: "1Y_DCE_JM2601"
+  data_path: "4Y_DCE_JM2601"
   data_interval: "1m"
-  stop_loss_enabled: false
+  stop_loss_enabled: true
   stop_loss_mode: abs  # pct | abs
   stop_loss_value: 5 # pct=2%
-  take_profit_enabled: false
+  take_profit_enabled: true
   take_profit_mode: rr  
   take_profit_rr: 1.5
   is_future: true
@@ -89,7 +89,7 @@ SHFE_RB: &RB
   stop_loss_enabled: false
   stop_loss_mode: pct  # pct | abs
   stop_loss_value: 0.02 # pct=2%
-  take_profit_enabled: False
+  take_profit_enabled: false
   take_profit_mode: rr  
   take_profit_rr: 1.5
   is_future: true
