@@ -59,6 +59,8 @@ def collect_episode_returns(src_replay_dir: str):
   """
   第一遍扫描：只统计每个完整 episode 的 total reward，返回一个 np.ndarray。
   规则和 build_good_replay 完全一致：只保留“完全落在单个 chunk 内”的 episode。
+
+  额外：顺带输出一张分位数表，方便你选择 top_percent。
   """
   src_replay_dir = elements.Path(src_replay_dir)
 
@@ -102,6 +104,19 @@ def collect_episode_returns(src_replay_dir: str):
       f"max={all_returns.max():.4f}, "
       f"mean={all_returns.mean():.4f}"
     )
+
+    # ------ 这里是新增的“分位数表”输出 ------
+    # 想看哪些 percent 可以自己改这个列表
+    q_list = [50, 60, 70, 80, 85, 90, 95, 97, 99]
+    print("----------------------------------------------------------")
+    print("[filter] Percentile table (基于 episode total_reward):")
+    print("  (q 是分位数，top_pct ≈ 剩余上尾比例)")
+    for q in q_list:
+      thr = float(np.percentile(all_returns, q))
+      top_pct = 100.0 - q
+      # 示例：q=90 -> top 10% 阈值
+      print(f"    q={q:5.1f}%  ->  threshold={thr:8.4f}   (Top {top_pct:4.1f}% episodes)")
+    print("----------------------------------------------------------")
   print("==========================================================")
   return all_returns
 
@@ -161,7 +176,7 @@ def build_good_replay(
     data = ch.data
     T = ch.length
 
-    # 三个关键字段（你示例里已经确认了）
+    # 三个关键字段
     reward = np.asarray(data["reward"], dtype=np.float32)
     is_first = np.asarray(data["is_first"], dtype=bool)
     is_last = np.asarray(data["is_last"], dtype=bool)
@@ -201,10 +216,8 @@ def build_good_replay(
         # 关闭这个 episode（无论是否被保留）
         ep_start = None
 
-    # 如果 ep_start 不为 None，说明这个 episode 跨 chunk 边界，我们在这个版本里直接丢弃尾巴部分
-    # （只严格保留“完整地落在单个 chunk 内”的 episode）
+    # 跨 chunk episode 直接丢弃
     if ep_start is not None:
-      # episode 跨 chunk 边界，本版本直接丢弃不处理
       pass
 
     if (chunk_idx + 1) % 100 == 0:
