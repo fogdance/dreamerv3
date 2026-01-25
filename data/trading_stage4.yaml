@@ -54,7 +54,7 @@ DCE_JM2601: &JM
   max_long_position: 1
   max_short_position: 1
   # data_path: "180D_DCE_JM2601"
-  data_path: "4Y_DCE_JM2601"
+  data_path: "18M_DCE_JM2601"
   data_interval: "1m"
   stop_loss_enabled: true
   stop_loss_mode: abs  # pct | abs
@@ -66,6 +66,7 @@ DCE_JM2601: &JM
   obs_feature_mode: "obs"
   use_daily_context: true
   use_daily_seq_7: true
+  invalid_action_punish: 0.001
   # trading_date: "2025-12-23"
   future_symbol: "DCE.jm2601"
   session_policy:

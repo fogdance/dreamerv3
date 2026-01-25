@@ -243,6 +243,20 @@ SECONDS=0
   --configs futurev2
   echo "Total: ${SECONDS}s"
 
+[x] 模型在训练50W步后，出现不开仓的情况
+  [x]小数据，180D
+  [x]迁移学习，将replay进行离线训练, 在50m上50w步后，可以开仓
+[x] 8Y.csv 没有夜盘数据
+[] train, train_eval的ckpt不兼容
+[x] 50m最大化使用显存，增加batch_size 32-》128, envs 16-》32
+[] 2025-1是下跌趋势，模型score不高
+
+# future jm3
+  python dreamerv3/main.py \
+  --logdir /home/v/logdir/future_monte_carlo \
+  --configs future_monte_carlo \
+  --run.from_checkpoint /home/v/logdir/future/ckpt/$(cat /home/v/logdir/future/ckpt/latest) \
+  --script monte_carlo
 
 # 基准模型 A
 # jm3
