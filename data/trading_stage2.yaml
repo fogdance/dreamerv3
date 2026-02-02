@@ -45,7 +45,7 @@ EURUSD: &EURUSD
 DCE_JM2601: &JM
   currency_pair: "JM2601"
   initial_balance: 10000.0
-  trading_fee_per_lot: 3
+  trading_fee_per_lot: 6
   is_round_turn: true
   spread: 0.5
   leverage: 10
@@ -54,7 +54,7 @@ DCE_JM2601: &JM
   max_long_position: 1
   max_short_position: 1
   # data_path: "180D_DCE_JM2601"
-  data_path: "1Y_DCE_JM2601"
+  data_path: "7Y_DCE_JM2601"
   data_interval: "1m"
   stop_loss_enabled: false
   stop_loss_mode: abs  # pct | abs
@@ -114,7 +114,7 @@ risk:
 
 training:
   reward_function: "futures_intraday_reward_function"
-  window_size: 60
+  window_size: 120
   max_episode_steps: 345
   randomize_start: true
   render_mode: "none"

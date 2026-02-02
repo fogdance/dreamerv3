@@ -53,7 +53,7 @@ DCE_JM2605: &JM
   trade_lot: 1
   max_long_position: 1
   max_short_position: 1
-  data_path: "MC_DCE_JM2605"
+  data_path: "MC2_DCE_JM2605"
   data_interval: "1m"
   stop_loss_enabled: false
   stop_loss_mode: abs  # pct | abs
@@ -115,7 +115,7 @@ risk:
 
 training:
   reward_function: "futures_intraday_reward_function"
-  window_size: 60
+  window_size: 120
   max_episode_steps: 345
   randomize_start: false
   render_mode: "none"

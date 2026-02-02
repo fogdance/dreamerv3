@@ -83,7 +83,7 @@ risk:
 
 training:
   reward_function: "futures_intraday_reward_function"
-  window_size: 60
+  window_size: 120
   max_episode_steps: 345
   randomize_start: false
   render_mode: "none"

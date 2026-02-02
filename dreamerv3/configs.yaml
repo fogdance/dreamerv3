@@ -170,32 +170,32 @@ atari:
   run: {steps: 5.1e7, train_ratio: 32}
 
 offline_pretrain:
-  <<: *size50m
-  batch_size: 32
+  <<: *size200m
+  batch_size: 40
   task: gymnasium_CustomTradingEnv-v0
-  run: {steps: 13000, train_ratio: 64, envs: 12, eval_envs: 4, actor_threads: 1}
+  run: {steps: 13000, train_ratio: 64, envs: 24, eval_envs: 4, actor_threads: 1}
   jax: {prealloc: False}
   env.gymnasium.config_path: data/trading_stage1.yaml
 
 futurev2_stage1:
-  <<: *size50m
-  batch_size: 32
+  <<: *size200m
+  batch_size: 40
   task: gymnasium_CustomTradingEnv-v0
-  run: {steps: 1e6, train_ratio: 64, envs: 12, eval_envs: 4, actor_threads: 1}
+  run: {steps: 1e6, train_ratio: 64, envs: 24, eval_envs: 4, actor_threads: 1}
   jax: {prealloc: False}
   env.gymnasium.config_path: data/trading_stage1.yaml
 
 
 futurev2_stage2:
-  <<: *size50m
-  batch_size: 32
+  <<: *size200m
+  batch_size: 40
   task: gymnasium_CustomTradingEnv-v0
-  run: {steps: 2e6, train_ratio: 64, envs: 12, eval_envs: 4, actor_threads: 1}
+  run: {steps: 4e6, train_ratio: 64, envs: 24, eval_envs: 4, actor_threads: 1}
   jax: {prealloc: False}
   env.gymnasium.config_path: data/trading_stage2.yaml
 
 futurev2_stage3:
-  <<: *size50m
+  <<: *size200m
   batch_size: 32
   task: gymnasium_CustomTradingEnv-v0
   run: {steps: 3e6, train_ratio: 64, envs: 12, eval_envs: 4, actor_threads: 1}
@@ -203,7 +203,7 @@ futurev2_stage3:
   env.gymnasium.config_path: data/trading_stage3.yaml
 
 futurev2_stage4:
-  <<: *size50m
+  <<: *size200m
   batch_size: 32
   task: gymnasium_CustomTradingEnv-v0
   run: {steps: 4e6, train_ratio: 64, envs: 12, eval_envs: 4, actor_threads: 1}
@@ -211,7 +211,7 @@ futurev2_stage4:
   env.gymnasium.config_path: data/trading_stage4.yaml
 
 futurev2_stage5:
-  <<: *size50m
+  <<: *size200m
   batch_size: 32
   task: gymnasium_CustomTradingEnv-v0
   run: {steps: 5e6, train_ratio: 64, envs: 12, eval_envs: 4, actor_threads: 1}
@@ -219,7 +219,7 @@ futurev2_stage5:
   env.gymnasium.config_path: data/trading_stage5.yaml  
 
 future:
-  <<: *size50m
+  <<: *size200m
   batch_size: 32
   task: gymnasium_CustomTradingEnv-v0
   run: {steps: 2e7, train_ratio: 64, envs: 12, eval_envs: 4, actor_threads: 1}
@@ -227,7 +227,7 @@ future:
   env.gymnasium.config_path: data/trading.yaml
 
 future_live:
-  <<: *size50m
+  <<: *size200m
   batch_size: 12
   task: gymnasium_CustomTradingEnv-v0
   run: {steps: 2e7, train_ratio: 64, envs: 1, eval_envs: 0, actor_threads: 1}
@@ -235,7 +235,7 @@ future_live:
   env.gymnasium.config_path: data/live.yaml
 
 future_monte_carlo:
-  <<: *size50m
+  <<: *size200m
   batch_size: 12
   task: gymnasium_CustomTradingEnv-v0
   run: {steps: 2e7, train_ratio: 64, envs: 1, eval_envs: 0, actor_threads: 1}
@@ -243,7 +243,7 @@ future_monte_carlo:
   env.gymnasium.config_path: data/monte_carlo.yaml
 
 future_monte_carlo_rb:
-  <<: *size50m
+  <<: *size200m
   batch_size: 12
   task: gymnasium_CustomTradingEnv-v0
   run: {steps: 2e7, train_ratio: 64, envs: 1, eval_envs: 0, actor_threads: 1}
