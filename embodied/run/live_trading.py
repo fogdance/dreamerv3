@@ -1,20 +1,19 @@
 from collections import defaultdict
 from functools import partial as bind
+from datetime import datetime, time
 
 import elements
 import embodied
 import numpy as np
-from datetime import datetime, time
 
 
 def live_trading(make_agent, make_env, make_logger, args):
   """
-  专门用于实盘 / 仿真盘的 Live Runner：
+  实盘 / 仿真盘 Runner：
 
-  - 使用你的 gym_trading_env（内部已经把 JuejinBarSource + wait_kline_block 封装好）
   - 每次 driver(policy, steps=1)，只推进 1 根 K 线
-  - env.step() 里如果是 live_mode，会在 bar_source.wait_kline_block() 里阻塞到有新 K 线
-  - 无限循环，直到 Ctrl+C
+  - env.step() live_mode 下会在 wait_kline_block() 里阻塞等新 K 线
+  - 一旦 episode 结束（terminated 或 truncated），就退出主循环
   """
   assert args.from_checkpoint, "live_trading 必须从 checkpoint 启动"
 
@@ -31,6 +30,12 @@ def live_trading(make_agent, make_env, make_logger, args):
   episodes = defaultdict(elements.Agg)
   should_log = elements.when.Clock(args.log_every)
   policy_fps = elements.FPS()
+
+  # from-env 的 episode 结束信号
+  done_flag = {
+      "value": False,
+      "info": {},   # is_terminal / is_truncated 等附加信息
+  }
 
   @elements.timer.section('logfn')
   def logfn(tran, worker):
@@ -60,7 +65,20 @@ def live_trading(make_agent, make_env, make_logger, args):
         result['reward_rate'] = (np.abs(rew[1:] - rew[:-1]) >= 0.01).mean()
       epstats.add(result)
 
-  # ---- Live 模式：一般只跑 1 个 env（1 个账户 / 1 个合约） ----
+    # ============ 关键：把 done 信号传回主循环 =============
+    is_last = bool(np.asarray(tran.get('is_last', False)))
+    is_terminal = bool(np.asarray(tran.get('is_terminal', False)))
+    # 有些 wrapper 会额外塞 is_truncated，你这里 env._get_info 已经有 log/env/is_truncated
+    is_truncated = bool(np.asarray(tran.get('is_truncated', False))) if 'is_truncated' in tran else (is_last and not is_terminal)
+
+    if is_last:
+      done_flag['value'] = True
+      done_flag['info'] = dict(
+          is_terminal=is_terminal,
+          is_truncated=is_truncated,
+      )
+
+  # ---- Live 模式：强制单 env ----
   if args.envs != 1:
     print(f'[live_trading] WARNING: live 模式强制使用单 env，忽略 args.envs={args.envs}')
   fns = [bind(make_env, 0)]
@@ -78,7 +96,7 @@ def live_trading(make_agent, make_env, make_logger, args):
   print('Start LIVE trading loop (Ctrl+C to stop)')
   policy = lambda *p: agent.policy(*p, mode='eval')
 
-  # 让 driver 初始化 env 和 agent.policy 的隐状态
+  # 初始化 env + policy 状态
   driver.reset(agent.init_policy)
 
   cutoff = time(15, 0)  # 15:00
@@ -86,19 +104,23 @@ def live_trading(make_agent, make_env, make_logger, args):
 
   try:
     while True:
-      if datetime.now().time() >= cutoff and datetime.now().time() < cuton:
+      now = datetime.now().time()
+      if cutoff <= now < cuton:
         print('Reached cutoff time 15:00, exit LIVE loop.')
         break
 
-      # === 核心区别：每轮只推进 1 个 env step ===
-      #
-      # 对于 live futures：
-      #   - env.step() 内部会调用 JuejinBarSource.wait_kline_block()
-      #   - wait_kline_block() 在 DB 没有新 K 线之前会阻塞
-      #   - 一旦有新 K 线，该方法 reload window + 重建 MarketStore
-      #   - 然后 env.step() 用最新的 df_market/store 执行一次仿真 + 返回 obs
-      #
+      # 每次只走一步（当步如果没新 K，env 内部会阻塞到有新 K）
       driver(policy, steps=1)
+
+      # 如果这一步 episode 结束（爆仓 / 风控 / end_idx / session_end），就退出 live loop
+      if done_flag['value']:
+        info = done_flag.get('info', {})
+        print(
+          "[live_trading] Episode finished, exit LIVE loop: "
+          f"is_terminal={info.get('is_terminal')} "
+          f"is_truncated={info.get('is_truncated')}"
+        )
+        break
 
       if should_log(step):
         logger.add(agg.result())
