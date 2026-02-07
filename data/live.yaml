@@ -60,8 +60,8 @@ DCE_JM2605: &JM
   stop_loss_value: 0.02 # pct=2%
   is_future: true
   obs_feature_mode: "obs"
-  use_daily_context: true
-  use_daily_seq_7: true
+  use_daily_context: false
+  use_daily_seq_7: false
   max_entries_per_day: 6
   #trading_date: "2025-12-24"
   future_symbol: "DCE.jm2605"

@@ -64,8 +64,8 @@ DCE_JM2601: &JM
   take_profit_rr: 1.5
   is_future: true
   obs_feature_mode: "obs"
-  use_daily_context: true
-  use_daily_seq_7: true
+  use_daily_context: false
+  use_daily_seq_7: false
   # trading_date: "2025-12-23"
   future_symbol: "DCE.jm2601"
   session_policy:
@@ -94,8 +94,8 @@ SHFE_RB: &RB
   take_profit_rr: 1.5
   is_future: true
   obs_feature_mode: "obs"
-  use_daily_context: true
-  use_daily_seq_7: true
+  use_daily_context: false
+  use_daily_seq_7: false
   # trading_date: "2025-12-23"
   future_symbol: "SHFE.RB"
   session_policy:
