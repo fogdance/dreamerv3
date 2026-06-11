@@ -35,9 +35,19 @@ class Agent(embodied.jax.Agent):
     self.act_space = act_space
     self.config = config
 
+    assert 'action_mask' in obs_space, sorted(obs_space)
+    assert len(act_space) == 1, act_space
+    self.action_key, action_space = next(iter(act_space.items()))
+    assert action_space.discrete and action_space.shape == (), action_space
+    self.num_actions = int(np.asarray(action_space.classes).item())
+    assert obs_space['action_mask'].shape == (self.num_actions,), (
+        obs_space['action_mask'], self.num_actions)
+
     exclude = ('is_first', 'is_last', 'is_terminal', 'reward')
     enc_space = {k: v for k, v in obs_space.items() if k not in exclude}
-    dec_space = {k: v for k, v in obs_space.items() if k not in exclude}
+    dec_space = {
+        k: v for k, v in obs_space.items()
+        if k not in (*exclude, 'action_mask')}
     self.enc = {
         'simple': rssm.Encoder,
     }[config.enc.typ](enc_space, **config.enc[config.enc.typ], name='enc')
@@ -56,6 +66,9 @@ class Agent(embodied.jax.Agent):
     binary = elements.Space(bool, (), 0, 2)
     self.rew = embodied.jax.MLPHead(scalar, **config.rewhead, name='rew')
     self.con = embodied.jax.MLPHead(binary, **config.conhead, name='con')
+    avail_space = elements.Space(bool, (self.num_actions,), 0, 2)
+    self.avail = embodied.jax.MLPHead(
+        avail_space, **config.availhead, name='avail')
 
     d1, d2 = config.policy_dist_disc, config.policy_dist_cont
     outs = {k: d1 if v.discrete else d2 for k, v in act_space.items()}
@@ -72,7 +85,8 @@ class Agent(embodied.jax.Agent):
     self.advnorm = embodied.jax.Normalize(**config.advnorm, name='advnorm')
 
     self.modules = [
-        self.dyn, self.enc, self.dec, self.rew, self.con, self.pol, self.val]
+        self.dyn, self.enc, self.dec, self.rew, self.con, self.avail,
+        self.pol, self.val]
     self.opt = embodied.jax.Optimizer(
         self.modules, self._make_opt(**config.opt), summary_depth=1,
         name='opt')
@@ -122,8 +136,11 @@ class Agent(embodied.jax.Agent):
     dec_entry = {}
     if dec_carry:
       dec_carry, dec_entry, recons = self.dec(dec_carry, feat, reset, **kw)
-    policy = self.pol(self.feat2tensor(feat), bdims=1)
-    act = sample(policy)
+    policy = self._masked_policy(
+        self.pol(self.feat2tensor(feat), bdims=1), obs['action_mask'])
+    act = (
+        jax.tree.map(lambda x: x.pred(), policy)
+        if mode == 'eval' else sample(policy))
     out = {}
     out['finite'] = elements.tree.flatdict(jax.tree.map(
         lambda x: jnp.isfinite(x).all(range(1, x.ndim)),
@@ -163,7 +180,7 @@ class Agent(embodied.jax.Agent):
     # World model
     enc_carry, enc_entries, tokens = self.enc(
         enc_carry, obs, reset, training)
-    dyn_carry, dyn_entries, los, repfeat, mets = self.dyn.loss(
+    dyn_carry, dyn_entries, los, repfeat, priorfeat, mets = self.dyn.loss(
         dyn_carry, tokens, prevact, reset, training)
     losses.update(los)
     metrics.update(mets)
@@ -175,6 +192,21 @@ class Agent(embodied.jax.Agent):
     if self.config.contdisc:
       con *= 1 - 1 / self.config.horizon
     losses['con'] = self.con(self.feat2tensor(repfeat), 2).loss(con)
+    avail_target = obs['action_mask'] > 0.5
+    postinp = sg(
+        self.feat2tensor(repfeat), skip=self.config.avail_post_grad)
+    priorinp = sg(
+        self.feat2tensor(priorfeat), skip=self.config.avail_prior_grad)
+    avail_post = self.avail(postinp, 2)
+    avail_prior = self.avail(priorinp, 2)
+    losses['avail_post'] = avail_post.loss(avail_target)
+    losses['avail_prior'] = avail_prior.loss(avail_target)
+    postlogit = self._binary_logits(avail_post)
+    priorlogit = self._binary_logits(avail_prior)
+    postpred = postlogit >= 0
+    priorpred = priorlogit >= 0
+    metrics.update(self._availability_metrics('post', postpred, avail_target))
+    metrics.update(self._availability_metrics('prior', priorpred, avail_target))
     for key, recon in recons.items():
       space, value = self.obs_space[key], obs[key]
       assert value.dtype == space.dtype, (key, space, value.dtype)
@@ -189,7 +221,9 @@ class Agent(embodied.jax.Agent):
     K = min(self.config.imag_last or T, T)
     H = self.config.imag_length
     starts = self.dyn.starts(dyn_entries, dyn_carry, K)
-    policyfn = lambda feat: sample(self.pol(self.feat2tensor(feat), 1))
+    policyfn = lambda feat: sample(self._masked_policy(
+        self.pol(self.feat2tensor(feat), 1),
+        self._predicted_action_mask(feat, 1)))
     _, imgfeat, imgprevact = self.dyn.imagine(starts, policyfn, H, training)
     first = jax.tree.map(
         lambda x: x[:, -K:].reshape((B * K, 1, *x.shape[2:])), repfeat)
@@ -200,11 +234,13 @@ class Agent(embodied.jax.Agent):
     assert all(x.shape[:2] == (B * K, H + 1) for x in jax.tree.leaves(imgfeat))
     assert all(x.shape[:2] == (B * K, H + 1) for x in jax.tree.leaves(imgact))
     inp = self.feat2tensor(imgfeat)
+    imgmask, imgfallback = self._predicted_action_mask_info(imgfeat, 2)
+    imgpolicy = self._masked_policy(self.pol(inp, 2), imgmask)
     los, imgloss_out, mets = imag_loss(
         imgact,
         self.rew(inp, 2).pred(),
         self.con(inp, 2).prob(1),
-        self.pol(inp, 2),
+        imgpolicy,
         self.val(inp, 2),
         self.slowval(inp, 2),
         self.retnorm, self.valnorm, self.advnorm,
@@ -212,8 +248,14 @@ class Agent(embodied.jax.Agent):
         contdisc=self.config.contdisc,
         horizon=self.config.horizon,
         **self.config.imag_loss)
+    avail_ready = f32(self.config.avail_actor_enabled)
+    los['policy'] *= sg(f32(avail_ready))
+    los['value'] *= sg(f32(avail_ready))
     losses.update({k: v.mean(1).reshape((B, K)) for k, v in los.items()})
     metrics.update(mets)
+    metrics['avail/ready'] = avail_ready
+    metrics['avail/img_cardinality'] = f32(imgmask).sum(-1).mean()
+    metrics['avail/img_fallback_rate'] = f32(imgfallback).mean()
 
     # Replay
     if self.config.repval_loss:
@@ -243,6 +285,46 @@ class Agent(embodied.jax.Agent):
     entries = (enc_entries, dyn_entries, dec_entries)
     outs = {'tokens': tokens, 'repfeat': repfeat, 'losses': losses}
     return loss, (carry, entries, outs, metrics)
+
+  def _binary_logits(self, output):
+    while hasattr(output, 'output'):
+      output = output.output
+    return output.logit
+
+  def _availability_metrics(self, prefix_, pred, target):
+    pred = jnp.asarray(pred, bool)
+    target = jnp.asarray(target, bool)
+    false_pos = (pred & ~target).sum()
+    false_neg = (~pred & target).sum()
+    negatives = (~target).sum()
+    positives = target.sum()
+    return {
+        f'avail/{prefix_}_accuracy': (pred == target).mean(),
+        f'avail/{prefix_}_exact_accuracy': (pred == target).all(-1).mean(),
+        f'avail/{prefix_}_fpr': false_pos / jnp.maximum(1, negatives),
+        f'avail/{prefix_}_fnr': false_neg / jnp.maximum(1, positives),
+        f'avail/{prefix_}_cardinality': f32(pred).sum(-1).mean(),
+    }
+
+  def _predicted_action_mask(self, feat, bdims):
+    return self._predicted_action_mask_info(feat, bdims)[0]
+
+  def _predicted_action_mask_info(self, feat, bdims):
+    avail = self.avail(self.feat2tensor(feat), bdims)
+    prob = jax.nn.sigmoid(self._binary_logits(avail))
+    mask = prob >= self.config.avail_threshold
+    fallback_used = ~mask.any(-1)
+    fallback = jax.nn.one_hot(
+        jnp.argmax(prob, -1), self.num_actions, dtype=bool)
+    mask = jnp.where(mask.any(-1, keepdims=True), mask, fallback)
+    return sg(mask), sg(fallback_used)
+
+  def _masked_policy(self, policy, mask):
+    assert policy.keys() == {self.action_key}, policy.keys()
+    dist = policy[self.action_key]
+    masked = embodied.jax.outs.MaskedCategorical(
+        dist.logits, mask > 0.5, unimix=self.config.policy.unimix)
+    return {self.action_key: masked}
 
   def report(self, carry, data):
     if not self.config.report:

@@ -240,6 +240,24 @@ class Categorical(Output):
     return (prob * (logprob - logother)).sum(-1)
 
 
+class MaskedCategorical(Categorical):
+
+  def __init__(self, logits, mask, unimix=0.0):
+    logits = f32(logits)
+    mask = jnp.broadcast_to(jnp.asarray(mask, bool), logits.shape)
+    fallback = jax.nn.one_hot(jnp.argmax(logits, -1), logits.shape[-1], dtype=bool)
+    mask = jnp.where(mask.any(-1, keepdims=True), mask, fallback)
+    masked = jnp.where(mask, logits, f32(-1e30))
+    if unimix:
+      probs = jax.nn.softmax(masked, -1)
+      uniform = f32(mask) / f32(mask).sum(-1, keepdims=True)
+      probs = (1 - unimix) * probs + unimix * uniform
+      safe_probs = jnp.where(mask, probs, 1.0)
+      masked = jnp.where(mask, jnp.log(safe_probs), f32(-1e30))
+    self.mask = mask
+    self.logits = masked
+
+
 class OneHot(Output):
 
   def __init__(self, logits, unimix=0.0):

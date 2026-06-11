@@ -71,7 +71,7 @@ DCE_JM2605: &JM
   session_policy:
     near_eod_bars: 2
     block_open_near_eod: true
-    force_flatten_eod: true
+    force_flatten_eod: false
 
 SHFE_RB: &RB
   currency_pair: "SHFE_RB"
@@ -101,7 +101,7 @@ SHFE_RB: &RB
   session_policy:
     near_eod_bars: 2
     block_open_near_eod: true
-    force_flatten_eod: true
+    force_flatten_eod: false
 
 
 trading:

@@ -130,7 +130,11 @@ class RSSM(nj.Module):
     losses = {'dyn': dyn, 'rep': rep}
     metrics['dyn_ent'] = self._dist(prior).entropy().mean()
     metrics['rep_ent'] = self._dist(post).entropy().mean()
-    return carry, entries, losses, feat, metrics
+    priorfeat = dict(
+        deter=feat['deter'],
+        stoch=nn.cast(self._dist(prior).sample(seed=nj.seed())),
+        logit=prior)
+    return carry, entries, losses, feat, priorfeat, metrics
 
   def _core(self, deter, stoch, action):
     stoch = stoch.reshape((stoch.shape[0], -1))
