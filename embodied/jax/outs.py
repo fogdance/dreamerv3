@@ -8,6 +8,10 @@ f32 = jnp.float32
 sg = jax.lax.stop_gradient
 
 
+def _raise_empty_action_mask(mask):
+  raise ValueError(f'Action mask must be nonempty, got shape {mask.shape}')
+
+
 class Output:
 
   def __repr__(self):
@@ -242,11 +246,19 @@ class Categorical(Output):
 
 class MaskedCategorical(Categorical):
 
-  def __init__(self, logits, mask, unimix=0.0):
+  def __init__(self, logits, mask, unimix=0.0, allow_fallback=False):
     logits = f32(logits)
     mask = jnp.broadcast_to(jnp.asarray(mask, bool), logits.shape)
-    fallback = jax.nn.one_hot(jnp.argmax(logits, -1), logits.shape[-1], dtype=bool)
-    mask = jnp.where(mask.any(-1, keepdims=True), mask, fallback)
+    nonempty = mask.any(-1, keepdims=True)
+    if allow_fallback:
+      fallback = jax.nn.one_hot(
+          jnp.argmax(logits, -1), logits.shape[-1], dtype=bool)
+      mask = jnp.where(nonempty, mask, fallback)
+    else:
+      def fail(_):
+        jax.debug.callback(_raise_empty_action_mask, mask)
+        return i32(0)
+      jax.lax.cond(nonempty.all(), lambda _: i32(0), fail, None)
     masked = jnp.where(mask, logits, f32(-1e30))
     if unimix:
       probs = jax.nn.softmax(masked, -1)

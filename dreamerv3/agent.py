@@ -21,6 +21,15 @@ concat = lambda xs, a: jax.tree.map(lambda *x: jnp.concatenate(x, a), *xs)
 isimage = lambda s: s.dtype == np.uint8 and len(s.shape) == 3
 
 
+def hard_nonempty_mask(prob, threshold):
+  mask = prob >= threshold
+  fallback_used = ~mask.any(-1)
+  fallback = jax.nn.one_hot(
+      jnp.argmax(prob, -1), prob.shape[-1], dtype=bool)
+  mask = jnp.where(mask.any(-1, keepdims=True), mask, fallback)
+  return sg(mask), sg(fallback_used)
+
+
 class Agent(embodied.jax.Agent):
 
   banner = [
@@ -137,7 +146,8 @@ class Agent(embodied.jax.Agent):
     if dec_carry:
       dec_carry, dec_entry, recons = self.dec(dec_carry, feat, reset, **kw)
     policy = self._masked_policy(
-        self.pol(self.feat2tensor(feat), bdims=1), obs['action_mask'])
+        self.pol(self.feat2tensor(feat), bdims=1), obs['action_mask'],
+        allow_fallback=False)
     act = (
         jax.tree.map(lambda x: x.pred(), policy)
         if mode == 'eval' else sample(policy))
@@ -223,7 +233,8 @@ class Agent(embodied.jax.Agent):
     starts = self.dyn.starts(dyn_entries, dyn_carry, K)
     policyfn = lambda feat: sample(self._masked_policy(
         self.pol(self.feat2tensor(feat), 1),
-        self._predicted_action_mask(feat, 1)))
+        self._predicted_action_mask(feat, 1),
+        allow_fallback=True))
     _, imgfeat, imgprevact = self.dyn.imagine(starts, policyfn, H, training)
     first = jax.tree.map(
         lambda x: x[:, -K:].reshape((B * K, 1, *x.shape[2:])), repfeat)
@@ -235,7 +246,8 @@ class Agent(embodied.jax.Agent):
     assert all(x.shape[:2] == (B * K, H + 1) for x in jax.tree.leaves(imgact))
     inp = self.feat2tensor(imgfeat)
     imgmask, imgfallback = self._predicted_action_mask_info(imgfeat, 2)
-    imgpolicy = self._masked_policy(self.pol(inp, 2), imgmask)
+    imgpolicy = self._masked_policy(
+        self.pol(inp, 2), imgmask, allow_fallback=True)
     los, imgloss_out, mets = imag_loss(
         imgact,
         self.rew(inp, 2).pred(),
@@ -273,6 +285,7 @@ class Agent(embodied.jax.Agent):
           update=training,
           horizon=self.config.horizon,
           **self.config.repl_loss)
+      los['repval'] *= sg(avail_ready)
       losses.update(los)
       metrics.update(prefix(mets, 'reploss'))
 
@@ -312,18 +325,14 @@ class Agent(embodied.jax.Agent):
   def _predicted_action_mask_info(self, feat, bdims):
     avail = self.avail(self.feat2tensor(feat), bdims)
     prob = jax.nn.sigmoid(self._binary_logits(avail))
-    mask = prob >= self.config.avail_threshold
-    fallback_used = ~mask.any(-1)
-    fallback = jax.nn.one_hot(
-        jnp.argmax(prob, -1), self.num_actions, dtype=bool)
-    mask = jnp.where(mask.any(-1, keepdims=True), mask, fallback)
-    return sg(mask), sg(fallback_used)
+    return hard_nonempty_mask(prob, self.config.avail_threshold)
 
-  def _masked_policy(self, policy, mask):
+  def _masked_policy(self, policy, mask, allow_fallback):
     assert policy.keys() == {self.action_key}, policy.keys()
     dist = policy[self.action_key]
     masked = embodied.jax.outs.MaskedCategorical(
-        dist.logits, mask > 0.5, unimix=self.config.policy.unimix)
+        dist.logits, mask > 0.5, unimix=self.config.policy.unimix,
+        allow_fallback=allow_fallback)
     return {self.action_key: masked}
 
   def report(self, carry, data):

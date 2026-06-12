@@ -14,6 +14,11 @@ defaults:
   consec_report: 1
   replay_context: 1
   random_agent: False
+  action_mask_asset:
+    required: False
+    directory: ''
+    checkpoint: ''
+    window: 5
   clock_addr: ''
   clock_port: ''
   ipv6: False
@@ -399,9 +404,11 @@ availability_warmup:
 
 masked_actor_training:
   agent.avail_actor_enabled: True
+  action_mask_asset.required: True
 
 action_mask_overnight:
   <<: *size1m
+  task: gymnasium_CustomTradingEnv-v0
   batch_size: 8
   batch_length: 32
   report_length: 32
@@ -419,3 +426,28 @@ action_mask_overnight:
   jax: {platform: cpu, prealloc: False}
   env.gymnasium.config_path: data/trading_stage1.yaml
   agent.avail_actor_enabled: False
+
+action_mask_formal:
+  <<: *size1m
+  task: gymnasium_CustomTradingEnv-v0
+  batch_size: 8
+  batch_length: 32
+  report_length: 32
+  replay.size: 2e5
+  run:
+    steps: 2e6
+    train_ratio: 8
+    envs: 2
+    eval_envs: 1
+    actor_threads: 1
+    log_every: 30
+    report_every: 300
+    save_every: 600
+    debug: True
+  jax: {platform: cpu, prealloc: False}
+  env.gymnasium.config_path: data/trading_stage1.yaml
+  agent.avail_actor_enabled: True
+  action_mask_asset:
+    required: True
+    directory: /data/logdir/action-mask-overnight-20260611
+    checkpoint: 20260612T074327F248745

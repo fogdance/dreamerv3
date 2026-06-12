@@ -30,3 +30,22 @@ def test_masked_categorical_unimix_and_gradients_stay_inside_valid_set():
           value, mask, unimix=0.2).logp(jnp.array(1)))(logits)
   assert np.isfinite(np.asarray(grad)).all()
   assert float(grad[0]) == 0.0
+
+
+def test_strict_mask_rejects_all_false_input():
+  try:
+    MaskedCategorical(
+        jnp.array([1.0, 3.0, 2.0]),
+        jnp.array([False, False, False]))
+  except Exception as exc:
+    assert 'Action mask must be nonempty' in str(exc)
+  else:
+    raise AssertionError('Strict action mask accepted all-false input')
+
+
+def test_predicted_mask_mode_falls_back_to_best_logit():
+  dist = MaskedCategorical(
+      jnp.array([1.0, 3.0, 2.0]),
+      jnp.array([False, False, False]),
+      allow_fallback=True)
+  assert int(dist.pred()) == 1
