@@ -5,6 +5,8 @@ import elements
 import embodied
 import numpy as np
 
+from .action_mask_warmup import ActionMaskWarmup, METRICS
+
 
 def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
 
@@ -16,10 +18,14 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
   step = logger.step
   usage = elements.Usage(**args.usage)
   train_agg = elements.Agg()
+  warmup_agg = elements.Agg()
+  warmup_samples = [0]
   epstats = elements.Agg()
   episodes = collections.defaultdict(elements.Agg)
   policy_fps = elements.FPS()
   train_fps = elements.FPS()
+  warmup = ActionMaskWarmup(
+      args.action_mask_warmup, args.action_mask_actor_initial)
 
   batch_steps = args.batch_size * args.batch_length
   should_train = elements.when.Ratio(args.train_ratio / batch_steps)
@@ -105,17 +111,29 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
       if 'replay' in outs:
         replay.update(outs['replay'])
       train_agg.add(mets, prefix='train')
+      if warmup.enabled:
+        warmup_agg.add({
+            key: mets[key]
+            for key, _ in METRICS.values() if key in mets})
+        warmup_samples[0] += batch_steps
   driver.on_step(trainfn)
 
   cp = elements.Checkpoint(logdir / 'ckpt')
   cp.step = step
   cp.agent = agent
   cp.replay = replay
+  cp.action_mask_warmup = warmup
   if args.from_checkpoint:
     regex = args.get('from_checkpoint_regex', None)
     elements.checkpoint.load(args.from_checkpoint, dict(
         agent=bind(agent.load, regex=regex)))
   cp.load_or_save()
+  if warmup.enabled:
+    if not hasattr(agent, 'set_avail_actor_enabled'):
+      raise TypeError("Auto action-mask warm-up requires a compatible agent")
+    agent.set_avail_actor_enabled(warmup.actor_enabled)
+    phase = 'formal' if warmup.actor_enabled else 'warm-up'
+    print(f'Action-mask training phase: {phase}')
 
   print('Start training loop')
   policy = lambda *args: agent.policy(*args, mode='train')
@@ -129,7 +147,24 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
       for _ in range(args.consec_report * args.report_batches):
         carry_report, mets = agent.report(carry_report, next(stream_report))
         agg.add(mets)
-      logger.add(agg.result(), prefix='report')
+      report = agg.result()
+      logger.add(report, prefix='report')
+      switched = False
+      if warmup.ready(warmup_samples[0]):
+        gate_metrics = warmup_agg.result()
+        warmup_samples[0] = 0
+        gate_metrics = {
+            key: gate_metrics[key]
+            for key, _ in METRICS.values() if key in gate_metrics}
+        logger.add(gate_metrics, prefix='action_mask_gate_eval')
+        switched = warmup.update(gate_metrics, step)
+      warmup_metrics = warmup.metrics()
+      warmup_metrics['pending_train_samples'] = warmup_samples[0]
+      logger.add(warmup_metrics, prefix='action_mask_warmup')
+      if switched:
+        agent.set_avail_actor_enabled(True)
+        print(f'Action-mask warm-up passed; masked actor enabled at step {int(step)}')
+        cp.save()
 
     if should_log(step):
       logger.add(train_agg.result())

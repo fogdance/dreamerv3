@@ -323,6 +323,17 @@ class Agent(embodied.Agent):
     mets['params/summary'] = self._summary()
     return carry, mets
 
+  def set_avail_actor_enabled(self, enabled):
+    key = 'avail_actor_gate/value'
+    if key not in self.params:
+      raise KeyError(f'Agent does not expose {key}')
+    with self.train_lock:
+      value = np.asarray(float(enabled), np.float32)
+      old = self.params[key]
+      self.params[key] = internal.device_put(
+          value, self.train_params_sharding[key])
+      old.delete()
+
   def stream(self, st):
     def fn(data):
       for key, value in data.items():

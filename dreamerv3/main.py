@@ -18,7 +18,6 @@ import gym_trading_env
 
 def main(argv=None):
   from .agent import Agent
-  from .action_mask_asset import require_masked_actor_asset
   [elements.print(line) for line in Agent.banner]
 
   configs = elements.Path(folder / 'configs.yaml').read()
@@ -28,7 +27,6 @@ def main(argv=None):
   for name in parsed.configs:
     config = config.update(configs[name])
   config = elements.Flags(config).parse(other)
-  config = require_masked_actor_asset(config)
   config = config.update(logdir=(
       config.logdir.format(timestamp=elements.timestamp())))
 
@@ -66,6 +64,8 @@ def main(argv=None):
       consec_train=config.consec_train,
       consec_report=config.consec_report,
       replay_context=config.replay_context,
+      action_mask_warmup=config.action_mask_warmup,
+      action_mask_actor_initial=config.agent.avail_actor_enabled,
   )
 
   if config.script == 'train':

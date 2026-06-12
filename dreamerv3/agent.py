@@ -92,6 +92,9 @@ class Agent(embodied.jax.Agent):
     self.retnorm = embodied.jax.Normalize(**config.retnorm, name='retnorm')
     self.valnorm = embodied.jax.Normalize(**config.valnorm, name='valnorm')
     self.advnorm = embodied.jax.Normalize(**config.advnorm, name='advnorm')
+    self.avail_actor_gate = nj.Variable(
+        jnp.array, float(config.avail_actor_enabled), f32,
+        name='avail_actor_gate')
 
     self.modules = [
         self.dyn, self.enc, self.dec, self.rew, self.con, self.avail,
@@ -260,7 +263,7 @@ class Agent(embodied.jax.Agent):
         contdisc=self.config.contdisc,
         horizon=self.config.horizon,
         **self.config.imag_loss)
-    avail_ready = f32(self.config.avail_actor_enabled)
+    avail_ready = self.avail_actor_gate.read()
     los['policy'] *= sg(f32(avail_ready))
     los['value'] *= sg(f32(avail_ready))
     losses.update({k: v.mean(1).reshape((B, K)) for k, v in los.items()})
