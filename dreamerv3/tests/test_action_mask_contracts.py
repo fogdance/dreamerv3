@@ -208,6 +208,26 @@ def test_rssm_imagination_actions_use_current_not_next_latent():
   assert np.any(np.asarray(expected) != np.asarray(next_actions))
 
 
+def test_rssm_imagination_preserves_policy_mask_with_sampled_action():
+  dyn = _make_rssm()
+  start = dyn.initial(3)
+  start['stoch'] = jnp.repeat(
+      jax.nn.one_hot(jnp.arange(3), 3)[:, None, :], 2, axis=1)
+
+  def policy(feat):
+    action = jnp.argmax(feat['stoch'][..., 0, :], -1).astype(jnp.int32)
+    mask = jax.nn.one_hot(action, 3, dtype=bool)
+    return {'action': action, '_action_mask': mask}
+
+  imagine_fn = lambda carry: dyn.imagine(carry, policy, 4, False)
+  params = nj.init(imagine_fn)({}, start, seed=0)
+  _, (_, _, imgact) = nj.pure(imagine_fn)(params, start, seed=1)
+
+  chosen_valid = jnp.take_along_axis(
+      imgact['_action_mask'], imgact['action'][..., None], -1)[..., 0]
+  assert np.asarray(chosen_valid).all()
+
+
 def test_actor_hard_mask_has_zero_availability_gradient():
   avail_logits = jnp.asarray([2.0, 1.0, -2.0])
   policy_logits = jnp.asarray([0.2, -0.3, 4.0])

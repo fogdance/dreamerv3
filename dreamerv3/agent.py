@@ -19,6 +19,8 @@ sample = lambda xs: jax.tree.map(lambda x: x.sample(nj.seed()), xs)
 prefix = lambda xs, p: {f'{p}/{k}': v for k, v in xs.items()}
 concat = lambda xs, a: jax.tree.map(lambda *x: jnp.concatenate(x, a), *xs)
 isimage = lambda s: s.dtype == np.uint8 and len(s.shape) == 3
+IMAG_ACTION_MASK = '_action_mask'
+IMAG_MASK_FALLBACK = '_action_mask_fallback'
 
 
 def hard_nonempty_mask(prob, threshold):
@@ -234,10 +236,7 @@ class Agent(embodied.jax.Agent):
     K = min(self.config.imag_last or T, T)
     H = self.config.imag_length
     starts = self.dyn.starts(dyn_entries, dyn_carry, K)
-    policyfn = lambda feat: sample(self._masked_policy(
-        self.pol(self.feat2tensor(feat), 1),
-        self._predicted_action_mask(feat, 1),
-        allow_fallback=True))
+    policyfn = lambda feat: self._sample_imag_action(feat, 1)
     _, imgfeat, imgprevact = self.dyn.imagine(starts, policyfn, H, training)
     first = jax.tree.map(
         lambda x: x[:, -K:].reshape((B * K, 1, *x.shape[2:])), repfeat)
@@ -245,10 +244,11 @@ class Agent(embodied.jax.Agent):
     lastact = policyfn(jax.tree.map(lambda x: x[:, -1], imgfeat))
     lastact = jax.tree.map(lambda x: x[:, None], lastact)
     imgact = concat([imgprevact, lastact], 1)
+    imgmask = imgact.pop(IMAG_ACTION_MASK)
+    imgfallback = imgact.pop(IMAG_MASK_FALLBACK)
     assert all(x.shape[:2] == (B * K, H + 1) for x in jax.tree.leaves(imgfeat))
     assert all(x.shape[:2] == (B * K, H + 1) for x in jax.tree.leaves(imgact))
     inp = self.feat2tensor(imgfeat)
-    imgmask, imgfallback = self._predicted_action_mask_info(imgfeat, 2)
     imgpolicy = self._masked_policy(
         self.pol(inp, 2), imgmask, allow_fallback=True)
     los, imgloss_out, mets = imag_loss(
@@ -271,6 +271,9 @@ class Agent(embodied.jax.Agent):
     metrics['avail/ready'] = avail_ready
     metrics['avail/img_cardinality'] = f32(imgmask).sum(-1).mean()
     metrics['avail/img_fallback_rate'] = f32(imgfallback).mean()
+    action_valid = jnp.take_along_axis(
+        imgmask, imgact[self.action_key][..., None], -1)[..., 0]
+    metrics['avail/img_action_invalid_rate'] = f32(~action_valid).mean()
 
     # Replay
     if self.config.repval_loss:
@@ -329,6 +332,18 @@ class Agent(embodied.jax.Agent):
     avail = self.avail(self.feat2tensor(feat), bdims)
     prob = jax.nn.sigmoid(self._binary_logits(avail))
     return hard_nonempty_mask(prob, self.config.avail_threshold)
+
+  def _sample_imag_action(self, feat, bdims):
+    mask, fallback = self._predicted_action_mask_info(feat, bdims)
+    action = sample(self._masked_policy(
+        self.pol(self.feat2tensor(feat), bdims),
+        mask,
+        allow_fallback=True))
+    return {
+        **action,
+        IMAG_ACTION_MASK: mask,
+        IMAG_MASK_FALLBACK: fallback,
+    }
 
   def _masked_policy(self, policy, mask, allow_fallback):
     assert policy.keys() == {self.action_key}, policy.keys()

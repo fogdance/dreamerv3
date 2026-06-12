@@ -12,6 +12,12 @@ def _raise_empty_action_mask(mask):
   raise ValueError(f'Action mask must be nonempty, got shape {mask.shape}')
 
 
+def _raise_invalid_masked_action(event, mask):
+  raise ValueError(
+      f'Action must be valid under its mask, got event shape {event.shape} '
+      f'and mask shape {mask.shape}')
+
+
 class Output:
 
   def __repr__(self):
@@ -268,6 +274,17 @@ class MaskedCategorical(Categorical):
       masked = jnp.where(mask, jnp.log(safe_probs), f32(-1e30))
     self.mask = mask
     self.logits = masked
+
+  def logp(self, event):
+    onehot = jax.nn.one_hot(event, self.logits.shape[-1], dtype=bool)
+    valid = (onehot & self.mask).any(-1)
+
+    def fail(_):
+      jax.debug.callback(_raise_invalid_masked_action, event, self.mask)
+      return i32(0)
+
+    jax.lax.cond(valid.all(), lambda _: i32(0), fail, None)
+    return super().logp(event)
 
 
 class OneHot(Output):

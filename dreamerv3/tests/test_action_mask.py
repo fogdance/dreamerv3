@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from embodied.jax.outs import MaskedCategorical
 
@@ -49,3 +50,20 @@ def test_predicted_mask_mode_falls_back_to_best_logit():
       jnp.array([False, False, False]),
       allow_fallback=True)
   assert int(dist.pred()) == 1
+
+
+def test_masked_categorical_rejects_action_invalid_under_loss_mask():
+  logits = jnp.array([3.0, 2.0, 1.0])
+  sample_dist = MaskedCategorical(
+      logits,
+      jnp.array([True, False, False]),
+      allow_fallback=True)
+  action = sample_dist.pred()
+  assert int(action) == 0
+
+  loss_dist = MaskedCategorical(
+      logits,
+      jnp.array([False, True, False]),
+      allow_fallback=True)
+  with pytest.raises(Exception, match='Action must be valid under its mask'):
+    loss_dist.logp(action)
