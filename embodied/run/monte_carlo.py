@@ -41,6 +41,17 @@ def _get(tran, key, default=np.nan):
   return _scalar(tran.get(key, None), default=default)
 
 
+def _require_formal_actor(agent):
+  if not hasattr(agent, "get_avail_actor_enabled"):
+    raise TypeError(
+        "Monte Carlo evaluation requires an agent that exposes "
+        "get_avail_actor_enabled()")
+  if not agent.get_avail_actor_enabled():
+    raise RuntimeError(
+        "Monte Carlo evaluation requires a formal masked-actor checkpoint; "
+        "loaded checkpoint has avail_actor_gate/value=0")
+
+
 def monte_carlo(make_agent, make_env, make_logger, args):
   """
   Monte Carlo evaluation runner (no training, no replay, no DB).
@@ -61,6 +72,7 @@ def monte_carlo(make_agent, make_env, make_logger, args):
     regex = args.get('from_checkpoint_regex', None)
     elements.checkpoint.load(args.from_checkpoint, dict(
         agent=bind(agent.load, regex=regex)))
+    _require_formal_actor(agent)
   else:
     raise ValueError("MC requires --run.from_checkpoint (policy must be loaded)")
 

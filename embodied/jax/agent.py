@@ -334,6 +334,14 @@ class Agent(embodied.Agent):
           value, self.train_params_sharding[key])
       old.delete()
 
+  def get_avail_actor_enabled(self):
+    key = 'avail_actor_gate/value'
+    if key not in self.params:
+      raise KeyError(f'Agent does not expose {key}')
+    with self.train_lock:
+      value = jax.device_get(self.params[key])
+    return bool(np.asarray(value).item())
+
   def stream(self, st):
     def fn(data):
       for key, value in data.items():
