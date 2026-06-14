@@ -72,6 +72,7 @@ defaults:
     eval_eps: 1
     report_batches: 1
     from_checkpoint: ''
+    checkpoint_retention: {enabled: False, steps: [0], directory: ckpt_retained}
     episode_timeout: 180
     actor_addr: 'localhost:{auto}'
     replay_addr: 'localhost:{auto}'
@@ -411,7 +412,13 @@ action_mask_formal:
   <<: *size50m
   task: gymnasium_CustomTradingEnv-v0
   batch_size: 32
-  run: {steps: 1e6, train_ratio: 64, envs: 16, eval_envs: 4, actor_threads: 1}
+  run:
+    steps: 1e6
+    train_ratio: 64
+    envs: 16
+    eval_envs: 4
+    actor_threads: 1
+    checkpoint_retention: {enabled: True, steps: [5e5, 7e5, 9e5], directory: ckpt_retained}
   jax: {prealloc: False}
   env.gymnasium.config_path: data/trading_stage1.yaml
   action_mask_warmup.enabled: True

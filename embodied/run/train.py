@@ -6,6 +6,7 @@ import embodied
 import numpy as np
 
 from .action_mask_warmup import ActionMaskWarmup, METRICS
+from .checkpoint_retention import StepCheckpointRetention
 
 
 def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
@@ -32,6 +33,8 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
   should_log = embodied.LocalClock(args.log_every)
   should_report = embodied.LocalClock(args.report_every)
   should_save = embodied.LocalClock(args.save_every)
+  retention = StepCheckpointRetention(
+      logdir, args.get('checkpoint_retention', {}))
 
   @elements.timer.section('logfn')
   def logfn(tran, worker):
@@ -118,7 +121,7 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
         warmup_samples[0] += batch_steps
   driver.on_step(trainfn)
 
-  cp = elements.Checkpoint(logdir / 'ckpt')
+  cp = elements.Checkpoint(logdir / 'ckpt', step=step)
   cp.step = step
   cp.agent = agent
   cp.replay = replay
@@ -127,7 +130,12 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     regex = args.get('from_checkpoint_regex', None)
     elements.checkpoint.load(args.from_checkpoint, dict(
         agent=bind(agent.load, regex=regex)))
+  def save_checkpoint():
+    cp.save()
+    retention.maybe_retain(cp, step)
+
   cp.load_or_save()
+  retention.maybe_retain(cp, step)
   if warmup.enabled:
     if not hasattr(agent, 'set_avail_actor_enabled'):
       raise TypeError("Auto action-mask warm-up requires a compatible agent")
@@ -164,7 +172,7 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
       if switched:
         agent.set_avail_actor_enabled(True)
         print(f'Action-mask warm-up passed; masked actor enabled at step {int(step)}')
-        cp.save()
+        save_checkpoint()
 
     if should_log(step):
       logger.add(train_agg.result())
@@ -177,6 +185,9 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
       logger.write()
 
     if should_save(step):
-      cp.save()
+      save_checkpoint()
+
+  if retention.has_due(step):
+    save_checkpoint()
 
   logger.close()
