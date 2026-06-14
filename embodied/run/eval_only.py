@@ -5,6 +5,8 @@ import elements
 import embodied
 import numpy as np
 
+from .action_mask_guard import require_formal_actor
+
 
 def eval_only(make_agent, make_env, make_logger, args):
   assert args.from_checkpoint
@@ -59,6 +61,7 @@ def eval_only(make_agent, make_env, make_logger, args):
   cp = elements.Checkpoint()
   cp.agent = agent
   cp.load(args.from_checkpoint, keys=['agent'])
+  require_formal_actor(agent, "eval_only")
 
   print('Start evaluation')
   policy = lambda *args: agent.policy(*args, mode='eval')

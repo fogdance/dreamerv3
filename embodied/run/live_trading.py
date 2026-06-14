@@ -6,6 +6,8 @@ import elements
 import embodied
 import numpy as np
 
+from .action_mask_guard import require_formal_actor
+
 
 def live_trading(make_agent, make_env, make_logger, args):
   """
@@ -92,6 +94,7 @@ def live_trading(make_agent, make_env, make_logger, args):
   cp = elements.Checkpoint()
   cp.agent = agent
   cp.load(args.from_checkpoint, keys=['agent'])
+  require_formal_actor(agent, "live_trading")
 
   print('Start LIVE trading loop (Ctrl+C to stop)')
   policy = lambda *p: agent.policy(*p, mode='eval')

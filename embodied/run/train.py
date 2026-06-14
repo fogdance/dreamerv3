@@ -9,6 +9,18 @@ from .action_mask_warmup import ActionMaskWarmup, METRICS
 from .checkpoint_retention import StepCheckpointRetention
 
 
+def _apply_action_mask_warmup_gate(agent, warmup, step):
+  if not warmup.enabled:
+    return
+  if not hasattr(agent, 'set_avail_actor_enabled'):
+    raise TypeError("Auto action-mask warm-up requires a compatible agent")
+  if hasattr(agent, 'get_avail_actor_enabled') and agent.get_avail_actor_enabled():
+    warmup.actor_enabled = True
+    if warmup.switched_step < 0:
+      warmup.switched_step = int(step)
+  agent.set_avail_actor_enabled(warmup.actor_enabled)
+
+
 def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
 
   agent = make_agent()
@@ -137,9 +149,7 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
   cp.load_or_save()
   retention.maybe_retain(cp, step)
   if warmup.enabled:
-    if not hasattr(agent, 'set_avail_actor_enabled'):
-      raise TypeError("Auto action-mask warm-up requires a compatible agent")
-    agent.set_avail_actor_enabled(warmup.actor_enabled)
+    _apply_action_mask_warmup_gate(agent, warmup, step)
     phase = 'formal' if warmup.actor_enabled else 'warm-up'
     print(f'Action-mask training phase: {phase}')
 

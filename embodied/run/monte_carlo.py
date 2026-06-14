@@ -9,6 +9,8 @@ import embodied
 import numpy as np
 from decimal import Decimal
 
+from .action_mask_guard import require_formal_actor
+
 def _scalar(x, default=float("nan")):
   if x is None:
     return default
@@ -42,14 +44,7 @@ def _get(tran, key, default=np.nan):
 
 
 def _require_formal_actor(agent):
-  if not hasattr(agent, "get_avail_actor_enabled"):
-    raise TypeError(
-        "Monte Carlo evaluation requires an agent that exposes "
-        "get_avail_actor_enabled()")
-  if not agent.get_avail_actor_enabled():
-    raise RuntimeError(
-        "Monte Carlo evaluation requires a formal masked-actor checkpoint; "
-        "loaded checkpoint has avail_actor_gate/value=0")
+  require_formal_actor(agent, "Monte Carlo evaluation")
 
 
 def monte_carlo(make_agent, make_env, make_logger, args):
