@@ -62,6 +62,60 @@ def test_step_checkpoint_retention_accepts_comma_separated_steps(tmp_path):
   assert (tmp_path / 'ckpt_retained' / 'step_000000000700').is_dir()
 
 
+def test_step_checkpoint_retention_writes_seed_metadata(tmp_path):
+  source = tmp_path / 'ckpt' / 'source'
+  source.mkdir(parents=True)
+  (source / 'done').write_text('')
+  metadata = {
+      'experiment_seed': 101,
+      'dreamer_seed': 101,
+      'train_env_seed': 101101,
+      'replay_seed': 101202,
+      'eval_env_seed': 0,
+      'matched_random_seed': 20260615,
+  }
+
+  retention = StepCheckpointRetention(tmp_path, {
+      'enabled': True,
+      'steps': [10],
+      'directory': 'ckpt_retained',
+  }, metadata=metadata)
+  retention.maybe_retain(FakeCheckpoint(source), 12)
+
+  manifest = json.loads(
+      (tmp_path / 'ckpt_retained' / 'retention_manifest.json').read_text())
+  assert manifest['metadata'] == metadata
+  assert manifest['targets']['10']['retained_at_step'] == 12
+
+
+def test_step_checkpoint_retention_seed_metadata_is_repeatable(tmp_path):
+  metadata = {
+      'experiment_seed': 101,
+      'dreamer_seed': 101,
+      'train_env_seed': 101101,
+      'replay_seed': 101202,
+      'eval_env_seed': 0,
+      'matched_random_seed': 20260615,
+  }
+  manifests = []
+  for name in ('run_a', 'run_b'):
+    root = tmp_path / name
+    source = root / 'ckpt' / 'source'
+    source.mkdir(parents=True)
+    (source / 'done').write_text('')
+    retention = StepCheckpointRetention(root, {
+        'enabled': True,
+        'steps': [10],
+        'directory': 'ckpt_retained',
+    }, metadata=metadata)
+    retention.maybe_retain(FakeCheckpoint(source), 12)
+    manifest = json.loads(
+        (root / 'ckpt_retained' / 'retention_manifest.json').read_text())
+    manifests.append(manifest['metadata'])
+
+  assert manifests == [metadata, metadata]
+
+
 class MinimalAgent:
 
   def __init__(self, obs_space, act_space):
@@ -154,6 +208,13 @@ def test_train_loop_retains_step_targets_and_final_due_target(tmp_path):
       consec_report=1,
       checkpoint_retention=dict(
           enabled=True, steps=[200, 500, 900], directory='ckpt_retained'),
+      seed_protocol=dict(
+          experiment_seed=101,
+          dreamer_seed=101,
+          train_env_seed=101101,
+          replay_seed=101202,
+          eval_env_seed=0,
+          matched_random_seed=20260615),
       action_mask_warmup=warmup_config,
       action_mask_actor_initial=False,
   )
@@ -198,6 +259,8 @@ def test_train_loop_retains_step_targets_and_final_due_target(tmp_path):
   ]
   manifest = json.loads(
       (tmp_path / 'ckpt_retained' / 'retention_manifest.json').read_text())
+  assert manifest['metadata']['dreamer_seed'] == 101
+  assert manifest['metadata']['replay_seed'] == 101202
   assert sorted(manifest['targets']) == ['200', '500', '900']
   for target, record in manifest['targets'].items():
     assert pathlib.Path(record['path']).is_dir()

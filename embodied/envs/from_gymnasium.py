@@ -9,6 +9,8 @@ import numpy as np
 class FromGymnasium(embodied.Env):
 
   def __init__(self, env, obs_key='image', act_key='action', **kwargs):
+    self._reset_seed = kwargs.pop('reset_seed', None)
+    self._reset_seed_used = False
     if isinstance(env, str):
       self._env = gym.make(env, **kwargs)
     else:
@@ -58,7 +60,11 @@ class FromGymnasium(embodied.Env):
     do_reset = bool(np.asarray(action['reset']).item()) if 'reset' in action else False
     if do_reset or self._done:
       self._done = False
-      obs, info = self._env.reset()
+      if self._reset_seed is not None and not self._reset_seed_used:
+        obs, info = self._env.reset(seed=int(self._reset_seed))
+        self._reset_seed_used = True
+      else:
+        obs, info = self._env.reset()
       self._info = info or {}
       return self._obs(obs, 0.0, is_first=True)
     if self._act_dict:

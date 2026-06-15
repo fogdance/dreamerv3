@@ -6,9 +6,10 @@ import time
 
 class StepCheckpointRetention:
 
-  def __init__(self, logdir, config):
+  def __init__(self, logdir, config, metadata=None):
     self._logdir = pathlib.Path(logdir)
     self._config = config or {}
+    self._metadata = dict(metadata or {})
     self._enabled = bool(self._get('enabled', False))
     self._targets = (
         self._parse_steps(self._get('steps', [])) if self._enabled else [])
@@ -84,6 +85,7 @@ class StepCheckpointRetention:
         'enabled': self._enabled,
         'directory': str(self._directory),
         'configured_steps': self._targets,
+        'metadata': self._metadata,
         'targets': {},
     }
 
@@ -92,6 +94,7 @@ class StepCheckpointRetention:
         'enabled': self._enabled,
         'directory': str(self._directory),
         'configured_steps': self._targets,
+        'metadata': self._metadata,
     })
     self._manifest_path.write_text(json.dumps(
         self._manifest, ensure_ascii=False, indent=2))

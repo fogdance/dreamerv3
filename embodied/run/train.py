@@ -46,7 +46,8 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
   should_report = embodied.LocalClock(args.report_every)
   should_save = embodied.LocalClock(args.save_every)
   retention = StepCheckpointRetention(
-      logdir, args.get('checkpoint_retention', {}))
+      logdir, args.get('checkpoint_retention', {}),
+      metadata=args.get('seed_protocol', {}))
 
   @elements.timer.section('logfn')
   def logfn(tran, worker):

@@ -5,7 +5,40 @@ defaults:
   replicas: 1
   method: name
   task: dummy_disc
+  # Internal Dreamer/JAX seed, synchronized from dreamer.seed at launch.
   seed: 0
+  experiment_seed: 0
+  dreamer:
+    seed: 0
+  audit:
+    matched_random_seed: 20260615
+    entry_eval_version: ''
+    split_manifest_hash: ''
+    execution_timing: ''
+  seed_protocol:
+    experiment_seed: 0
+    dreamer_seed: 0
+    train_env_seed: 101
+    replay_seed: 202
+    eval_env_seed: 0
+    matched_random_seed: 20260615
+    config_seed: 0
+    config_seed_sync: ''
+    dreamer_seed_source: dreamer.seed
+    train_env_seed_source: experiment_seed*1000+101
+    replay_seed_source: experiment_seed*1000+202
+    eval_env_seed_source: env.eval_seed
+    matched_random_seed_source: audit.matched_random_seed
+    entry_eval_version: ''
+    split_manifest_hash: ''
+    execution_timing: ''
+    train_env_seed_usage: ''
+    replay_seed_usage: ''
+    eval_env_seed_usage: ''
+    eval_policy_mode: ''
+    matched_random_seed_usage: ''
+    gymnasium_constructor_seed_usage: ''
+    eval_determinism: ''
   script: train
   batch_size: 16
   batch_length: 64
@@ -39,6 +72,9 @@ defaults:
     user: ''
 
   env:
+    # 0 means derive from experiment_seed.
+    train_seed: 0
+    eval_seed: 0
     atari: {size: [96, 96], repeat: 4, sticky: True, gray: True, actions: all, lives: unused, noops: 30, autostart: False, pooling: 2, aggregate: max, resize: pillow, clip_reward: False}
     procgen: {size: [96, 96], resize: pillow}
     crafter: {size: [64, 64], logs: False}
@@ -52,6 +88,8 @@ defaults:
     # gymnasium: {config_path: data/monte_carlo.yaml}
 
   replay:
+    # 0 means derive from experiment_seed.
+    seed: 0
     size: 5e6
     online: True
     fracs: {uniform: 1.0, priority: 0.0, recency: 0.0}

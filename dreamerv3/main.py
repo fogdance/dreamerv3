@@ -16,6 +16,116 @@ import portal
 import ruamel.yaml as yaml
 import gym_trading_env
 
+
+def _optional_int(value):
+  if value in (None, '', 'null', 'None'):
+    return None
+  return int(value)
+
+
+def _resolve_seed_protocol(config):
+  experiment_seed = _optional_int(config.get('experiment_seed', None))
+  if experiment_seed is None:
+    raise ValueError('experiment_seed must be configured for walk-forward runs')
+
+  config_seed = _optional_int(config.get('seed', None))
+  raw_dreamer_seed = _optional_int(config.dreamer.get('seed', None))
+  if raw_dreamer_seed is None and config_seed is None:
+    raise ValueError('dreamer.seed must be configured for walk-forward runs')
+  if (
+      config_seed is not None and config_seed != 0 and
+      raw_dreamer_seed is not None and raw_dreamer_seed != 0 and
+      config_seed != raw_dreamer_seed):
+    raise ValueError(
+        f'config.seed ({config_seed}) and dreamer.seed ({raw_dreamer_seed}) '
+        'must match')
+  dreamer_seed_source = 'dreamer.seed'
+  if raw_dreamer_seed in (None, 0) and config_seed not in (None, 0):
+    dreamer_seed = int(config_seed)
+    dreamer_seed_source = 'seed'
+    elements.print(
+        '[seed_protocol] --seed/config.seed is deprecated for walk-forward; '
+        'using it as dreamer.seed because dreamer.seed was not set.',
+        color='yellow')
+  elif raw_dreamer_seed is None:
+    raise ValueError('dreamer.seed must be configured for walk-forward runs')
+  else:
+    dreamer_seed = int(raw_dreamer_seed)
+
+  raw_train_env_seed = _optional_int(config.env.get('train_seed', None))
+  train_env_seed = raw_train_env_seed
+  if train_env_seed in (None, 0):
+    train_env_seed = experiment_seed * 1000 + 101
+
+  raw_replay_seed = _optional_int(config.replay.get('seed', None))
+  replay_seed = raw_replay_seed
+  if replay_seed in (None, 0):
+    replay_seed = experiment_seed * 1000 + 202
+
+  eval_env_seed = _optional_int(config.env.get('eval_seed', None))
+  if eval_env_seed is None:
+    raise ValueError('env.eval_seed must be configured')
+  matched_random_seed = _optional_int(config.audit.get('matched_random_seed', None))
+  if matched_random_seed is None:
+    raise ValueError('audit.matched_random_seed must be configured')
+
+  protocol = {
+      'experiment_seed': int(experiment_seed),
+      'dreamer_seed': int(dreamer_seed),
+      'train_env_seed': int(train_env_seed),
+      'replay_seed': int(replay_seed),
+      'eval_env_seed': int(eval_env_seed) if eval_env_seed is not None else None,
+      'matched_random_seed': int(matched_random_seed),
+      'config_seed': int(dreamer_seed),
+      'config_seed_sync': 'config.seed synchronized from resolved dreamer_seed',
+      'dreamer_seed_source': dreamer_seed_source,
+      'train_env_seed_source': (
+          'env.train_seed' if raw_train_env_seed not in (None, 0)
+          else 'experiment_seed*1000+101'),
+      'replay_seed_source': (
+          'replay.seed' if raw_replay_seed not in (None, 0)
+          else 'experiment_seed*1000+202'),
+      'eval_env_seed_source': (
+          'env.eval_seed' if eval_env_seed is not None
+          else 'not_used'),
+      'matched_random_seed_source': 'audit.matched_random_seed',
+      'entry_eval_version': str(config.audit.get('entry_eval_version', '') or ''),
+      'split_manifest_hash': str(config.audit.get('split_manifest_hash', '') or ''),
+      'execution_timing': str(config.audit.get('execution_timing', '') or ''),
+      'train_env_seed_usage': 'first_reset_only_per_env',
+      'replay_seed_usage': 'replay_selector_sampling',
+      'eval_env_seed_usage': 'not_used_per_day_forced_start',
+      'eval_policy_mode': 'pred',
+      'matched_random_seed_usage': 'fixed_across_dreamer_seeds',
+      'gymnasium_constructor_seed_usage': 'forbidden',
+      'eval_determinism': (
+          'per_day checkpoint audits force deterministic start rows and eval '
+          'policy uses pred(); eval_env_seed is recorded but not used to sample '
+          'validation/test starts'),
+  }
+  return config.update({
+      'seed': int(dreamer_seed),
+      'experiment_seed': int(experiment_seed),
+      'dreamer.seed': int(dreamer_seed),
+      'env.train_seed': int(train_env_seed),
+      'env.eval_seed': int(eval_env_seed),
+      'replay.seed': int(replay_seed),
+      'audit.matched_random_seed': int(matched_random_seed),
+      'seed_protocol': protocol,
+  })
+
+
+def _env_reset_seed(config, index):
+  if not config.get('seed_protocol', None):
+    return None
+  if config.script in ('eval_only', 'live_trading', 'monte_carlo'):
+    base = config.seed_protocol.get('eval_env_seed', None)
+  else:
+    base = config.seed_protocol.get('train_env_seed', None)
+  if base is None:
+    return None
+  return int(base) + int(index)
+
 def main(argv=None):
   from .agent import Agent
   [elements.print(line) for line in Agent.banner]
@@ -29,6 +139,7 @@ def main(argv=None):
   config = elements.Flags(config).parse(other)
   config = config.update(logdir=(
       config.logdir.format(timestamp=elements.timestamp())))
+  config = _resolve_seed_protocol(config)
 
   if 'JOB_COMPLETION_INDEX' in os.environ:
     config = config.update(replica=int(os.environ['JOB_COMPLETION_INDEX']))
@@ -66,6 +177,7 @@ def main(argv=None):
       replay_context=config.replay_context,
       action_mask_warmup=config.action_mask_warmup,
       action_mask_actor_initial=config.agent.avail_actor_enabled,
+      seed_protocol=config.seed_protocol,
   )
 
   if config.script == 'train':
@@ -218,7 +330,7 @@ def make_replay(config, folder, mode='train'):
   kwargs = dict(
       length=length, capacity=int(capacity), online=config.replay.online,
       chunksize=config.replay.chunksize, directory=directory,
-      name=f'{folder}-{mode}')
+      name=f'{folder}-{mode}', seed=int(config.seed_protocol.replay_seed))
 
   if config.replay.fracs.uniform < 1 and mode == 'train':
     assert config.jax.compute_dtype in ('bfloat16', 'float32'), (
@@ -226,11 +338,12 @@ def make_replay(config, folder, mode='train'):
         'outputs that are incompatible with prioritized replay.')
     recency = 1.0 / np.arange(1, capacity + 1) ** config.replay.recexp
     selectors = embodied.replay.selectors
+    seed = int(config.seed_protocol.replay_seed)
     kwargs['selector'] = selectors.Mixture(dict(
-        uniform=selectors.Uniform(),
-        priority=selectors.Prioritized(**config.replay.prio),
-        recency=selectors.Recency(recency),
-    ), config.replay.fracs)
+        uniform=selectors.Uniform(seed + 11),
+        priority=selectors.Prioritized(**config.replay.prio, seed=seed + 12),
+        recency=selectors.Recency(recency, seed=seed + 13),
+    ), config.replay.fracs, seed=seed + 14)
 
   return embodied.replay.Replay(**kwargs)
 
@@ -265,8 +378,17 @@ def make_env(config, index, **overrides):
     ctor = getattr(module, cls)
   kwargs = config.env.get(suite, {})
   kwargs.update(overrides)
-  if kwargs.pop('use_seed', False):
+  use_ctor_seed = kwargs.pop('use_seed', False)
+  if suite == 'gymnasium' and use_ctor_seed:
+    raise ValueError(
+        'env.gymnasium.use_seed=True passes seed into env construction. '
+        'Use env.train_seed/env.eval_seed for reset(seed=...) instead.')
+  if use_ctor_seed:
     kwargs['seed'] = hash((config.seed, index)) % (2 ** 32 - 1)
+  if suite == 'gymnasium':
+    reset_seed = _env_reset_seed(config, index)
+    if reset_seed is not None:
+      kwargs['reset_seed'] = reset_seed
   if kwargs.pop('use_logdir', False):
     kwargs['logdir'] = elements.Path(config.logdir) / f'env{index}'
   env = ctor(task, **kwargs)
