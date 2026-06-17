@@ -2,6 +2,7 @@ import importlib
 import os
 import pathlib
 import sys
+from datetime import datetime
 from functools import partial as bind
 
 folder = pathlib.Path(__file__).parent
@@ -15,6 +16,39 @@ import numpy as np
 import portal
 import ruamel.yaml as yaml
 import gym_trading_env
+
+
+class LiveTerminalOutput(elements.logger.TerminalOutput):
+
+  def __call__(self, summaries):
+    now = datetime.now().strftime('%Y-%m-%d %H:%M')
+    step = max(s for s, _, _, in summaries)
+    scalars = {
+        k: float(v) for _, k, v in summaries
+        if isinstance(v, np.ndarray) and len(v.shape) == 0}
+    if self._pattern:
+      scalars = {k: v for k, v in scalars.items() if self._pattern.search(k)}
+    else:
+      truncated = 0
+      if len(scalars) > self._limit:
+        truncated = len(scalars) - self._limit
+        scalars = dict(list(scalars.items())[:self._limit])
+    formatted = {k: self._format_value(v) for k, v in scalars.items()}
+    if self._name:
+      header = f'{"-" * 20}[{self._name} Step {step:_} {now}]{"-" * 20}'
+    else:
+      header = f'{"-" * 20}[Step {step:_} {now}]{"-" * 20}'
+    content = ''
+    if self._pattern:
+      content += f"Metrics filtered by: '{self._pattern.pattern}'"
+    elif 'truncated' in locals() and truncated:
+      content += f'{truncated} metrics truncated, filter to see specific keys.'
+    content += '\n'
+    if formatted:
+      content += ' / '.join(f'{k} {v}' for k, v in formatted.items())
+    else:
+      content += 'No metrics.'
+    elements.print(f'\n{header}\n{content}\n', flush=True)
 
 
 def _optional_int(value):
@@ -291,7 +325,10 @@ def make_logger(config):
   logdir = config.logdir
   multiplier = config.env.get(config.task.split('_')[0], {}).get('repeat', 1)
   outputs = []
-  outputs.append(elements.logger.TerminalOutput(config.logger.filter, 'Agent'))
+  terminal_output = (
+      LiveTerminalOutput if config.script == 'live_trading'
+      else elements.logger.TerminalOutput)
+  outputs.append(terminal_output(config.logger.filter, 'Agent'))
   for output in config.logger.outputs:
     if output == 'jsonl':
       outputs.append(elements.logger.JSONLOutput(logdir, 'metrics.jsonl'))

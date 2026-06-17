@@ -42,8 +42,8 @@ EURUSD: &EURUSD
   down_thresh_1h: -0.00025
   up_thresh_1h: 0.00025
 
-DCE_JM2605: &JM
-  currency_pair: "JM2605"
+DCE_JM2609: &JM
+  currency_pair: "JM2609"
   initial_balance: 10000.0
   trading_fee_per_lot: 3
   is_round_turn: true
@@ -53,7 +53,7 @@ DCE_JM2605: &JM
   trade_lot: 1
   max_long_position: 1
   max_short_position: 1
-  data_path: "DCE_JM2605"
+  data_path: "DCE_JM2609"
   data_interval: "1m"
   stop_loss_enabled: false
   stop_loss_mode: pct  # pct | abs
@@ -64,7 +64,7 @@ DCE_JM2605: &JM
   use_daily_seq_7: false
   max_entries_per_day: 6
   #trading_date: "2025-12-24"
-  future_symbol: "DCE.jm2605"
+  future_symbol: "DCE.jm2609"
   live_mode: true
   live_replay_on_reset: true
   session_policy:
