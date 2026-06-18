@@ -15,6 +15,7 @@ def _base_config(**overrides):
       audit=dict(
           matched_random_seed=20260615,
           entry_eval_version='entry_eval_test',
+          entry_eval_config='/data/logdir/trading_contracts/test/configs/entry_eval/test.yaml',
           split_manifest_hash='abc123',
           execution_timing='signal_on_close_plus_spread'),
       seed_protocol=dict(
@@ -32,6 +33,7 @@ def _base_config(**overrides):
           eval_env_seed_source='env.eval_seed',
           matched_random_seed_source='audit.matched_random_seed',
           entry_eval_version='',
+          entry_eval_config='',
           split_manifest_hash='',
           execution_timing='',
           train_env_seed_usage='',
@@ -60,6 +62,7 @@ def test_seed_protocol_derives_env_and_replay_seeds():
   assert config.seed_protocol.eval_env_seed == 0
   assert config.seed_protocol.matched_random_seed == 20260615
   assert config.seed_protocol.entry_eval_version == 'entry_eval_test'
+  assert config.seed_protocol.entry_eval_config == '/data/logdir/trading_contracts/test/configs/entry_eval/test.yaml'
   assert config.seed_protocol.execution_timing == 'signal_on_close_plus_spread'
   assert config.seed_protocol.train_env_seed_usage == 'first_reset_only_per_env'
   assert config.seed_protocol.eval_env_seed_usage == 'not_used_per_day_forced_start'

@@ -171,28 +171,33 @@ def validate_walk_forward_split(config, *, dreamer_root=None):
   guard_cfg = _get(config, 'walk_forward_guard', elements.Config({}))
   enabled = _optional_bool(_get(guard_cfg, 'enabled', True), True)
   audit_version = str(_get(config, 'audit.entry_eval_version', '') or '')
+  entry_eval_config_raw = str(_get(config, 'audit.entry_eval_config', '') or '')
   expected_hash = str(_get(config, 'audit.split_manifest_hash', '') or '')
   if not enabled:
     return {'status': 'disabled'}
-  if not audit_version and not expected_hash:
+  if not audit_version and not entry_eval_config_raw and not expected_hash:
     return {'status': 'skipped', 'reason': 'audit entry_eval metadata is empty'}
   if str(_get(config, 'script', 'train')) != 'train':
     return {'status': 'skipped', 'reason': 'guard only enforces script=train'}
-  if not audit_version:
-    raise WalkForwardGuardError('audit.entry_eval_version is required for formal walk-forward training')
+  if not entry_eval_config_raw:
+    raise WalkForwardGuardError('audit.entry_eval_config is required for formal walk-forward training')
   if not expected_hash:
     raise WalkForwardGuardError('audit.split_manifest_hash is required for formal walk-forward training')
 
   dreamer_root = Path(dreamer_root or Path(__file__).resolve().parents[1]).resolve()
-  entry_eval_root = _resolve_path(
-      _get(guard_cfg, 'entry_eval_root', '/home/v/Documents/work/gym-trading-env/artifacts/entry_eval'),
-      dreamer_root)
   data_root = _resolve_path(
-      _get(guard_cfg, 'data_root', dreamer_root / 'data'),
+      _get(guard_cfg, 'data_root', '/data/logdir/trading_contracts'),
       dreamer_root)
-  entry_eval_dir = entry_eval_root / audit_version
-  split_path = entry_eval_dir / 'split_manifest.json'
-  manifest_path = entry_eval_dir / 'manifest.json'
+  entry_eval_config = _resolve_path(entry_eval_config_raw, dreamer_root)
+  if not entry_eval_config.exists():
+    raise WalkForwardGuardError(f'Missing entry-eval config: {entry_eval_config}')
+  entry_eval_raw = _read_yaml(entry_eval_config) or {}
+  split_path_raw = (
+      (entry_eval_raw.get('walk_forward', {}) or {}).get('split_manifest_path', ''))
+  if not split_path_raw:
+    raise WalkForwardGuardError(
+        f'entry-eval config missing walk_forward.split_manifest_path: {entry_eval_config}')
+  split_path = _resolve_path(split_path_raw, entry_eval_config.parent)
   if not split_path.exists():
     raise WalkForwardGuardError(f'Missing entry-eval split manifest: {split_path}')
 
@@ -223,22 +228,18 @@ def validate_walk_forward_split(config, *, dreamer_root=None):
   max_exceeds_split_train = int(train_data['max_day']) > int(train_role['max_day'])
 
   execution_timing = str(_get(config, 'audit.execution_timing', '') or '')
-  manifest_timing = None
-  if manifest_path.exists():
-    manifest = json.loads(manifest_path.read_text())
-    manifest_timing = (
-        manifest.get('config', {})
-        .get('entry_evaluator', {})
-        .get('execution_timing'))
-    if execution_timing and manifest_timing and execution_timing != manifest_timing:
-      raise WalkForwardGuardError(
-          'execution_timing mismatch: '
-          f'configured={execution_timing}, manifest={manifest_timing}')
+  manifest_timing = (
+      (entry_eval_raw.get('entry_evaluator', {}) or {}).get('execution_timing'))
+  if execution_timing and manifest_timing and execution_timing != manifest_timing:
+    raise WalkForwardGuardError(
+        'execution_timing mismatch: '
+        f'configured={execution_timing}, entry_eval_config={manifest_timing}')
 
   result = {
       'status': 'pass',
       'role_map_source': 'split_manifest.json:last_fold',
-      'entry_eval_dir': str(entry_eval_dir),
+      'entry_eval_version': audit_version,
+      'entry_eval_config': str(entry_eval_config),
       'split_manifest_path': str(split_path),
       'split_manifest_hash': actual_hash,
       'split_fold_name': fold_name,

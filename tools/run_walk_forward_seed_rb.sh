@@ -30,15 +30,14 @@ TRAIN_ENV_SEED=$((EXPERIMENT_SEED * 1000 + 101))
 REPLAY_SEED=$((EXPERIMENT_SEED * 1000 + 202))
 MATCHED_RANDOM_SEED=20260615
 
-ENTRY_EVAL_VERSION="entry_eval_rb8y_walk_forward_20171225_20251202_signal_close_v1"
-SPLIT_MANIFEST_HASH="${RB_SPLIT_MANIFEST_HASH:-b1f2f9a048c09c7663ccadcf3c162cf7f55f2818445a108975696f37b6593845}"
+CONTRACT_ROOT="${RB_CONTRACT_ROOT:-/data/logdir/trading_contracts/rb8y_fixed_holdout_v1}"
+SPLIT_NAME="rb8y_fixed_holdout_v1"
+ENTRY_EVAL_VERSION="$SPLIT_NAME"
+ENTRY_EVAL_CONFIG="$CONTRACT_ROOT/configs/entry_eval/${SPLIT_NAME}_signal_close.yaml"
+SPLIT_MANIFEST_HASH="${RB_SPLIT_MANIFEST_HASH:-$(cat "$CONTRACT_ROOT/artifacts/walk_forward_splits/$SPLIT_NAME/split_manifest.sha256")}"
 EXECUTION_TIMING="signal_on_close_plus_spread"
-ENV_CONFIG="/home/v/Documents/work/gym-trading-env/configs/env_trading_stage1_rb8y_walk_forward_train_20171225_20241231.yaml"
+ENV_CONFIG="$CONTRACT_ROOT/configs/env/${SPLIT_NAME}_train.yaml"
 PYTHON="/home/v/miniconda3/envs/dreamerv3/bin/python"
-GUARD_ARGS=()
-if [[ "${ALLOW_NON_HOLDOUT:-}" == "true" ]]; then
-  GUARD_ARGS+=(--walk_forward_guard.allow_non_holdout_training true)
-fi
 
 cd "$(dirname "$0")/.."
 
@@ -55,9 +54,9 @@ exec "$PYTHON" dreamerv3/main.py \
   --replay.seed "$REPLAY_SEED" \
   --audit.matched_random_seed "$MATCHED_RANDOM_SEED" \
   --audit.entry_eval_version "$ENTRY_EVAL_VERSION" \
+  --audit.entry_eval_config "$ENTRY_EVAL_CONFIG" \
   --audit.split_manifest_hash "$SPLIT_MANIFEST_HASH" \
-  --audit.execution_timing "$EXECUTION_TIMING" \
-  "${GUARD_ARGS[@]}"
+  --audit.execution_timing "$EXECUTION_TIMING"
 
 # -----------------------------------------------------------------------------
 # Reproducibility notes for the RB 8Y walk-forward experiment.
@@ -68,21 +67,15 @@ exec "$PYTHON" dreamerv3/main.py \
 #
 # Contract:
 #   product: RB
+#   contract_root: /data/logdir/trading_contracts/rb8y_fixed_holdout_v1
 #   train env data: 2017-12-25 .. 2024-12-31
 #   full eval data: 2017-12-25 .. 2025-12-02
 #   observation: 60x18
 #   execution_timing: signal_on_close_plus_spread
-#   entry_eval_version: entry_eval_rb8y_walk_forward_20171225_20251202_signal_close_v1
-#   split_manifest_hash default:
-#     b1f2f9a048c09c7663ccadcf3c162cf7f55f2818445a108975696f37b6593845
-#   Current split/env alignment:
-#     This RB entry-eval split is not a formal holdout for the default training
-#     env because the training env reaches 2024-12-31 while the current
-#     split_manifest last fold has validation/test inside that range.
-#     By default, the walk-forward guard fails this run. To run it as explicit
-#     pilot/debug only:
-#
-#       ALLOW_NON_HOLDOUT=true ./tools/run_walk_forward_seed_rb.sh ...
+#   entry_eval_config:
+#     $CONTRACT_ROOT/configs/entry_eval/rb8y_fixed_holdout_v1_signal_close.yaml
+#   split_manifest_hash:
+#     read from $CONTRACT_ROOT/artifacts/walk_forward_splits/rb8y_fixed_holdout_v1/split_manifest.sha256
 #
 # Usage:
 #
@@ -92,24 +85,25 @@ exec "$PYTHON" dreamerv3/main.py \
 # Stage 1: RB 8Y pilot 1M.
 # Retention: 500k / 700k / 900k / latest.
 #
-#   ALLOW_NON_HOLDOUT=true ./tools/run_walk_forward_seed_rb.sh seed_a 101 /data/logdir/action-mask-rb8y-pilot1m-seed-a-20260617 pilot1m
-#   ALLOW_NON_HOLDOUT=true ./tools/run_walk_forward_seed_rb.sh seed_b 202 /data/logdir/action-mask-rb8y-pilot1m-seed-b-20260617 pilot1m
-#   ALLOW_NON_HOLDOUT=true ./tools/run_walk_forward_seed_rb.sh seed_c 303 /data/logdir/action-mask-rb8y-pilot1m-seed-c-20260617 pilot1m
+#   ./tools/run_walk_forward_seed_rb.sh seed_a 101 /data/logdir/action-mask-rb8y-pilot1m-seed-a-20260617 pilot1m
+#   ./tools/run_walk_forward_seed_rb.sh seed_b 202 /data/logdir/action-mask-rb8y-pilot1m-seed-b-20260617 pilot1m
+#   ./tools/run_walk_forward_seed_rb.sh seed_c 303 /data/logdir/action-mask-rb8y-pilot1m-seed-c-20260617 pilot1m
 #
 # Stage 2: RB 8Y long-run debug 3M.
 # Retention: 1.5M / 2.1M / 2.7M / latest.
-# This profile is still non-holdout until the RB split/env alignment is fixed.
 #
-#   ALLOW_NON_HOLDOUT=true ./tools/run_walk_forward_seed_rb.sh seed_a 101 /data/logdir/action-mask-rb8y-formal3m-seed-a-20260617 formal3m
-#   ALLOW_NON_HOLDOUT=true ./tools/run_walk_forward_seed_rb.sh seed_b 202 /data/logdir/action-mask-rb8y-formal3m-seed-b-20260617 formal3m
-#   ALLOW_NON_HOLDOUT=true ./tools/run_walk_forward_seed_rb.sh seed_c 303 /data/logdir/action-mask-rb8y-formal3m-seed-c-20260617 formal3m
+#   ./tools/run_walk_forward_seed_rb.sh seed_a 101 /data/logdir/action-mask-rb8y-formal3m-seed-a-20260617 formal3m
+#   ./tools/run_walk_forward_seed_rb.sh seed_b 202 /data/logdir/action-mask-rb8y-formal3m-seed-b-20260617 formal3m
+#   ./tools/run_walk_forward_seed_rb.sh seed_c 303 /data/logdir/action-mask-rb8y-formal3m-seed-c-20260617 formal3m
 #
-# Build or reuse the RB entry-eval dataset before checkpoint audits:
+# Build or reuse the RB entry-eval dataset before checkpoint audits.
+# Keep outputs outside source repositories:
 #
 #   cd /home/v/Documents/work/gym-trading-env
+#   CONTRACT_ROOT=/data/logdir/trading_contracts/rb8y_fixed_holdout_v1
 #   /home/v/miniconda3/envs/dreamerv3/bin/python tools/run_entry_capability.py \
-#     --config configs/entry_eval_rb8y_walk_forward_20171225_20251202_signal_close_v1.yaml \
-#     --output artifacts/entry_eval/entry_eval_rb8y_walk_forward_20171225_20251202_signal_close_v1
+#     --config "$CONTRACT_ROOT/configs/entry_eval/rb8y_fixed_holdout_v1_signal_close.yaml" \
+#     --output "$CONTRACT_ROOT/artifacts/entry_eval/rb8y_fixed_holdout_v1"
 #
 # Validation checkpoint selection protocol:
 #   Run deterministic per-day replay for validation only on each retained
@@ -121,14 +115,15 @@ exec "$PYTHON" dreamerv3/main.py \
 #   cd /home/v/Documents/work/gym-trading-env
 #   SEED_NAME=seed_a
 #   LOGDIR=/data/logdir/action-mask-rb8y-pilot1m-seed-a-20260617
+#   CONTRACT_ROOT=/data/logdir/trading_contracts/rb8y_fixed_holdout_v1
 #   CKPT_STEP=000000900000
 #   /home/v/miniconda3/envs/dreamerv3/bin/python tools/dreamer_checkpoint_audit.py \
 #     --dreamer-root /home/v/Documents/work/dreamerv3 \
 #     --run-logdir "$LOGDIR" \
 #     --checkpoint "$LOGDIR/ckpt_retained/step_${CKPT_STEP}" \
-#     --entry-eval-dir artifacts/entry_eval/entry_eval_rb8y_walk_forward_20171225_20251202_signal_close_v1 \
-#     --env-config-path configs/env_trading_stage1_rb8y_walk_forward_full_20171225_20251202.yaml \
-#     --output-dir "artifacts/dreamer_walk_forward_multiseed/action-mask-rb8y-pilot1m-20260617/${SEED_NAME}_${CKPT_STEP}_validation_signal_close" \
+#     --entry-eval-dir "$CONTRACT_ROOT/artifacts/entry_eval/rb8y_fixed_holdout_v1" \
+#     --env-config-path "$CONTRACT_ROOT/configs/env/rb8y_fixed_holdout_v1_full.yaml" \
+#     --output-dir "/data/logdir/audits/action-mask-rb8y-pilot1m-20260617/${SEED_NAME}_${CKPT_STEP}_validation_signal_close" \
 #     --collect \
 #     --collect-mode per_day \
 #     --roles validation \
@@ -152,14 +147,15 @@ exec "$PYTHON" dreamerv3/main.py \
 #   cd /home/v/Documents/work/gym-trading-env
 #   SEED_NAME=seed_a
 #   LOGDIR=/data/logdir/action-mask-rb8y-pilot1m-seed-a-20260617
+#   CONTRACT_ROOT=/data/logdir/trading_contracts/rb8y_fixed_holdout_v1
 #   SELECTED_CKPT="$LOGDIR/ckpt_retained/step_000000900000"
-#   OUT="artifacts/dreamer_walk_forward_multiseed/action-mask-rb8y-pilot1m-20260617/${SEED_NAME}_selected_test_signal_close"
+#   OUT="/data/logdir/audits/action-mask-rb8y-pilot1m-20260617/${SEED_NAME}_selected_test_signal_close"
 #   /home/v/miniconda3/envs/dreamerv3/bin/python tools/dreamer_checkpoint_audit.py \
 #     --dreamer-root /home/v/Documents/work/dreamerv3 \
 #     --run-logdir "$LOGDIR" \
 #     --checkpoint "$SELECTED_CKPT" \
-#     --entry-eval-dir artifacts/entry_eval/entry_eval_rb8y_walk_forward_20171225_20251202_signal_close_v1 \
-#     --env-config-path configs/env_trading_stage1_rb8y_walk_forward_full_20171225_20251202.yaml \
+#     --entry-eval-dir "$CONTRACT_ROOT/artifacts/entry_eval/rb8y_fixed_holdout_v1" \
+#     --env-config-path "$CONTRACT_ROOT/configs/env/rb8y_fixed_holdout_v1_full.yaml" \
 #     --output-dir "$OUT" \
 #     --collect \
 #     --collect-mode per_day \
@@ -171,15 +167,15 @@ exec "$PYTHON" dreamerv3/main.py \
 #
 #   /home/v/miniconda3/envs/dreamerv3/bin/python tools/dreamer_equity_curve_audit.py \
 #     --attribution-dir "$OUT" \
-#     --entry-eval-config configs/entry_eval_rb8y_walk_forward_20171225_20251202_signal_close_v1.yaml \
+#     --entry-eval-config "$CONTRACT_ROOT/configs/entry_eval/rb8y_fixed_holdout_v1_signal_close.yaml" \
 #     --output-dir "${OUT}_equity_curve"
 #
 # Multi-seed aggregate report after all selected test audits are complete:
 #
 #   /home/v/miniconda3/envs/dreamerv3/bin/python tools/report_dreamer_multiseed_repeatability.py \
 #     --experiment-name action-mask-rb8y-pilot1m-20260617 \
-#     --output-dir artifacts/dreamer_walk_forward_multiseed/action-mask-rb8y-pilot1m-20260617 \
-#     --seed-report seed_a=artifacts/dreamer_walk_forward_multiseed/action-mask-rb8y-pilot1m-20260617/seed_a_selected_test_signal_close/summary.json \
-#     --seed-report seed_b=artifacts/dreamer_walk_forward_multiseed/action-mask-rb8y-pilot1m-20260617/seed_b_selected_test_signal_close/summary.json \
-#     --seed-report seed_c=artifacts/dreamer_walk_forward_multiseed/action-mask-rb8y-pilot1m-20260617/seed_c_selected_test_signal_close/summary.json
+#     --output-dir /data/logdir/audits/action-mask-rb8y-pilot1m-20260617 \
+#     --seed-report seed_a=/data/logdir/audits/action-mask-rb8y-pilot1m-20260617/seed_a_selected_test_signal_close/summary.json \
+#     --seed-report seed_b=/data/logdir/audits/action-mask-rb8y-pilot1m-20260617/seed_b_selected_test_signal_close/summary.json \
+#     --seed-report seed_c=/data/logdir/audits/action-mask-rb8y-pilot1m-20260617/seed_c_selected_test_signal_close/summary.json
 # -----------------------------------------------------------------------------

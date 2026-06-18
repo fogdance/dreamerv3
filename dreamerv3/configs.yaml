@@ -13,13 +13,13 @@ defaults:
   audit:
     matched_random_seed: 20260615
     entry_eval_version: ''
+    entry_eval_config: ''
     split_manifest_hash: ''
     execution_timing: ''
   walk_forward_guard:
     enabled: True
     allow_non_holdout_training: False
-    entry_eval_root: /home/v/Documents/work/gym-trading-env/artifacts/entry_eval
-    data_root: /home/v/Documents/work/dreamerv3/data
+    data_root: /data/logdir/trading_contracts
   seed_protocol:
     experiment_seed: 0
     dreamer_seed: 0
@@ -35,6 +35,7 @@ defaults:
     eval_env_seed_source: env.eval_seed
     matched_random_seed_source: audit.matched_random_seed
     entry_eval_version: ''
+    entry_eval_config: ''
     split_manifest_hash: ''
     execution_timing: ''
     train_env_seed_usage: ''

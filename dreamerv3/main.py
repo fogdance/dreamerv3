@@ -126,6 +126,7 @@ def _resolve_seed_protocol(config):
           else 'not_used'),
       'matched_random_seed_source': 'audit.matched_random_seed',
       'entry_eval_version': str(config.audit.get('entry_eval_version', '') or ''),
+      'entry_eval_config': str(config.audit.get('entry_eval_config', '') or ''),
       'split_manifest_hash': str(config.audit.get('split_manifest_hash', '') or ''),
       'execution_timing': str(config.audit.get('execution_timing', '') or ''),
       'train_env_seed_usage': 'first_reset_only_per_env',
@@ -181,7 +182,7 @@ def main(argv=None):
   if guard_result.get('status') == 'pass':
     elements.print(
         '[walk_forward_guard] PASS '
-        f"entry_eval={guard_result.get('entry_eval_dir')} "
+        f"entry_eval={guard_result.get('entry_eval_config')} "
         f"fold={guard_result.get('split_fold_name')}",
         color='green')
   elif guard_result.get('status') == 'non_holdout':
