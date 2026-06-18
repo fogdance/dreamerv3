@@ -20,6 +20,36 @@ defaults:
     enabled: True
     allow_non_holdout_training: False
     data_root: /data/logdir/trading_contracts
+  walk_forward_guard_result:
+    status: ''
+    reason: ''
+    role_map_source: ''
+    entry_eval_version: ''
+    entry_eval_config: ''
+    split_manifest_path: ''
+    split_manifest_hash: ''
+    split_fold_name: ''
+    env_config_path: ''
+    training_market_csv: ''
+    training_data:
+      path: ''
+      min_day: 0
+      max_day: 0
+      first_timestamp: ''
+      last_timestamp: ''
+    roles:
+      train: {min_day: 0, max_day: 0, days: 0}
+      validation: {min_day: 0, max_day: 0, days: 0}
+      test: {min_day: 0, max_day: 0, days: 0}
+    execution_timing: ''
+    manifest_execution_timing: ''
+    validation_overlap_days: [0]
+    validation_overlap_count: 0
+    test_overlap_days: [0]
+    test_overlap_count: 0
+    training_min_before_split_train: False
+    training_max_exceeds_split_train: False
+    problems: ['']
   seed_protocol:
     experiment_seed: 0
     dreamer_seed: 0

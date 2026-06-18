@@ -168,3 +168,41 @@ def test_walk_forward_guard_skips_when_audit_metadata_is_empty(tmp_path):
   result = validate_walk_forward_split(config, dreamer_root=tmp_path)
 
   assert result["status"] == "skipped"
+
+
+def _default_config():
+  path = Path(__file__).resolve().parents[1] / "configs.yaml"
+  configs = yaml.YAML(typ="safe").load(path.read_text())
+  return elements.Config(configs["defaults"])
+
+
+def test_declared_guard_result_schema_accepts_skipped_result():
+  config = _default_config().update(script="live_trading")
+  guard_result = {
+      "status": "skipped",
+      "reason": "guard only enforces script=train",
+  }
+
+  updated = config.update(walk_forward_guard_result=guard_result)
+
+  assert updated.walk_forward_guard_result.status == "skipped"
+  assert updated.walk_forward_guard_result.reason == "guard only enforces script=train"
+  assert updated.script == "live_trading"
+
+
+def test_declared_guard_result_schema_accepts_pass_result(tmp_path):
+  _, entry_eval_config, split_hash = _write_entry_eval(
+      tmp_path / "artifacts" / "entry_eval", "entry_eval_test")
+  _write_yaml(tmp_path / "env.yaml", "TRAIN")
+  _write_csv(tmp_path / "data" / "TRAIN_1m.csv", "2024-01-01", "2024-01-02")
+  guard_result = validate_walk_forward_split(
+      _config(tmp_path, entry_eval_config=entry_eval_config, split_hash=split_hash),
+      dreamer_root=tmp_path)
+
+  updated = _default_config().update(walk_forward_guard_result=guard_result)
+
+  assert updated.walk_forward_guard_result.status == "pass"
+  assert updated.walk_forward_guard_result.training_data.min_day == 20240101
+  assert updated.walk_forward_guard_result.roles.validation.days == 1
+  assert updated.walk_forward_guard_result.validation_overlap_count == 0
+  assert updated.walk_forward_guard_result.validation_overlap_days == (0,)

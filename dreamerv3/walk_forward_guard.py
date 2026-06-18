@@ -234,6 +234,7 @@ def validate_walk_forward_split(config, *, dreamer_root=None):
     raise WalkForwardGuardError(
         'execution_timing mismatch: '
         f'configured={execution_timing}, entry_eval_config={manifest_timing}')
+  manifest_timing = str(manifest_timing or '')
 
   result = {
       'status': 'pass',
@@ -253,9 +254,9 @@ def validate_walk_forward_split(config, *, dreamer_root=None):
       },
       'execution_timing': execution_timing,
       'manifest_execution_timing': manifest_timing,
-      'validation_overlap_days': val_overlap[:20],
+      'validation_overlap_days': val_overlap[:20] or [0],
       'validation_overlap_count': len(val_overlap),
-      'test_overlap_days': test_overlap[:20],
+      'test_overlap_days': test_overlap[:20] or [0],
       'test_overlap_count': len(test_overlap),
       'training_min_before_split_train': min_before_split_train,
       'training_max_exceeds_split_train': max_exceeds_split_train,
