@@ -15,6 +15,11 @@ defaults:
     entry_eval_version: ''
     split_manifest_hash: ''
     execution_timing: ''
+  walk_forward_guard:
+    enabled: True
+    allow_non_holdout_training: False
+    entry_eval_root: /home/v/Documents/work/gym-trading-env/artifacts/entry_eval
+    data_root: /home/v/Documents/work/dreamerv3/data
   seed_protocol:
     experiment_seed: 0
     dreamer_seed: 0

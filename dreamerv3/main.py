@@ -17,6 +17,8 @@ import portal
 import ruamel.yaml as yaml
 import gym_trading_env
 
+from .walk_forward_guard import validate_walk_forward_split
+
 
 class LiveTerminalOutput(elements.logger.TerminalOutput):
 
@@ -174,6 +176,19 @@ def main(argv=None):
   config = config.update(logdir=(
       config.logdir.format(timestamp=elements.timestamp())))
   config = _resolve_seed_protocol(config)
+  guard_result = validate_walk_forward_split(config, dreamer_root=folder.parent)
+  config = config.update(walk_forward_guard_result=guard_result)
+  if guard_result.get('status') == 'pass':
+    elements.print(
+        '[walk_forward_guard] PASS '
+        f"entry_eval={guard_result.get('entry_eval_dir')} "
+        f"fold={guard_result.get('split_fold_name')}",
+        color='green')
+  elif guard_result.get('status') == 'non_holdout':
+    elements.print(
+        '[walk_forward_guard] NON-HOLDOUT ALLOWED '
+        + '; '.join(guard_result.get('problems', [])),
+        color='yellow')
 
   if 'JOB_COMPLETION_INDEX' in os.environ:
     config = config.update(replica=int(os.environ['JOB_COMPLETION_INDEX']))
