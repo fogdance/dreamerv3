@@ -92,8 +92,27 @@ python dreamerv3/main.py \
   --logdir ~/logdir/car_racing3_cpu \
   --configs car_racing3_cpu \
   --run.train_ratio 32
+```
 
-打开# gymnasium: {config_path: data/trading.yaml}
+Trading env configs are not stored in the DreamerV3 repository. Generate or
+reuse an external contract under `/data/logdir/trading_contracts/<split>` and
+pass its generated env config explicitly:
+
+```sh
+CONTRACT_ROOT=/data/logdir/trading_contracts/jm_walk_forward_20240603_20251202
+python dreamerv3/main.py \
+  --configs action_mask_formal \
+  --logdir /data/logdir/example-trading-run \
+  --env.gymnasium.config_path "$CONTRACT_ROOT/configs/env/jm_walk_forward_20240603_20251202_train.yaml" \
+  --audit.entry_eval_version jm_walk_forward_20240603_20251202 \
+  --audit.entry_eval_config "$CONTRACT_ROOT/configs/entry_eval/jm_walk_forward_20240603_20251202_signal_close.yaml" \
+  --audit.split_manifest_hash "$(cat "$CONTRACT_ROOT/artifacts/walk_forward_splits/jm_walk_forward_20240603_20251202/split_manifest.sha256")" \
+  --audit.execution_timing signal_on_close_plus_spread
+```
+
+Generic Gymnasium examples still use their own config surface:
+
+```yaml
   env:
     atari: {size: [96, 96], repeat: 4, sticky: True, gray: True, actions: all, lives: unused, noops: 30, autostart: False, pooling: 2, aggregate: max, resize: pillow, clip_reward: False}
     procgen: {size: [96, 96], resize: pillow}
@@ -103,7 +122,8 @@ python dreamerv3/main.py \
     minecraft: {size: [64, 64], break_speed: 100.0, logs: False, length: 36000}
     dmc: {size: [64, 64], repeat: 1, proprio: True, image: True, camera: -1}
     loconav: {size: [64, 64], repeat: 1, camera: -1}
-    # gymnasium: {config_path: data/trading.yaml}
+    gymnasium: {config_path: ''}
+```
 
 export PYTHONPATH=$PYTHONPATH:~/Documents/work/fastcarracing-v0
 export PYTHONPATH=$PYTHONPATH:/home/v/Documents/work/gym-trading-env/src

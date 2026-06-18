@@ -31,9 +31,9 @@ enforced by:
 2. the entry-eval `split_manifest.json`;
 3. the checkpoint audit command choosing `--roles validation` or `--roles test`.
 
-For JM, the current split is clean and chronological. For RB, the current
-training env and current entry-eval split manifest are not yet aligned for
-formal validation/test use; details are in the RB section below.
+For JM and RB, the current formal split contract is externalized under
+`/data/logdir/trading_contracts/...`. DreamerV3 does not own generated market
+CSV slices, entry-eval configs, split manifests, or env configs.
 
 ## Does DreamerV3 Natively Support Three Datasets?
 
@@ -239,8 +239,9 @@ Important distinction:
 - Dreamer checkpoint audit uses only the last fold as the current overall
   `train/validation/test` role map.
 
-JM currently uses a custom one-fold split manifest. RB currently uses the
-generic three-fold split manifest.
+JM currently uses a custom one-fold split manifest. RB uses a fixed 8-year
+holdout manifest generated under `/data/logdir/trading_contracts` rather than a
+repo-local hand-written split.
 
 ## Current Training Command Contract
 
@@ -248,8 +249,8 @@ The main training scripts are:
 
 | Product | Script | Training Env Config |
 | --- | --- | --- |
-| JM | `/home/v/Documents/work/dreamerv3/tools/run_walk_forward_seed.sh` | `/home/v/Documents/work/gym-trading-env/configs/env_trading_stage1_jm_walk_forward_train_20240603_20250731.yaml` |
-| RB | `/home/v/Documents/work/dreamerv3/tools/run_walk_forward_seed_rb.sh` | `/home/v/Documents/work/gym-trading-env/configs/env_trading_stage1_rb8y_walk_forward_train_20171225_20241231.yaml` |
+| JM | `/home/v/Documents/work/dreamerv3/tools/run_walk_forward_seed.sh` | `/data/logdir/trading_contracts/jm_walk_forward_20240603_20251202/configs/env/jm_walk_forward_20240603_20251202_train.yaml` |
+| RB | `/home/v/Documents/work/dreamerv3/tools/run_walk_forward_seed_rb.sh` | `/data/logdir/trading_contracts/rb8y_fixed_holdout_v1/configs/env/rb8y_fixed_holdout_v1_train.yaml` |
 
 Both scripts call:
 
@@ -269,6 +270,7 @@ Both scripts pass:
 --replay.seed
 --audit.matched_random_seed
 --audit.entry_eval_version
+--audit.entry_eval_config
 --audit.split_manifest_hash
 --audit.execution_timing signal_on_close_plus_spread
 ```
@@ -280,12 +282,12 @@ inside the training process.
 
 Entry-eval artifact:
 
-`/home/v/Documents/work/gym-trading-env/artifacts/entry_eval/entry_eval_jm_walk_forward_20240603_20251202_signal_close_v1/split_manifest.json`
+`/data/logdir/trading_contracts/jm_walk_forward_20240603_20251202/artifacts/walk_forward_splits/jm_walk_forward_20240603_20251202/split_manifest.json`
 
 Current hash:
 
 ```text
-eb0f7073d35afd4b76f73eddcbf11cf24539287f502ec7e83726d48343ff598e
+9de809fa1aae612a4aeef453110dee10d7d4fb8f8e1c49c2c9474ddffec388ee
 ```
 
 Current split:
@@ -299,7 +301,8 @@ Current split:
 Training env:
 
 ```text
-data_path: JM_WF1_TRAIN_20240603_20250731
+config_path: /data/logdir/trading_contracts/jm_walk_forward_20240603_20251202/configs/env/jm_walk_forward_20240603_20251202_train.yaml
+data_path: /data/logdir/trading_contracts/jm_walk_forward_20240603_20251202/data/jm_walk_forward_20240603_20251202_train.csv
 randomize_start: true
 start_clock: future_night
 ```
@@ -307,7 +310,8 @@ start_clock: future_night
 Full audit env:
 
 ```text
-data_path: 18M_DCE_JM2601
+config_path: /data/logdir/trading_contracts/jm_walk_forward_20240603_20251202/configs/env/jm_walk_forward_20240603_20251202_full.yaml
+data_path: /home/v/Documents/work/gym-trading-env/data/18M_DCE_JM2601.csv
 randomize_start: true
 start_clock: future_night
 ```
@@ -330,63 +334,38 @@ The existing detailed split report is:
 
 Entry-eval artifact:
 
-`/home/v/Documents/work/gym-trading-env/artifacts/entry_eval/entry_eval_rb8y_walk_forward_20171225_20251202_signal_close_v1/split_manifest.json`
+`/data/logdir/trading_contracts/rb8y_fixed_holdout_v1/artifacts/walk_forward_splits/rb8y_fixed_holdout_v1/split_manifest.json`
 
-Actual current hash:
-
-```text
-b1f2f9a048c09c7663ccadcf3c162cf7f55f2818445a108975696f37b6593845
-```
-
-The RB training script currently defaults to this same hash:
+Current hash:
 
 ```text
-b1f2f9a048c09c7663ccadcf3c162cf7f55f2818445a108975696f37b6593845
+d92ea861774fe5ca3acf34fc90ff75605883a67b0e440a8129300dfe18c2ce49
 ```
 
-The RB script metadata has been updated to the current generated artifact hash.
-The remaining problem is split/env overlap, not hash mismatch.
-
-Current RB entry-eval folds:
-
-| Fold | Train | Validation | Test |
-| --- | --- | --- | --- |
-| fold_1 | 2017-12-25 .. 2020-04-01 | 2020-04-02 .. 2021-05-21 | 2021-05-24 .. 2022-07-08 |
-| fold_2 | 2017-12-25 .. 2021-05-21 | 2021-05-24 .. 2022-07-08 | 2022-07-11 .. 2023-08-23 |
-| fold_3 | 2017-12-25 .. 2022-07-08 | 2022-07-11 .. 2023-08-23 | 2023-08-24 .. 2024-10-17 |
-
-Dreamer audit uses the last fold, so current RB role map is:
+Current RB split:
 
 | Role | Date Range | Trading Days |
 | --- | --- | ---: |
-| train | 2017-12-25 .. 2022-07-08 | 1101 |
-| validation | 2022-07-11 .. 2023-08-23 | 275 |
-| test | 2023-08-24 .. 2024-10-17 | 275 |
+| train | 2017-12-25 .. 2024-12-31 | 1693 |
+| validation | 2025-01-02 .. 2025-06-30 | 118 |
+| test | 2025-07-01 .. 2025-12-02 | 103 |
 
-But the current RB training env is:
+Training env:
 
 ```text
-data_path: RB_8Y_WF_TRAIN_20171225_20241231
+config_path: /data/logdir/trading_contracts/rb8y_fixed_holdout_v1/configs/env/rb8y_fixed_holdout_v1_train.yaml
+data_path: /data/logdir/trading_contracts/rb8y_fixed_holdout_v1/data/rb8y_fixed_holdout_v1_train.csv
 ```
 
-This training env covers validation/test dates from the current last fold. As a
-result, current RB artifacts are useful for pilot training and debugging, but
-should not be treated as a clean formal validation/test protocol until one of
-these is fixed:
+Full audit env:
 
-1. regenerate a fixed RB split manifest whose train role matches
-   `2017-12-25 .. 2024-12-31`, with validation/test after that range; or
-2. restrict RB training env data to the last-fold train range
-   `2017-12-25 .. 2022-07-08`; or
-3. explicitly define a different RB official split and update both env configs
-   and split manifest hash together.
-
-With the guard enabled, the default RB script fails as formal holdout training.
-To run the current RB setup as explicit pilot/debug only:
-
-```bash
-ALLOW_NON_HOLDOUT=true ./tools/run_walk_forward_seed_rb.sh seed_a 101 /data/logdir/action-mask-rb8y-pilot1m-seed-a-20260617 pilot1m
+```text
+config_path: /data/logdir/trading_contracts/rb8y_fixed_holdout_v1/configs/env/rb8y_fixed_holdout_v1_full.yaml
+data_path: /home/v/Documents/work/gym-trading-env/data/8Y_SHFE_RB_1m.csv
 ```
+
+RB is now aligned for formal holdout training when the script uses this external
+contract root and the guard hash above.
 
 ## Visibility Rules
 
@@ -475,10 +454,9 @@ train/validation/test protocol if commands follow the documented sequence:
 
 ### RB
 
-Current RB run commands are operationally valid for training, but the current
-validation/test role map is not clean relative to the current training env date
-range. RB needs split/config alignment before any result is called a formal
-holdout or formal validation/test result.
+Current RB walk-forward results can be interpreted under a valid
+train/validation/test protocol only when the run uses the external
+`rb8y_fixed_holdout_v1` contract root and its generated train-only env config.
 
 ## Must Not Be Confused
 
@@ -504,4 +482,5 @@ For future Dreamer trading experiments:
 5. Validation may choose the checkpoint; test may not.
 6. Never use the full eval env config for training unless the experiment is
    explicitly not a holdout experiment.
-7. For RB, fix the split/env mismatch before formal reporting.
+7. For JM and RB, regenerate a new external contract when the date split,
+   raw CSV, product config, or execution timing changes.
