@@ -33,5 +33,8 @@ def summarize_learning(agent, logdir, step):
     finite=bool(keys) and all(np.isfinite(params[k]).all() for k in keys)
     delta=sum(float(np.square(params[k].astype(np.float64)-initial[k].astype(np.float64)).sum()) for k in keys)
     result['parameters'][name]=dict(finite=finite,l2_delta=float(np.sqrt(delta)),keys=len(keys))
-  result['actual_learning']=result['updates']>0 and all(v['finite'] and v['l2_delta']>0 for v in result['parameters'].values())
+  result['actor_gate_enabled']=bool(agent.get_avail_actor_enabled())
+  result['parameter_changes_observed']=result['updates']>0 and all(v['finite'] and v['l2_delta']>0 for v in result['parameters'].values())
+  result['actual_learning']=result['parameter_changes_observed'] and result['actor_gate_enabled']
+  result['limitation']='Parameter movement alone does not prove profitable timing; disabled gate forbids a policy-learning claim.'
   (root/'learning_audit.json').write_text(json.dumps(result,indent=2))

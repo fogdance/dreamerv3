@@ -6,7 +6,8 @@ from pathlib import Path
 
 
 def validate_transfer(config, receipt_path):
-  from gym_trading_env.envs.entry_contract import fingerprint, read_yaml
+  from gym_trading_env.envs.entry_contract import fingerprint
+  from ruamel import yaml
   receipt=json.loads(Path(receipt_path).read_text())
   digest=receipt.pop('content_hash')
   if fingerprint(receipt)!=digest or receipt['method']!='C':
@@ -19,7 +20,7 @@ def validate_transfer(config, receipt_path):
   for filename,expected in receipt['input_hashes'].items():
     if hashlib.sha256(Path(filename).read_bytes()).hexdigest()!=expected:
       raise ValueError(f'C transfer frozen input changed: {filename}')
-  source=read_yaml(receipt['source_config'])
+  source=yaml.YAML(typ='safe').load(Path(receipt['source_config']).read_text())
   if int(source['experiment_seed'])!=receipt['seed'] or int(source['run']['steps'])!=receipt['source_steps']:
     raise ValueError('C source seed/budget mismatch')
   source_manifest=json.loads(Path(source['fg_entry']['manifest']).read_text())
