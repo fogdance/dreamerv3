@@ -64,3 +64,8 @@ The latest user revision removes expiry_remaining. Inputs are now `market_seq` (
 ## 当前冻结数据集：按换主力边界切分
 
 使用 `/home/v/Documents/work/gym-trading-env/artifacts/fg_entry_v1/dataset_v2_main_split/manifest.json` 与同目录 `train_dataset.yaml`。训练截止 2022-12-09，验证截止 2024-08-19，测试截止 2025-12-31；切分统一维护在 env 仓库 `configs/fg_entry_v1/fg.yaml` 的 `data.split`，禁止在合约主力区段中途切分。旧 dataset_v1 仅作历史审计，配置哈希过时，不用于当前训练或恢复。此次不启动训练。
+
+
+## 当前数据入口：345 分钟导出及因果分钟索引
+
+使用 `/home/v/Documents/work/gym-trading-env/artifacts/fg_entry_v1/dataset_v3_345_audited` 下的 `manifest.json` 和 `train_dataset.yaml`。切分日期不变。导出截断 23:01～23:30，保留早期交易日；行情索引按预先声明的 345 分钟时钟计算并固定除以 344。此前数据集仅作历史审计；统一配置和行情时钟版本变化后不恢复旧金融检查点。未启动训练，GPU 训练 smoke 尚未重跑。核对 env 文档 `docs/FG_Entry_Minute_Clock_Fix.md`。
