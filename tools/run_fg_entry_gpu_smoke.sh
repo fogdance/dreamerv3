@@ -3,7 +3,11 @@
 set -euo pipefail
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 dreamer_root=$(dirname -- "$script_dir")
-env_root=$(dirname -- "$dreamer_root")/env
+env_root=${FG_ENV_ROOT:-$(dirname -- "$dreamer_root")/gym-trading-env}
+if [[ ! -d "$env_root/src/gym_trading_env" ]]; then
+  echo "Missing environment repository: $env_root" >&2
+  exit 2
+fi
 export JAX_PLATFORMS=cuda
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONPATH="$dreamer_root:$env_root/src${PYTHONPATH:+:$PYTHONPATH}"

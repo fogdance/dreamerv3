@@ -52,3 +52,10 @@ GPU smoke completed: 30 environment steps / 7 updates, finite losses and account
 ## Final FG observation schema
 
 The latest user revision removes expiry_remaining. Inputs are now `market_seq` (60,18), `position_state` (9,), and `action_mask` (2,). Position fields and identity semantics are frozen in companion `docs/FG_Entry_Observation_V1.md`; the existing encoder consumes the new dict without architectural changes. Previous smoke checkpoints use the old schema and are not new-schema training evidence. Six directly affected Gym/Driver/FG regressions passed with GPU available; no training was performed for this revision. Strict position-independent actor scores are no longer promised; their differences are a future dedicated comparison.
+
+
+## 2026-10-10 原仓库开发入口
+
+当前开发目录是 `/home/v/Documents/work/dreamerv3`，分支 `feat/fg-entry-v1.1`。环境代码位于 `/home/v/Documents/work/gym-trading-env`，同名分支。旧 artifacts 工作树已移除；本文较早章节的工作树路径仅为历史记录。当前冻结数据集为 `/home/v/Documents/work/gym-trading-env/artifacts/fg_entry_v1/dataset_v1`。
+
+`tools/run_fg_entry_gpu_smoke.sh` 默认引用同级 `gym-trading-env`，也支持 `FG_ENV_ROOT`。迁移后 6 项 FG 接口和账户恢复测试通过，脚本语法检查通过。未启动训练；旧 GPU smoke 检查点保留用于历史审计，不代表当前九维 Obs 已完成训练验证。
