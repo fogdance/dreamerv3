@@ -229,6 +229,8 @@ def main(argv=None):
       replay_context=config.replay_context,
       action_mask_warmup=config.action_mask_warmup,
       action_mask_actor_initial=config.agent.avail_actor_enabled,
+      fg_checkpoint_identity=(__import__('embodied.run.fg_checkpoint', fromlist=['provenance']).provenance(config)
+          if config.run.fg_full_checkpoint else {}),
       seed_protocol=config.seed_protocol,
   )
 

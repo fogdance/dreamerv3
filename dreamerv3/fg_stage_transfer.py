@@ -10,6 +10,8 @@ def validate_transfer(config, receipt_path):
   from ruamel import yaml
   receipt=json.loads(Path(receipt_path).read_text())
   digest=receipt.pop('content_hash')
+  if getattr(config.run, 'fg_full_checkpoint', False) and not receipt.get('full_checkpoint'):
+    raise ValueError('FG full target cannot migrate a legacy incomplete checkpoint')
   if fingerprint(receipt)!=digest or receipt['method']!='C':
     raise ValueError('Invalid C transfer receipt')
   if int(config.experiment_seed)!=receipt['seed']:
@@ -21,7 +23,7 @@ def validate_transfer(config, receipt_path):
     if hashlib.sha256(Path(filename).read_bytes()).hexdigest()!=expected:
       raise ValueError(f'C transfer frozen input changed: {filename}')
   source=yaml.YAML(typ='safe').load(Path(receipt['source_config']).read_text())
-  if int(source['experiment_seed'])!=receipt['seed'] or int(source['run']['steps'])!=receipt['source_steps']:
+  if int(source['experiment_seed'])!=receipt['seed'] or (not receipt.get('full_checkpoint') and int(source['run']['steps'])!=receipt['source_steps']):
     raise ValueError('C source seed/budget mismatch')
   source_manifest=json.loads(Path(source['fg_entry']['manifest']).read_text())
   target_manifest=json.loads(target.read_text())
@@ -42,6 +44,19 @@ def validate_transfer(config, receipt_path):
     if fingerprint(left)!=fingerprint(right):
       raise ValueError(f'C phase model/training structure mismatch: {key}')
   checkpoint=Path(receipt['checkpoint'])
+  if receipt.get('full_checkpoint'):
+    from embodied.run.fg_checkpoint import validate_bundle, learning_spec, digest, provenance
+    if not getattr(config.run, 'fg_full_checkpoint', False):
+      raise ValueError('C full source requires a full-state target')
+    meta=validate_bundle(checkpoint)
+    if not meta['protected']:
+      raise ValueError('C source must be a protected immutable branch node')
+    if digest(learning_spec(source)) != digest(learning_spec(config)):
+      raise ValueError('C full source learning configuration mismatch')
+    target_identity=provenance(config)
+    for key in ('learning','code_hash','python','versions'):
+      if meta['identity'][key]!=target_identity[key]:
+        raise ValueError(f'C full source runtime identity mismatch: {key}')
   if not (checkpoint/'done').is_file():
     raise ValueError('C pretrain checkpoint incomplete')
   step=pickle.loads((checkpoint/'step.pkl').read_bytes())

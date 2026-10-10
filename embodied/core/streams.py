@@ -1,3 +1,5 @@
+import contextlib
+import copy
 import functools
 import queue
 import threading
@@ -31,7 +33,7 @@ class Stateless(base.Stream):
 
 class Prefetch(base.Stream):
 
-  def __init__(self, source, transform=None, amount=1):
+  def __init__(self, source, transform=None, amount=1, restore=None):
     self.source = iter(source) if hasattr(source, '__iter__') else source()
     self.transform = transform or (lambda x: x)
     self.state = self._getstate()
@@ -40,6 +42,8 @@ class Prefetch(base.Stream):
     self.queue = queue.Queue()
     self.worker = portal.Thread(self._worker)
     self.started = False
+    self.snapshot_lock = threading.RLock()
+    self.restore = restore or (lambda x: x)
 
   def __iter__(self):
     assert not self.started
@@ -67,14 +71,39 @@ class Prefetch(base.Stream):
     if self.started:
       self.requests.release(self.amount)
 
+  @contextlib.contextmanager
+  def pause(self):
+    # The worker holds this lock only while sampling/transforming a batch.
+    with self.snapshot_lock:
+      yield
+
+  def save_full(self):
+    from embodied.run.fg_checkpoint import host
+    with self.snapshot_lock, self.queue.mutex:
+      pending = host(list(self.queue.queue))
+      if any(isinstance(item, str) for item in pending):
+        raise RuntimeError('Cannot snapshot a failed prefetch worker')
+      source = self.source.save_full() if hasattr(self.source, 'save_full') else self._getstate()
+      return dict(source=host(source), state=host(self.state), pending=pending)
+
+  def load_full(self, data):
+    if self.started:
+      raise ValueError('Restore prefetch before starting its worker')
+    self.source.load(data['source'])
+    self.state = data['state']
+    for batch, state in data['pending']:
+      self.queue.put((self.restore(batch), state))
+    self.requests = threading.Semaphore(self.amount - len(data['pending']))
+
   def _worker(self):
     try:
       while True:
         self.requests.acquire()
-        data = next(self.source)
-        data = self.transform(data)
-        state = self._getstate()
-        self.queue.put((data, state))
+        with self.snapshot_lock:
+          data = next(self.source)
+          data = self.transform(data)
+          state = self._getstate()
+          self.queue.put((data, state))
     except Exception as e:
       self.queue.put(str(e))
       raise
@@ -145,9 +174,14 @@ class Consec(base.Stream):
         'index': self.index,
     }
 
+  def save_full(self):
+    return {**self.save(), 'current': {k: np.array(v, copy=True)
+        for k, v in self.current.items()} if self.current is not None else None}
+
   def load(self, data):
     self.source.load(data['source'])
     self.index = data['index']
+    self.current = data.get('current')
 
 
 class Zip(base.Stream):

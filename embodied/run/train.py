@@ -106,19 +106,42 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
   driver.on_step(replay.add)
   driver.on_step(logfn)
 
-  replay.load()
+  full_checkpoint = args.get('fg_full_checkpoint', False)
+  if full_checkpoint and (args.envs != 1 or not args.get('env_checkpoint', False)):
+    raise ValueError('FG full-state training requires one persistent environment')
+  if not full_checkpoint:
+    replay.load()
   print(f'[replay] dir={replay.directory} items={len(replay.items)} sampler={len(replay.sampler)} chunks={len(replay.chunks)} length={replay.length}')
 
 
-  stream_train = iter(agent.stream(make_stream(replay, 'train')))
-  stream_report = iter(agent.stream(make_stream(replay, 'report')))
+  stream_train = agent.stream(make_stream(replay, 'train'))
+  stream_report = agent.stream(make_stream(replay, 'report'))
+  if not full_checkpoint:
+    stream_train, stream_report = iter(stream_train), iter(stream_report)
 
   carry_train = [agent.init_train(args.batch_size)]
-  carry_report = agent.init_report(args.batch_size)
+  carry_report = [agent.init_report(args.batch_size)]
+  runtime = None
+  if full_checkpoint:
+    from .fg_checkpoint import FullCheckpoint, RuntimeState, StepSchedule
+    schedule = StepSchedule(args.fg_report_every_steps, args.fg_save_every_steps, args.fg_key_steps)
+    def get_carry():
+      return dict(train=carry_train[0], report=carry_report[0],
+          episodes={k: v.reducers for k, v in episodes.items()})
+    def set_carry(state):
+      restore = getattr(agent, 'restore_carry', lambda x: x)
+      carry_train[0], carry_report[0] = restore(state['train']), restore(state['report'])
+      episodes.clear()
+      for worker, reducers in state['episodes'].items():
+        episodes[worker].reducers = reducers
+    runtime = RuntimeState(schedule, should_train, (stream_train, stream_report),
+        get_carry, set_carry, dict(train=train_agg, warmup=warmup_agg, epstats=epstats), warmup_samples)
 
   def trainfn(tran, worker):
     if len(replay) < args.batch_size * args.batch_length:
       return
+    if runtime:
+      runtime.start()
     for _ in range(should_train(step)):
       with elements.timer.section('stream_next'):
         batch = next(stream_train)
@@ -134,7 +157,11 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
         warmup_samples[0] += batch_steps
   driver.on_step(trainfn)
 
-  cp = elements.Checkpoint(logdir / 'ckpt', step=step)
+  cp = (FullCheckpoint(logdir / 'ckpt', step, args.fg_checkpoint_identity,
+      (stream_train, stream_report), args.fg_key_steps, args.fg_reserve_gib)
+      if full_checkpoint else elements.Checkpoint(logdir / 'ckpt', step=step))
+  if full_checkpoint:
+    cp.runtime = runtime
   cp.step = step
   cp.agent = agent
   cp.replay = replay
@@ -147,9 +174,12 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     regex = args.get('from_checkpoint_regex', None)
     elements.checkpoint.load(args.from_checkpoint, dict(
         agent=bind(agent.load, regex=regex)))
-  def save_checkpoint():
-    cp.save()
-    retention.maybe_retain(cp, step)
+  def save_checkpoint(final=False):
+    if full_checkpoint:
+      cp.save(final=final)
+    else:
+      cp.save()
+      retention.maybe_retain(cp, step)
 
   transfer = args.get('fg_stage_transfer', '')
   if transfer and not cp.exists():
@@ -159,11 +189,14 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     from pathlib import Path
     receipt = json.loads(Path(transfer).read_text())
     elements.checkpoint.load(receipt['checkpoint'], dict(
-        agent=agent.load, action_mask_warmup=warmup.load))
+        agent=bind(agent.load_exact, transfer=True) if full_checkpoint else agent.load, action_mask_warmup=warmup.load))
     print('C stage transfer: complete Agent/optimizer/gate; fresh recent Replay/accounts')
 
   cp.load_or_save()
-  retention.maybe_retain(cp, step)
+  if not full_checkpoint:
+    retention.maybe_retain(cp, step)
+  if runtime and getattr(runtime, 'resume_started', False):
+    runtime.start()
   if warmup.enabled:
     _apply_action_mask_warmup_gate(agent, warmup, step)
     phase = 'formal' if warmup.actor_enabled else 'warm-up'
@@ -179,17 +212,25 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     driver.reset(agent.init_policy)
   while step < args.steps:
 
-    driver(policy, steps=10)
+    count = min(10, schedule.distance(step, args.steps)) if full_checkpoint else 10
+    driver(policy, steps=count)
+    if full_checkpoint:
+      report_due, save_due = schedule.advance(step)
+    else:
+      report_due, save_due = should_report(step), should_save(step)
 
-    if should_report(step) and len(replay):
+    if report_due and len(replay):
+      if runtime:
+        runtime.start()
       agg = elements.Agg()
       for _ in range(args.consec_report * args.report_batches):
-        carry_report, mets = agent.report(carry_report, next(stream_report))
+        carry_report[0], mets = agent.report(carry_report[0], next(stream_report))
         agg.add(mets)
       report = agg.result()
       logger.add(report, prefix='report')
       switched = False
-      if warmup.ready(warmup_samples[0]):
+      gate_ready = warmup.ready(warmup_samples[0])
+      if gate_ready:
         gate_metrics = warmup_agg.result()
         warmup_samples[0] = 0
         gate_metrics = {
@@ -199,11 +240,13 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
         switched = warmup.update(gate_metrics, step)
       warmup_metrics = warmup.metrics()
       warmup_metrics['pending_train_samples'] = warmup_samples[0]
+      warmup_metrics['evaluation_ready'] = float(gate_ready)
       logger.add(warmup_metrics, prefix='action_mask_warmup')
       if switched:
         agent.set_avail_actor_enabled(True)
         print(f'Action-mask warm-up passed; masked actor enabled at step {int(step)}')
-        save_checkpoint()
+        if not full_checkpoint:
+          save_checkpoint()
 
     if should_log(step):
       logger.add(train_agg.result())
@@ -215,13 +258,13 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
       logger.add({'timer': elements.timer.stats()['summary']})
       logger.write()
 
-    if should_save(step):
-      save_checkpoint()
+    if save_due:
+      save_checkpoint(final=full_checkpoint and int(step) == int(args.steps))
 
   if persistent_env:
     logger.add(train_agg.result())
   if persistent_env or retention.has_due(step):
-    save_checkpoint()
+    save_checkpoint(final=full_checkpoint)
 
   if args.get('fg_learning_audit', False):
     from .fg_learning_audit import summarize_learning

@@ -353,7 +353,11 @@ class Agent(embodied.Agent):
         self.n_batches.value += 1
       seed = self._seeds(counter, self.train_mirrored)
       return {**data, 'seed': seed}
-    return embodied.streams.Prefetch(st, fn)
+    def restore(data):
+      seed = data['seed']
+      batch = internal.device_put({k: v for k, v in data.items() if k != 'seed'}, self.train_sharded)
+      return {**batch, 'seed': internal.device_put(seed, self.train_mirrored)}
+    return embodied.streams.Prefetch(st, fn, restore=restore)
 
   @elements.timer.section('jaxagent_save')
   def save(self):
@@ -372,7 +376,32 @@ class Agent(embodied.Agent):
     return data
 
   @elements.timer.section('jaxagent_load')
-  def load(self, data, regex=None):
+  def save_exact(self):
+    data = self.save()
+    # Called with both replay prefetchers paused, after driver/update completion.
+    with self.policy_lock:
+      data['policy_params'] = jax.device_get(self.policy_params) if self.jaxcfg.enable_policy else None
+      data['pending_sync'] = jax.device_get(self.pending_sync)
+    data['pending_outs'] = jax.device_get(self.pending_outs)
+    data['pending_mets'] = jax.device_get(self.pending_mets)
+    return data
+
+  def restore_carry(self, carry):
+    return internal.device_put(carry, self.train_sharded)
+
+  def load_exact(self, data, transfer=False):
+    self.load(data, restore_batches=True)
+    with self.policy_lock:
+      if self.jaxcfg.enable_policy:
+        jax.tree.map(lambda x: x.delete(), self.policy_params)
+        self.policy_params = internal.device_put(data['policy_params'], self.policy_params_sharding)
+      self.pending_sync = (internal.device_put(data['pending_sync'], self.policy_params_sharding)
+          if data['pending_sync'] is not None else None)
+    # Phase migration discards historical replay writes and metrics, not weights.
+    self.pending_outs = None if transfer else data['pending_outs']
+    self.pending_mets = None if transfer else data['pending_mets']
+
+  def load(self, data, regex=None, restore_batches=False):
     params = data['params']
     assert params
 
@@ -383,9 +412,9 @@ class Agent(embodied.Agent):
       with self.n_updates.lock:
         self.n_updates.value = int(data['counters']['updates'])
       with self.n_batches.lock:
-        # We restore n_batches to the checkpointed update counter, so the
-        # prefetched batches that were not trained on get repeated.
-        self.n_batches.value = int(data['counters']['updates'])
+        # Legacy loads repeat prefetched batches; full loads restore the queued
+        # batches themselves and therefore preserve the actual batch counter.
+        self.n_batches.value = int(data['counters']['batches' if restore_batches else 'updates'])
       with self.n_actions.lock:
         self.n_actions.value = int(data['counters']['actions'])
 

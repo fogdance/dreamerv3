@@ -12,6 +12,23 @@ def validate_fg_entry(config):
   if config.run.from_checkpoint:
     raise ValueError('FG cannot restore model-only checkpoints; resume the same logdir to restore the financial account')
   from gym_trading_env.envs.entry_contract import fingerprint, read_yaml
+  if getattr(config.run, 'fg_full_checkpoint', False):
+    if config.task != 'gymnasium_FGEntryDatasetEnv-v0' or config.run.envs != 1:
+      raise ValueError('FG full checkpoints require sequential single-env datasets')
+    if config.jax.platform != 'cuda' or config.replay.fracs.uniform != 1:
+      raise ValueError('FG full checkpoints require GPU and Uniform Replay')
+    selector=read_yaml(config.env.gymnasium.config_path)
+    if selector.get('scheduler', {}).get('mode', 'sequential') != 'sequential':
+      raise ValueError('FG full checkpoints forbid rotating account scheduling')
+    if int(config.run.fg_report_every_steps)<=0 or int(config.run.fg_save_every_steps)<=0:
+      raise ValueError('FG fixed step periods must be positive')
+    from embodied.run.fg_checkpoint import provenance, validate_bundle
+    checkpoint_root=Path(config.logdir)/'ckpt'
+    nodes=sorted(checkpoint_root.glob('step_*'),reverse=True)
+    if nodes:
+      from embodied.run.fg_checkpoint import FullCheckpoint
+      # Validate before main overwrites config.yaml or initializes the GPU Agent.
+      FullCheckpoint(checkpoint_root, None, provenance(config), ()).latest()
   transfer = getattr(config.run, 'fg_stage_transfer', '')
   if transfer:
     from .fg_stage_transfer import validate_transfer
@@ -37,7 +54,7 @@ def validate_fg_entry(config):
     for row in records:
       validate_fg_entry(config.update({'task':'gymnasium_FixedDirectionEntryEnv-v0',
           'env.gymnasium.config_path':row['env_config'],
-          'run.fg_stage_transfer':''}))
+          'run.fg_stage_transfer':'', 'run.fg_full_checkpoint':False}))
     return
   records = [r for r in manifest['files'] if Path(r['env_config']).resolve() == selected]
   if len(records) != 1 or not records[0]['eligible_for_training'] or records[0]['role'] != 'train':

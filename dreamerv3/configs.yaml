@@ -149,6 +149,11 @@ defaults:
     from_checkpoint: ''
     fg_stage_transfer: ''
     fg_learning_audit: False
+    fg_full_checkpoint: False
+    fg_report_every_steps: 5000
+    fg_save_every_steps: 10000
+    fg_key_steps: [70000, 100000, 700000, 1000000]
+    fg_reserve_gib: 10
     checkpoint_retention: {enabled: False, steps: [0], directory: ckpt_retained}
     episode_timeout: 180
     actor_addr: 'localhost:{auto}'
