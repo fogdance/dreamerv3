@@ -151,12 +151,27 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     cp.save()
     retention.maybe_retain(cp, step)
 
+  transfer = args.get('fg_stage_transfer', '')
+  if transfer and not cp.exists():
+    if len(replay):
+      raise ValueError('C recent stage requires empty Replay')
+    import json
+    from pathlib import Path
+    receipt = json.loads(Path(transfer).read_text())
+    elements.checkpoint.load(receipt['checkpoint'], dict(
+        agent=agent.load, action_mask_warmup=warmup.load))
+    print('C stage transfer: complete Agent/optimizer/gate; fresh recent Replay/accounts')
+
   cp.load_or_save()
   retention.maybe_retain(cp, step)
   if warmup.enabled:
     _apply_action_mask_warmup_gate(agent, warmup, step)
     phase = 'formal' if warmup.actor_enabled else 'warm-up'
     print(f'Action-mask training phase: {phase}')
+
+  if args.get('fg_learning_audit', False):
+    from .fg_learning_audit import snapshot_initial
+    snapshot_initial(agent, str(logdir))
 
   print('Start training loop')
   policy = lambda *args: agent.policy(*args, mode='train')
@@ -207,5 +222,9 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     logger.add(train_agg.result())
   if persistent_env or retention.has_due(step):
     save_checkpoint()
+
+  if args.get('fg_learning_audit', False):
+    from .fg_learning_audit import summarize_learning
+    summarize_learning(agent, str(logdir), int(step))
 
   logger.close()

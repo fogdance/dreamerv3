@@ -147,6 +147,8 @@ defaults:
     eval_eps: 1
     report_batches: 1
     from_checkpoint: ''
+    fg_stage_transfer: ''
+    fg_learning_audit: False
     checkpoint_retention: {enabled: False, steps: [0], directory: ckpt_retained}
     episode_timeout: 180
     actor_addr: 'localhost:{auto}'

@@ -12,6 +12,10 @@ def validate_fg_entry(config):
   if config.run.from_checkpoint:
     raise ValueError('FG cannot restore model-only checkpoints; resume the same logdir to restore the financial account')
   from gym_trading_env.envs.entry_contract import fingerprint, read_yaml
+  transfer = getattr(config.run, 'fg_stage_transfer', '')
+  if transfer:
+    from .fg_stage_transfer import validate_transfer
+    validate_transfer(config, transfer)
   path = Path(config.fg_entry.manifest).expanduser()
   if not config.fg_entry.manifest or not path.is_file():
     raise ValueError('FG training requires a frozen dataset manifest')
@@ -32,7 +36,8 @@ def validate_fg_entry(config):
       raise ValueError('No complete FG training lifecycles')
     for row in records:
       validate_fg_entry(config.update({'task':'gymnasium_FixedDirectionEntryEnv-v0',
-          'env.gymnasium.config_path':row['env_config']}))
+          'env.gymnasium.config_path':row['env_config'],
+          'run.fg_stage_transfer':''}))
     return
   records = [r for r in manifest['files'] if Path(r['env_config']).resolve() == selected]
   if len(records) != 1 or not records[0]['eligible_for_training'] or records[0]['role'] != 'train':
