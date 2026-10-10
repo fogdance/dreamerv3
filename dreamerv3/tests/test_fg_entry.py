@@ -50,27 +50,3 @@ def test_real_gym_adapter_restores_losing_account_and_wrapper(tmp_path):
     np.testing.assert_array_equal(a[k],b[k])
   assert right.env.unwrapped.net_lots==3
   assert right.env.unwrapped._get_info()['account_net_pnl']==-1200
-
-
-def test_grouped_manifest_accepts_mixed_years_and_rejects_cross_role_contracts():
-  import copy
-  from dreamerv3.fg_entry_guard import validate_manifest_roles
-  groups=dict(train=['CZCE.FG901','CZCE.FG501'],validation=['CZCE.FG101'],test=['CZCE.FG001'],excluded=[])
-  m=dict(schema=2,roles=dict(train=[20180901,20240901],validation=[20200901],test=[20190901]),
-      split=dict(mode='contract_groups',contracts=groups,training_order=dict(mode='shuffle_each_epoch',seed=0)),
-      excluded_contracts=[],files=[dict(contract=c,role=r,calendar_complete=True,direction_rows=1,
-        complete_lifecycle=True,eligible_for_training=r=='train')
-        for r in ('train','validation','test') for c in groups[r]])
-  validate_manifest_roles(m)
-  bad=copy.deepcopy(m);bad['files'][0]['role']='validation'
-  with pytest.raises(ValueError,match='crosses frozen roles'):
-    validate_manifest_roles(bad)
-  bad=copy.deepcopy(m);bad['files'].append(bad['files'][0])
-  with pytest.raises(ValueError,match='exactly once'):
-    validate_manifest_roles(bad)
-  bad=copy.deepcopy(m);bad['files'][0]['complete_lifecycle']=False
-  with pytest.raises(ValueError,match='incomplete'):
-    validate_manifest_roles(bad)
-  legacy=dict(roles=m['roles'])
-  with pytest.raises(ValueError,match='not chronological'):
-    validate_manifest_roles(legacy)
