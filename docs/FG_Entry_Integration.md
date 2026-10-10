@@ -36,3 +36,7 @@ Account checkpointing is supported by the ordinary train script. The FG profile 
 ## Unified business configuration
 
 The companion repository maintains directions, costs, cutoff, excluded FG805, expiry protocol and reward contract only in `configs/fg_entry_v1/fg.yaml`. Dataset construction emits frozen per-contract snapshots and the train selector. Editing the master invalidates frozen manifest admission until rebuilding. dataset_v3 has 24 main segments and 12 complete train lifecycles; real-data Gym reset and admission were verified.
+
+## Current authorization boundary
+
+The user explicitly prohibits starting formal training. Do not run the training command until authorized again. The earlier launch attempt exited with code 1 during JAX backend initialization (AssertionError), before the training loop; its log is `/tmp/fg-entry-v1/train-fg-seed0.log`. No market-data training result is claimed.
