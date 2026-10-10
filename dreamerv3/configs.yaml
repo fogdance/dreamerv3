@@ -10,6 +10,8 @@ defaults:
   experiment_seed: 0
   dreamer:
     seed: 0
+  fg_entry:
+    manifest: ''
   audit:
     matched_random_seed: 20260615
     entry_eval_version: ''
@@ -133,6 +135,7 @@ defaults:
     chunksize: 1024
 
   run:
+    env_checkpoint: False
     steps: 1e10
     duration: 0
     train_ratio: 32.0
@@ -204,6 +207,7 @@ defaults:
     avail_post_grad: True
     avail_prior_grad: True
     avail_threshold: 0.5
+    avail_always_available_index: -1
     avail_actor_enabled: False
     repval_loss: True
     repval_grad: True
@@ -495,3 +499,23 @@ action_mask_formal:
   env.gymnasium.config_path: ''
   action_mask_warmup.enabled: True
   agent.avail_actor_enabled: False
+
+# FG profile keeps historical configurations and Reward unchanged.
+fg_entry_v1:
+  <<: *size50m
+  task: gymnasium_FixedDirectionEntryEnv-v0
+  batch_size: 16
+  run:
+    env_checkpoint: True
+    envs: 1
+    eval_envs: 0
+    steps: 1e6
+    train_ratio: 64
+  agent.avail_always_available_index: 0
+  action_mask_warmup.enabled: True
+  agent.avail_actor_enabled: False
+  env.gymnasium.config_path: ''
+  jax.prealloc: False
+
+fg_entry_dataset_v1:
+  task: gymnasium_FGEntryDatasetEnv-v0

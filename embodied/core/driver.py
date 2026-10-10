@@ -39,6 +39,26 @@ class Driver:
     self.acts['reset'] = np.ones(self.length, bool)
     self.carry = init_policy and init_policy(self.length)
 
+  def save(self):
+    if self.parallel:
+      [pipe.send(('save',)) for pipe in self.pipes]
+      states = [self._receive(pipe) for pipe in self.pipes]
+    else:
+      states = [env.save() for env in self.envs]
+    return dict(schema=1, length=self.length, envs=states,
+        acts=elements.tree.map(lambda x: np.array(x, copy=True), self.acts),
+        carry=elements.tree.map(lambda x: np.array(x, copy=True), self.carry))
+
+  def load(self, state):
+    if state['schema'] != 1 or state['length'] != self.length:
+      raise ValueError('Driver checkpoint environment count mismatch')
+    if self.parallel:
+      [pipe.send(('load', value)) for pipe, value in zip(self.pipes, state['envs'])]
+      [self._receive(pipe) for pipe in self.pipes]
+    else:
+      [env.load(value) for env, value in zip(self.envs, state['envs'])]
+    self.acts, self.carry = state['acts'], state['carry']
+
   def close(self):
     if self.parallel:
       [proc.kill() for proc in self.procs]
@@ -117,6 +137,11 @@ class Driver:
           act = args[0]
           obs = env.step(act)
           pipe.send(('result', obs))
+        elif msg == 'save':
+          pipe.send(('result', env.save()))
+        elif msg == 'load':
+          env.load(args[0])
+          pipe.send(('result', None))
         elif msg == 'obs_space':
           assert len(args) == 0
           pipe.send(('result', env.obs_space))

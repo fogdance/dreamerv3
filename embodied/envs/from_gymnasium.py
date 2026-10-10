@@ -110,6 +110,18 @@ class FromGymnasium(embodied.Env):
         is_terminal=is_terminal)
     return obs
 
+  def save(self):
+    return dict(schema=1, env=self._env.unwrapped.export_state(),
+        done=self._done, info=self._info, reset_seed_used=self._reset_seed_used)
+
+  def load(self, state):
+    if state['schema'] != 1:
+      raise ValueError('Unsupported Gym account checkpoint')
+    self._env.reset(options={'resume': state['env']})
+    self._done = state['done']
+    self._info = state['info']
+    self._reset_seed_used = state['reset_seed_used']
+
   def render(self):
     image = self._env.render()
     # assert image is not None

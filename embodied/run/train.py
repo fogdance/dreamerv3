@@ -139,6 +139,10 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
   cp.agent = agent
   cp.replay = replay
   cp.action_mask_warmup = warmup
+  persistent_env = args.get('env_checkpoint', False)
+  if persistent_env:
+    driver.reset(agent.init_policy)
+    cp.driver = driver
   if args.from_checkpoint:
     regex = args.get('from_checkpoint_regex', None)
     elements.checkpoint.load(args.from_checkpoint, dict(
@@ -156,7 +160,8 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
 
   print('Start training loop')
   policy = lambda *args: agent.policy(*args, mode='train')
-  driver.reset(agent.init_policy)
+  if not persistent_env:
+    driver.reset(agent.init_policy)
   while step < args.steps:
 
     driver(policy, steps=10)

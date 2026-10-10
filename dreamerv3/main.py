@@ -177,6 +177,8 @@ def main(argv=None):
   config = config.update(logdir=(
       config.logdir.format(timestamp=elements.timestamp())))
   config = _resolve_seed_protocol(config)
+  from .fg_entry_guard import validate_fg_entry
+  validate_fg_entry(config)
   guard_result = validate_walk_forward_split(config, dreamer_root=folder.parent)
   config = config.update(walk_forward_guard_result=guard_result)
   if guard_result.get('status') == 'pass':

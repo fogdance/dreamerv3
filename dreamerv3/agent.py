@@ -23,12 +23,19 @@ IMAG_ACTION_MASK = '_action_mask'
 IMAG_MASK_FALLBACK = '_action_mask_fallback'
 
 
-def hard_nonempty_mask(prob, threshold):
+def hard_nonempty_mask(prob, threshold, always_available_index=-1):
   mask = prob >= threshold
   fallback_used = ~mask.any(-1)
   fallback = jax.nn.one_hot(
       jnp.argmax(prob, -1), prob.shape[-1], dtype=bool)
   mask = jnp.where(mask.any(-1, keepdims=True), mask, fallback)
+  if always_available_index >= 0:
+    if always_available_index >= prob.shape[-1]:
+      raise ValueError('Always available action index is out of range')
+    mask = mask.at[..., always_available_index].set(True)
+    # An uncertain prediction must fall back to the configured safe action.
+    safe = jax.nn.one_hot(always_available_index, prob.shape[-1], dtype=bool)
+    mask = jnp.where(fallback_used[..., None], safe, mask)
   return sg(mask), sg(fallback_used)
 
 
@@ -331,7 +338,8 @@ class Agent(embodied.jax.Agent):
   def _predicted_action_mask_info(self, feat, bdims):
     avail = self.avail(self.feat2tensor(feat), bdims)
     prob = jax.nn.sigmoid(self._binary_logits(avail))
-    return hard_nonempty_mask(prob, self.config.avail_threshold)
+    return hard_nonempty_mask(prob, self.config.avail_threshold,
+        self.config.get('avail_always_available_index', -1))
 
   def _sample_imag_action(self, feat, bdims):
     mask, fallback = self._predicted_action_mask_info(feat, bdims)
