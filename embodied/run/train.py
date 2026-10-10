@@ -5,7 +5,7 @@ import elements
 import embodied
 import numpy as np
 
-from .action_mask_warmup import ActionMaskWarmup, METRICS
+from .action_mask_warmup import ActionMaskWarmup, METRICS, ADD_RECALL_METRICS
 from .checkpoint_retention import StepCheckpointRetention
 
 
@@ -150,10 +150,18 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
       if 'replay' in outs:
         replay.update(outs['replay'])
       train_agg.add(mets, prefix='train')
-      if warmup.enabled:
+      # ADD counts need received metrics; JAX first returns an empty dict.
+      # Preserve legacy sample accounting when the ADD check is disabled.
+      if warmup.enabled and (mets or not warmup.add_recall_enabled):
         warmup_agg.add({
             key: mets[key]
             for key, _ in METRICS.values() if key in mets})
+        if warmup.add_recall_enabled:
+          # Sum confusion counts, not batch recalls (often 0 positives/batch).
+          for prefix in ('post', 'prior'):
+            for suffix in ('add_positives', 'add_true_positives'):
+              key = f'avail/{prefix}_{suffix}'
+              warmup_agg.add(key, mets[key], agg='sum')
         warmup_samples[0] += batch_steps
   driver.on_step(trainfn)
 
@@ -238,9 +246,18 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
       if gate_ready:
         gate_metrics = warmup_agg.result()
         warmup_samples[0] = 0
+        if warmup.add_recall_enabled:
+          for prefix in ('post', 'prior'):
+            positives = float(gate_metrics.get(f'avail/{prefix}_add_positives', 0))
+            true_positives = float(gate_metrics.get(f'avail/{prefix}_add_true_positives', 0))
+            gate_metrics[f'avail/{prefix}_add_recall'] = (
+                true_positives / positives if positives else float('nan'))
+        allowed_metrics = {**METRICS, **(ADD_RECALL_METRICS if warmup.add_recall_enabled else {})}
         gate_metrics = {
             key: gate_metrics[key]
-            for key, _ in METRICS.values() if key in gate_metrics}
+            for key, _ in allowed_metrics.values() if key in gate_metrics} | {
+            key: value for key, value in gate_metrics.items()
+            if key.endswith('_add_positives') or key.endswith('_add_true_positives')}
         logger.add(gate_metrics, prefix='action_mask_gate_eval')
         switched = warmup.update(gate_metrics, step)
       warmup_metrics = warmup.metrics()

@@ -90,3 +90,81 @@ def test_auto_warmup_rejects_actor_bypass():
     assert "avail_actor_enabled=False" in str(exc)
   else:
     raise AssertionError("Auto warm-up accepted an already enabled actor")
+
+
+def _fg_add_metrics(positives=32, post_tp=32, prior_tp=32):
+  return _metrics(**{
+      'avail/post_add_positives': positives,
+      'avail/prior_add_positives': positives,
+      'avail/post_add_recall': post_tp / positives if positives else float('nan'),
+      'avail/prior_add_recall': prior_tp / positives if positives else float('nan'),
+  })
+
+
+def _fg_add_config(**overrides):
+  return _config(add_recall_enabled=True, min_add_positives=16,
+      post_add_recall=0.8, prior_add_recall=0.8, **overrides)
+
+
+def test_fg_gate_rejects_always_disallow_add_even_with_perfect_global_metrics():
+  state = ActionMaskWarmup(_fg_add_config())
+  # The degenerate classifier predicts ADD illegal on all 175 legal states.
+  degenerate = _fg_add_metrics(positives=175, post_tp=0, prior_tp=0)
+  for step in (10, 20, 30, 40, 50):
+    assert not state.update(degenerate, step)
+  assert not state.actor_enabled
+
+
+def test_fg_gate_rejects_no_positive_support_even_with_fabricated_recall():
+  state = ActionMaskWarmup(_fg_add_config())
+  data = _fg_add_metrics(positives=0)
+  data['avail/post_add_recall'] = 1.0
+  data['avail/prior_add_recall'] = 1.0
+  assert not state.update(data, 10)
+  assert not state.actor_enabled
+
+
+def test_fg_gate_requires_prior_and_posterior_add_recall():
+  state = ActionMaskWarmup(_fg_add_config())
+  assert not state.update(_fg_add_metrics(prior_tp=24), 10)
+  assert not state.update(_fg_add_metrics(post_tp=24), 20)
+  for step in (30, 40):
+    assert not state.update(_fg_add_metrics(post_tp=29, prior_tp=29), step)
+  assert state.update(_fg_add_metrics(post_tp=29, prior_tp=29), 50)
+  assert state.actor_enabled
+  assert state.switched_step == 50
+
+
+def test_fg_gate_rejects_too_few_positive_samples():
+  state = ActionMaskWarmup(_fg_add_config())
+  for step in (10, 20, 30):
+    assert not state.update(_fg_add_metrics(positives=4, post_tp=4, prior_tp=4), step)
+  assert not state.actor_enabled
+
+
+def test_fg_enabled_gate_does_not_treat_insufficient_support_as_regression():
+  state = ActionMaskWarmup(_fg_add_config())
+  for step in (10, 20, 30):
+    state.update(_fg_add_metrics(), step)
+  assert state.actor_enabled
+  for step, support in ((40, 0), (50, 4), (60, 0), (70, 4), (80, 0)):
+    assert not state.update(_fg_add_metrics(positives=support,
+        post_tp=support, prior_tp=support), step)
+  assert state.actor_enabled
+  assert state.consecutive_regressions == 0
+  assert state.metrics()['add_support_sufficient'] == 0.0
+
+
+def test_fg_missing_support_still_stops_on_observed_global_regression():
+  state = ActionMaskWarmup(_fg_add_config())
+  for step in (10, 20, 30):
+    state.update(_fg_add_metrics(), step)
+  bad = _fg_add_metrics(positives=0)
+  bad['avail/prior_fpr'] = 0.1
+  assert not state.update(bad, 40)
+  try:
+    state.update(bad, 50)
+  except RuntimeError as exc:
+    assert 'regressed' in str(exc)
+  else:
+    raise AssertionError('Global regression was hidden by missing ADD support')

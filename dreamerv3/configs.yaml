@@ -97,6 +97,11 @@ defaults:
     prior_exact: 0.980
     prior_fpr: 0.005
     img_fallback: 0.0001
+    # FG-only: prevent Gate from passing by always predicting ADD illegal.
+    add_recall_enabled: False
+    min_add_positives: 16
+    post_add_recall: 0.80
+    prior_add_recall: 0.80
   clock_addr: ''
   clock_port: ''
   ipv6: False
@@ -521,6 +526,7 @@ fg_entry_v1:
     train_ratio: 64
   agent.avail_always_available_index: 0
   action_mask_warmup.enabled: True
+  action_mask_warmup.add_recall_enabled: True
   agent.avail_actor_enabled: False
   env.gymnasium.config_path: ''
   jax.prealloc: False

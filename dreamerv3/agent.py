@@ -324,7 +324,13 @@ class Agent(embodied.jax.Agent):
     false_neg = (~pred & target).sum()
     negatives = (~target).sum()
     positives = target.sum()
+    # In FG WAIT=0 is almost always legal, while ADD=1 is very rare.
+    # Keep class-specific counts so the Gate can pool them across batches.
+    add_target = target[..., 1]
+    add_pred = pred[..., 1]
     return {
+        f'avail/{prefix_}_add_positives': add_target.sum(),
+        f'avail/{prefix_}_add_true_positives': (add_pred & add_target).sum(),
         f'avail/{prefix_}_accuracy': (pred == target).mean(),
         f'avail/{prefix_}_exact_accuracy': (pred == target).all(-1).mean(),
         f'avail/{prefix_}_fpr': false_pos / jnp.maximum(1, negatives),
