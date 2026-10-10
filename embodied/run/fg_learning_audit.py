@@ -22,7 +22,7 @@ def snapshot_initial(agent, logdir):
   (root/'learning_initial_counters.json').write_text(json.dumps(counters))
 
 
-def summarize_learning(agent, logdir, step):
+def summarize_learning(agent, logdir, step, output_path=None):
   root=Path(logdir)
   counters,params=selected(agent)
   initial=np.load(root/'learning_initial.npz')
@@ -37,4 +37,9 @@ def summarize_learning(agent, logdir, step):
   result['parameter_changes_observed']=result['updates']>0 and all(v['finite'] and v['l2_delta']>0 for v in result['parameters'].values())
   result['actual_learning']=result['parameter_changes_observed'] and result['actor_gate_enabled']
   result['limitation']='Parameter movement alone does not prove profitable timing; disabled gate forbids a policy-learning claim.'
-  (root/'learning_audit.json').write_text(json.dumps(result,indent=2))
+  destination=Path(output_path) if output_path is not None else root/'learning_audit.json'
+  destination.parent.mkdir(parents=True,exist_ok=True)
+  temporary=destination.with_suffix('.json.tmp')
+  temporary.write_text(json.dumps(result,indent=2))
+  temporary.replace(destination)
+  return result

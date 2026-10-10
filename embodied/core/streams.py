@@ -44,11 +44,14 @@ class Prefetch(base.Stream):
     self.started = False
     self.snapshot_lock = threading.RLock()
     self.restore = restore or (lambda x: x)
+    self.deterministic = False
 
   def __iter__(self):
     assert not self.started
     self.worker.start()
     self.started = True
+    if self.deterministic:
+      self._wait_ready()
     return self
 
   def __next__(self):
@@ -57,6 +60,9 @@ class Prefetch(base.Stream):
     self.requests.release()
     if isinstance(result, str):
       raise RuntimeError(result)
+    if self.deterministic:
+      # Finish the next sample before Replay.add/update can change its population.
+      self._wait_ready()
     data, self.state = result
     return data
 
@@ -70,6 +76,16 @@ class Prefetch(base.Stream):
     self.source.load(state)
     if self.started:
       self.requests.release(self.amount)
+
+  def enable_deterministic(self):
+    if self.started:
+      raise ValueError('Choose prefetch ordering before starting its worker')
+    self.deterministic = True
+
+  def _wait_ready(self):
+    with self.queue.not_empty:
+      while not self.queue._qsize():
+        self.queue.not_empty.wait()
 
   @contextlib.contextmanager
   def pause(self):

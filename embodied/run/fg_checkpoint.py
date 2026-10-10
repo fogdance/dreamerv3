@@ -65,6 +65,29 @@ def learning_spec(config):
   return result
 
 
+def stage_origin(config):
+  c = plain(config)
+  expected = int(c['run'].get('fg_source_steps', 0))
+  path = c['run'].get('fg_stage_transfer', '')
+  if not expected:
+    if path:
+      raise ValueError('C full checkpoint requires explicit source steps')
+    return dict(source_steps=0)
+  path = Path(path) if path else Path(c['logdir']) / 'source_transfer.json'
+  receipt = json.loads(path.read_text())
+  from gym_trading_env.envs.entry_contract import fingerprint
+  checksum = receipt.pop('content_hash')
+  if fingerprint(receipt) != checksum or receipt.get('method') != 'C':
+    raise ValueError('Invalid C source identity receipt')
+  if receipt['source_steps'] != expected:
+    raise ValueError('C source step identity mismatch')
+  if receipt['seed'] != c['experiment_seed']:
+    raise ValueError('C source seed identity mismatch')
+  if Path(receipt['target_manifest']).resolve() != Path(c['fg_entry']['manifest']).resolve():
+    raise ValueError('C source target identity mismatch')
+  return dict(source_steps=expected, receipt_hash=checksum)
+
+
 def provenance(config):
   c = plain(config)
   from gym_trading_env.envs.entry_contract import fingerprint
@@ -83,7 +106,7 @@ def provenance(config):
       for path in sorted((root / name).rglob('*.py')):
         if 'tests' not in path.parts:
           code[f'{root.name}/{path.relative_to(root)}'] = file_hash(path)
-  return dict(schema=1, learning=learning_spec(c), dataset=expected,
+  return dict(schema=1, origin=stage_origin(c), learning=learning_spec(c), dataset=expected,
       selector_hash=file_hash(c['env']['gymnasium']['config_path']),
       env_seed=c['env']['train_seed'], code_hash=digest(code),
       python=sys.version, versions=versions)
@@ -250,7 +273,8 @@ class FullCheckpoint(elements.Checkpoint):
     replay = self._saveables['replay']
     estimate = sum(x.nbytes for x in replay.chunks.values())
     estimate += sum(getattr(v, 'nbytes', 0) for v in getattr(self._saveables['agent'], 'params', {}).values())
-    latest = self.latest()
+    # Saving a new node does not reread every byte of an immutable old Replay.
+    latest = getattr(self, '_published', None)
     if latest:
       estimate += (latest / 'agent.pkl').stat().st_size
     if shutil.disk_usage(self._directory).free < self._reserve + estimate:
@@ -276,13 +300,18 @@ class FullCheckpoint(elements.Checkpoint):
     self._publish(dest)
 
   def _publish(self, dest):
+    self._published = dest
     pointer = self._directory / '.latest.tmp'
     pointer.write_text(dest.name)
     os.replace(pointer, self._directory / 'latest')
     regular = []
     for candidate in sorted(self._directory.glob('step_*')):
       try:
-        meta = validate_bundle(candidate)
+        if not (candidate / 'done').is_file():
+          continue
+        meta = json.loads((candidate / 'manifest.json').read_text())
+        if meta.get('protocol') != 'FG_FULL_V1' or meta.get('schema') != 1:
+          continue
       except (ValueError, OSError, KeyError, json.JSONDecodeError, pickle.UnpicklingError):
         continue
       if meta['identity'] == self._identity and not meta['protected']:
@@ -315,6 +344,8 @@ class RuntimeState:
   def start(self):
     if not self.started:
       for stream in self.streams:
+        if hasattr(stream, 'enable_deterministic'):
+          stream.enable_deterministic()
         iter(stream)
       self.started = True
 

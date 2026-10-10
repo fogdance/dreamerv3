@@ -190,6 +190,11 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     receipt = json.loads(Path(transfer).read_text())
     elements.checkpoint.load(receipt['checkpoint'], dict(
         agent=bind(agent.load_exact, transfer=True) if full_checkpoint else agent.load, action_mask_warmup=warmup.load))
+    if full_checkpoint:
+      # Initial recurrent states may depend on loaded parameters.
+      carry_train[0] = agent.init_train(args.batch_size)
+      carry_report[0] = agent.init_report(args.batch_size)
+      driver.reset(agent.init_policy)
     print('C stage transfer: complete Agent/optimizer/gate; fresh recent Replay/accounts')
 
   cp.load_or_save()

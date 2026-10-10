@@ -146,32 +146,38 @@ class CountingEnv:
 
 
 class CountingAgent:
-  def __init__(self):self.updates=0;self.samples=[];self.reports=[]
+  def __init__(self):self.updates=0;self.samples=[];self.reports=[];self.actor_enabled=False
   def init_policy(self,n):return np.zeros(n,np.int32)
   def init_train(self,n):return np.zeros(n,np.int64)
   def init_report(self,n):return np.zeros(n,np.int64)
-  def stream(self,s):return s
+  def stream(self,s):return embodied.streams.Prefetch(s)
   def policy(self,c,obs,mode):
     action=(obs['value'].astype(np.int32)+self.updates)%2
     return c+1,dict(action=action),{}
   def train(self,c,b):
-    self.updates+=1;self.samples.append(b['value'].copy());return c+1,{},dict(loss=np.float32(self.updates))
+    self.updates+=1;self.samples.append(b['value'].copy())
+    metrics={'avail/'+k:np.float32(0 if 'fpr' in k or 'fallback' in k else 1) for k in
+        ('post_accuracy','post_exact_accuracy','prior_accuracy','prior_exact_accuracy','prior_fpr','img_fallback_rate')}
+    return c+1,{},dict(metrics,loss=np.float32(self.updates))
   def report(self,c,b):
     self.reports.append(b['value'].copy());return c+1,dict(metric=np.float32(1))
-  def save(self):return dict(updates=self.updates,samples=self.samples,reports=self.reports)
+  def set_avail_actor_enabled(self,value):self.actor_enabled=bool(value)
+  def get_avail_actor_enabled(self):return self.actor_enabled
+  def save(self):return dict(updates=self.updates,samples=self.samples,reports=self.reports,actor_enabled=self.actor_enabled)
   def load(self,s):self.__dict__.update(s)
-  load_exact=load
+  def load_exact(self,s,transfer=False):self.load(s)
 
 
-def test_train_loop_full_resume_matches_uninterrupted_without_neural_training(tmp_path):
+@pytest.mark.parametrize('auto_gate',[False,True])
+def test_train_loop_full_resume_matches_uninterrupted_without_neural_training(tmp_path,auto_gate):
   from embodied.run.train import train
-  warmup=dict(enabled=False,min_train_samples=25,consecutive_reports=5,regression_reports=5,
+  warmup=dict(enabled=auto_gate,min_train_samples=5,consecutive_reports=2,regression_reports=5,
       stop_on_regression=True,post_accuracy=.995,post_exact=.990,prior_accuracy=.990,
       prior_exact=.980,prior_fpr=.005,img_fallback=.0001)
-  def run(directory,steps):
+  def run(directory,steps,transfer=''):
     agent=CountingAgent()
     args=elements.Config(steps=steps,train_ratio=4,log_every=1e9,report_every=1e9,save_every=1e9,
-        report_batches=1,from_checkpoint='',fg_stage_transfer='',env_checkpoint=True,debug=True,
+        report_batches=1,from_checkpoint='',fg_stage_transfer=transfer,env_checkpoint=True,debug=True,
         usage=dict(psutil=False,nvsmi=False,gputil=False,malloc=False,gc=False),logdir=str(directory),
         envs=1,batch_size=1,batch_length=2,report_length=1,consec_report=1,
         action_mask_warmup=warmup,action_mask_actor_initial=False,seed_protocol={},
@@ -185,8 +191,9 @@ def test_train_loop_full_resume_matches_uninterrupted_without_neural_training(tm
         lambda:elements.Logger(elements.Counter(),[elements.logger.TerminalOutput()]),args)
     return agent
   expected=run(tmp_path/'continuous',23)
-  run(tmp_path/'resumed',13);actual=run(tmp_path/'resumed',23)
+  run(tmp_path/'resumed',7);run(tmp_path/'resumed',13);actual=run(tmp_path/'resumed',23)
   assert actual.updates==expected.updates
+  assert actual.actor_enabled==expected.actor_enabled==auto_gate
   for a,b in zip(actual.samples,expected.samples):np.testing.assert_array_equal(a,b)
   for a,b in zip(actual.reports,expected.reports):np.testing.assert_array_equal(a,b)
   assert len(actual.samples)==len(expected.samples) and len(actual.reports)==4
@@ -196,3 +203,31 @@ def test_train_loop_full_resume_matches_uninterrupted_without_neural_training(tm
   b=pickle.loads((tmp_path/'continuous/ckpt/step_000000000023/driver.pkl').read_bytes())
   assert a['envs']==b['envs']
   for key in a['acts']:np.testing.assert_array_equal(a['acts'][key],b['acts'][key])
+  # Internal transfer seam uses a mock Agent, not neural model training.
+  import json
+  receipt=tmp_path/'transfer.json'
+  source=nodes/'step_000000000023'
+  receipt.write_text(json.dumps(dict(checkpoint=str(source))))
+  recent=run(tmp_path/'recent',2,str(receipt))
+  assert recent.updates==actual.updates and recent.actor_enabled==actual.actor_enabled
+  target=tmp_path/'recent/ckpt/step_000000000002'
+  replay_state=pickle.loads((target/'replay.pkl').read_bytes())
+  assert len(replay_state['items'])==1
+  assert pickle.loads((target/'driver.pkl').read_bytes())['envs']==[1]
+  assert pickle.loads((source/'driver.pkl').read_bytes())['envs']==a['envs']
+  assert pickle.loads((target/'runtime.pkl').read_bytes())['samples']==0
+
+
+def test_deterministic_prefetch_propagates_worker_failure_without_waiting():
+  stream=embodied.streams.Prefetch(embodied.streams.Stateless(lambda:None))
+  stream.enable_deterministic();stream.started=True;stream.queue.put('worker failure')
+  with pytest.raises(RuntimeError,match='worker failure'):next(stream)
+
+
+def test_fg_guard_rejects_full_checkpoint_optout_before_model_init(tmp_path):
+  from types import SimpleNamespace
+  from dreamerv3.fg_entry_guard import validate_fg_entry
+  cp,step=checkpoint(tmp_path);cp.save()
+  cfg=SimpleNamespace(task='gymnasium_FGEntryDatasetEnv-v0',script='train',logdir=str(tmp_path),
+      run=SimpleNamespace(from_checkpoint='',fg_full_checkpoint=False))
+  with pytest.raises(ValueError,match='legacy protocol'):validate_fg_entry(cfg)

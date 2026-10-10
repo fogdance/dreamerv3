@@ -1,5 +1,4 @@
 """Explicit audited C phase transfer, separate from financial-account resume."""
-import hashlib
 import json
 import pickle
 from pathlib import Path
@@ -19,8 +18,9 @@ def validate_transfer(config, receipt_path):
   target=Path(config.fg_entry.manifest).resolve()
   if target!=Path(receipt['target_manifest']).resolve():
     raise ValueError('C recent manifest mismatch')
+  from embodied.run.fg_checkpoint import file_hash
   for filename,expected in receipt['input_hashes'].items():
-    if hashlib.sha256(Path(filename).read_bytes()).hexdigest()!=expected:
+    if file_hash(filename)!=expected:
       raise ValueError(f'C transfer frozen input changed: {filename}')
   source=yaml.YAML(typ='safe').load(Path(receipt['source_config']).read_text())
   if int(source['experiment_seed'])!=receipt['seed'] or (not receipt.get('full_checkpoint') and int(source['run']['steps'])!=receipt['source_steps']):
@@ -48,6 +48,8 @@ def validate_transfer(config, receipt_path):
     from embodied.run.fg_checkpoint import validate_bundle, learning_spec, digest, provenance
     if not getattr(config.run, 'fg_full_checkpoint', False):
       raise ValueError('C full source requires a full-state target')
+    if int(getattr(config.run, 'fg_source_steps', 0)) != receipt['source_steps']:
+      raise ValueError('C source step identity mismatch')
     meta=validate_bundle(checkpoint)
     if not meta['protected']:
       raise ValueError('C source must be a protected immutable branch node')

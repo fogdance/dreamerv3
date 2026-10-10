@@ -12,6 +12,12 @@ def validate_fg_entry(config):
   if config.run.from_checkpoint:
     raise ValueError('FG cannot restore model-only checkpoints; resume the same logdir to restore the financial account')
   from gym_trading_env.envs.entry_contract import fingerprint, read_yaml
+  if config.task == 'gymnasium_FGEntryDatasetEnv-v0' and not getattr(config.run, 'fg_full_checkpoint', False):
+    logdir=getattr(config, 'logdir', None)
+    if logdir:
+      for meta_path in (Path(logdir)/'ckpt').glob('step_*/manifest.json'):
+        if json.loads(meta_path.read_text()).get('protocol') == 'FG_FULL_V1':
+          raise ValueError('Cannot restore an FG full checkpoint through the legacy protocol')
   if getattr(config.run, 'fg_full_checkpoint', False):
     if config.task != 'gymnasium_FGEntryDatasetEnv-v0' or config.run.envs != 1:
       raise ValueError('FG full checkpoints require sequential single-env datasets')
@@ -24,8 +30,7 @@ def validate_fg_entry(config):
       raise ValueError('FG fixed step periods must be positive')
     from embodied.run.fg_checkpoint import provenance, validate_bundle
     checkpoint_root=Path(config.logdir)/'ckpt'
-    nodes=sorted(checkpoint_root.glob('step_*'),reverse=True)
-    if nodes:
+    if checkpoint_root.exists() and any(checkpoint_root.iterdir()):
       from embodied.run.fg_checkpoint import FullCheckpoint
       # Validate before main overwrites config.yaml or initializes the GPU Agent.
       FullCheckpoint(checkpoint_root, None, provenance(config), ()).latest()

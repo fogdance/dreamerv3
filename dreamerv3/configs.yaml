@@ -148,6 +148,7 @@ defaults:
     report_batches: 1
     from_checkpoint: ''
     fg_stage_transfer: ''
+    fg_source_steps: 0
     fg_learning_audit: False
     fg_full_checkpoint: False
     fg_report_every_steps: 5000
