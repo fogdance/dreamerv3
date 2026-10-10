@@ -10,3 +10,7 @@ MUJOCO_LOG.TXT
 *.png
 .vscode
 .idea
+# Local market datasets and repository backup archives must stay outside Git.
+/data/XAUUSD.txt
+/data/XAUUSD_1m.csv-2020-2024
+/*.tar.bz2
