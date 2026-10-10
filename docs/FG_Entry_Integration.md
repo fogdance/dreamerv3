@@ -56,6 +56,11 @@ The latest user revision removes expiry_remaining. Inputs are now `market_seq` (
 
 ## 2026-10-10 原仓库开发入口
 
-当前开发目录是 `/home/v/Documents/work/dreamerv3`，分支 `feat/fg-entry-v1.1`。环境代码位于 `/home/v/Documents/work/gym-trading-env`，同名分支。旧 artifacts 工作树已移除；本文较早章节的工作树路径仅为历史记录。当前冻结数据集为 `/home/v/Documents/work/gym-trading-env/artifacts/fg_entry_v1/dataset_v1`。
+当前开发目录是 `/home/v/Documents/work/dreamerv3`，分支 `feat/fg-entry-v1.1`。环境代码位于 `/home/v/Documents/work/gym-trading-env`，同名分支。旧 artifacts 工作树已移除；本文较早章节的工作树路径仅为历史记录。迁移当时冻结数据集为 `/home/v/Documents/work/gym-trading-env/artifacts/fg_entry_v1/dataset_v1`。
 
 `tools/run_fg_entry_gpu_smoke.sh` 默认引用同级 `gym-trading-env`，也支持 `FG_ENV_ROOT`。迁移后 6 项 FG 接口和账户恢复测试通过，脚本语法检查通过。未启动训练；旧 GPU smoke 检查点保留用于历史审计，不代表当前九维 Obs 已完成训练验证。
+
+
+## 当前冻结数据集：按换主力边界切分
+
+使用 `/home/v/Documents/work/gym-trading-env/artifacts/fg_entry_v1/dataset_v2_main_split/manifest.json` 与同目录 `train_dataset.yaml`。训练截止 2022-12-09，验证截止 2024-08-19，测试截止 2025-12-31；切分统一维护在 env 仓库 `configs/fg_entry_v1/fg.yaml` 的 `data.split`，禁止在合约主力区段中途切分。旧 dataset_v1 仅作历史审计，配置哈希过时，不用于当前训练或恢复。此次不启动训练。
