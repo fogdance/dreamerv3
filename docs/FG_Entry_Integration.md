@@ -48,3 +48,7 @@ The user authorizes only a few GPU smoke steps and explicitly prohibits CPU trai
 Reboot cleared `/tmp/fg-entry-v1`. Commits were recovered without changing original working trees to `/home/v/Documents/work/gym-trading-env/artifacts/fg_entry_v1/worktrees/{env,dreamerv3}`; regenerated data and smoke logs remain in the parent persistent artifact directory. Earlier launch logs and generated results in /tmp were lost at reboot; previous test observations remain recorded in committed documents.
 
 GPU smoke completed: 30 environment steps / 7 updates, finite losses and account cursor 19→29 after checkpoint restoration. See `docs/FG_Entry_GPU_Smoke_Acceptance.md` for observed bugs, fixes and limits. Full formal-batch memory and timing skill remain unverified.
+
+## Final FG observation schema
+
+The latest user revision removes expiry_remaining. Inputs are now `market_seq` (60,18), `position_state` (9,), and `action_mask` (2,). Position fields and identity semantics are frozen in companion `docs/FG_Entry_Observation_V1.md`; the existing encoder consumes the new dict without architectural changes. Previous smoke checkpoints use the old schema and are not new-schema training evidence. Six directly affected Gym/Driver/FG regressions passed with GPU available; no training was performed for this revision. Strict position-independent actor scores are no longer promised; their differences are a future dedicated comparison.
