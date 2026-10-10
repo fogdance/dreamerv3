@@ -40,3 +40,11 @@ The companion repository maintains directions, costs, cutoff, excluded FG805, ex
 ## Current authorization boundary
 
 The user explicitly prohibits starting formal training. Do not run the training command until authorized again. The earlier launch attempt exited with code 1 during JAX backend initialization (AssertionError), before the training loop; its log is `/tmp/fg-entry-v1/train-fg-seed0.log`. No market-data training result is claimed.
+
+## GPU smoke authorization after reboot
+
+The user authorizes only a few GPU smoke steps and explicitly prohibits CPU training and formal training. `tools/run_fg_entry_gpu_smoke.sh DATASET NEW_LOGDIR` preserves the 50M architecture, WAIT warm-up and business rules, uses batch 1 / sequence 4 / ratio 1, runs to step 20, then reloads the same financial checkpoint and runs to step 30. JAX_PLATFORMS=cuda prevents CPU fallback. The script is bounded regardless of the million-step profile default.
+
+Reboot cleared `/tmp/fg-entry-v1`. Commits were recovered without changing original working trees to `/home/v/Documents/work/gym-trading-env/artifacts/fg_entry_v1/worktrees/{env,dreamerv3}`; regenerated data and smoke logs remain in the parent persistent artifact directory. Earlier launch logs and generated results in /tmp were lost at reboot; previous test observations remain recorded in committed documents.
+
+GPU smoke completed: 30 environment steps / 7 updates, finite losses and account cursor 19→29 after checkpoint restoration. See `docs/FG_Entry_GPU_Smoke_Acceptance.md` for observed bugs, fixes and limits. Full formal-batch memory and timing skill remain unverified.

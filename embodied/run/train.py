@@ -203,7 +203,9 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     if should_save(step):
       save_checkpoint()
 
-  if retention.has_due(step):
+  if persistent_env:
+    logger.add(train_agg.result())
+  if persistent_env or retention.has_due(step):
     save_checkpoint()
 
   logger.close()

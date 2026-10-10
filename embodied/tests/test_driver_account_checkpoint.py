@@ -29,6 +29,22 @@ def policy(carry,obs):
   return carry+1,{'action':np.ones(1,np.int32)},{}
 
 
+def test_driver_explicitly_fetches_jax_carry_under_transfer_guard():
+  import jax
+  import jax.numpy as jnp
+  driver=embodied.Driver([Account],parallel=False)
+  try:
+    driver.reset(lambda n: {'nested':[jnp.arange(3,dtype=jnp.bfloat16)]})
+    with jax.transfer_guard('disallow'):
+      state=driver.save()
+      driver.load(state)
+      result=jax.jit(lambda x:x+1)(driver.carry['nested'][0])
+    np.testing.assert_array_equal(jax.device_get(result),np.arange(3)+1)
+    np.testing.assert_array_equal(state['carry']['nested'][0],np.arange(3))
+  finally:
+    driver.close()
+
+
 @pytest.mark.parametrize('parallel',[False,True])
 def test_driver_resumes_pending_actions_and_account(parallel):
   driver=embodied.Driver([Account],parallel=parallel)

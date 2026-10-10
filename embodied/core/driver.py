@@ -40,6 +40,7 @@ class Driver:
     self.carry = init_policy and init_policy(self.length)
 
   def save(self):
+    import jax
     if self.parallel:
       [pipe.send(('save',)) for pipe in self.pipes]
       states = [self._receive(pipe) for pipe in self.pipes]
@@ -47,7 +48,8 @@ class Driver:
       states = [env.save() for env in self.envs]
     return dict(schema=1, length=self.length, envs=states,
         acts=elements.tree.map(lambda x: np.array(x, copy=True), self.acts),
-        carry=elements.tree.map(lambda x: np.array(x, copy=True), self.carry))
+        carry=elements.tree.map(lambda x: np.array(x, copy=True),
+            jax.device_get(self.carry)))
 
   def load(self, state):
     if state['schema'] != 1 or state['length'] != self.length:
@@ -57,7 +59,13 @@ class Driver:
       [self._receive(pipe) for pipe in self.pipes]
     else:
       [env.load(value) for env, value in zip(self.envs, state['envs'])]
-    self.acts, self.carry = state['acts'], state['carry']
+    carry = state['carry']
+    if self.carry is not None:
+      import jax
+      carry = jax.tree.map(
+          lambda value, template: jax.device_put(value, template.sharding)
+          if isinstance(template, jax.Array) else value, carry, self.carry)
+    self.acts, self.carry = state['acts'], carry
 
   def close(self):
     if self.parallel:
