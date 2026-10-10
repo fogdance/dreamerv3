@@ -69,3 +69,14 @@ The latest user revision removes expiry_remaining. Inputs are now `market_seq` (
 ## 当前数据入口：345 分钟导出及因果分钟索引
 
 使用 `/home/v/Documents/work/gym-trading-env/artifacts/fg_entry_v1/dataset_v3_345_audited` 下的 `manifest.json` 和 `train_dataset.yaml`。切分日期不变。导出截断 23:01～23:30，保留早期交易日；行情索引按预先声明的 345 分钟时钟计算并固定除以 344。此前数据集仅作历史审计；统一配置和行情时钟版本变化后不恢复旧金融检查点。未启动训练，GPU 训练 smoke 尚未重跑。核对 env 文档 `docs/FG_Entry_Minute_Clock_Fix.md`。
+
+
+## 当前入口：跨年份、月份与方向的完整合约分组
+
+用户停止此前按日期切分的训练后，当前唯一分组配置为 env 仓库 `configs/fg_entry_v1/fg.yaml` 的 `data.split`。使用 `/home/v/Documents/work/gym-trading-env/artifacts/fg_entry_v1/dataset_v4_contract_groups/manifest.json` 和同目录 `train_dataset.yaml`，不再要求 TRAIN 日期全部早于 VALIDATION/TEST。旧日期切分的准入规则仍用于旧模式；新 schema=2 准入检查整合约名单互斥、记录完整覆盖、训练生命周期完整、人工方向和文件哈希。
+
+当前为 14 个完整训练合约、4 个完整验证合约、5 个完整测试合约，加 FG605 的数据截止删失区段。每组覆盖 01/05/09 月和 LONG/SHORT；用户确认 FG809=SHORT，已补入统一配置。名单及逐组合计见 env `docs/FG_Entry_Dataset_Split.md`。
+
+训练每轮无放回打散完整合约。初次 reset 的 seed 决定实际抽样种子，无显式 seed 时使用统一配置的 seed=0；chunk reset 不重新抽样。金融检查点 schema=2 同时保存合约顺序、当前索引、轮数和 RNG 状态，恢复不改变持仓或后续抽样。只有真实退出后才进入下一个合约。验证、测试顺序固定，不使用训练抽样器。
+
+此前 `train_345_seed0_20261010_160106`、旧 replay 和 checkpoint 保留审计。新分组是新实验，不能复用旧 logdir 恢复训练，也不能使用 model-only checkpoint 混入验证/测试合约。以后获准启动时使用新的 `/data/logdir` 子目录；本次未启动训练。
