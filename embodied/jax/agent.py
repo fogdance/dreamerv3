@@ -31,6 +31,7 @@ class Options:
   enable_policy: bool = True
   ckpt_chunksize: int = -1
   precompile: bool = True
+  sync_train_metrics: bool = False
 
 
 class Agent(embodied.Agent):
@@ -275,7 +276,7 @@ class Agent(embodied.Agent):
               dona, allo, seed, carry, data)
     self.n_updates.increment()
 
-    if self.jaxcfg.enable_policy:
+    if self.jaxcfg.enable_policy and not self.jaxcfg.sync_train_metrics:
       if not self.pending_sync:
         self.pending_sync = internal.move(
             {k: allo[k] for k in self.policy_keys},
@@ -283,15 +284,20 @@ class Agent(embodied.Agent):
       else:
         jax.tree.map(lambda x: x.delete(), allo)
 
-    return_outs = {}
-    if self.pending_outs:
-      return_outs = self._take_outs(self.pending_outs)
-    self.pending_outs = internal.fetch_async(outs)
-
-    return_mets = {}
-    if self.pending_mets:
-      return_mets = self._take_outs(self.pending_mets)
-    self.pending_mets = internal.fetch_async(mets)
+    if self.jaxcfg.sync_train_metrics:
+      # Offline admission opts in: Gate, finite checks and checkpoints refer
+      # to this update, rather than the previous asynchronously returned batch.
+      return_outs, return_mets = self._take_outs(internal.fetch_async((outs, mets)))
+      return_mets['train/update_index'] = np.int64(int(self.n_updates))
+    else:
+      return_outs = {}
+      if self.pending_outs:
+        return_outs = self._take_outs(self.pending_outs)
+      self.pending_outs = internal.fetch_async(outs)
+      return_mets = {}
+      if self.pending_mets:
+        return_mets = self._take_outs(self.pending_mets)
+      self.pending_mets = internal.fetch_async(mets)
 
     if self.jaxcfg.profiler:
       outdir, copyto = self.logdir, None
@@ -388,6 +394,28 @@ class Agent(embodied.Agent):
 
   def restore_carry(self, carry):
     return internal.device_put(carry, self.train_sharded)
+
+  def sync_policy_from_train(self, reset_counter=False):
+    """Explicitly publish trained weights before any offline DEV action."""
+    if not self.jaxcfg.enable_policy:
+      raise ValueError('Evaluation requires policy inference enabled')
+    with self.train_lock, self.policy_lock:
+      new = internal.move({k: self.params[k].copy() for k in self.policy_keys},
+          self.policy_params_sharding)
+      jax.tree.map(lambda x: x.delete(), self.policy_params)
+      if self.pending_sync:
+        jax.tree.map(lambda x: x.delete(), self.pending_sync)
+      self.policy_params, self.pending_sync = new, None
+      if reset_counter:
+        with self.n_actions.lock:
+          self.n_actions.value = 0
+
+  def drain_train(self):
+    """Return outstanding asynchronous outputs once; sync mode has none."""
+    outs = self._take_outs(self.pending_outs) if self.pending_outs else {}
+    mets = self._take_outs(self.pending_mets) if self.pending_mets else {}
+    self.pending_outs = self.pending_mets = None
+    return outs, mets
 
   def load_exact(self, data, transfer=False):
     self.load(data, restore_batches=True)

@@ -223,12 +223,13 @@ def validate_bundle(path, expected_identity=None):
 
 
 class FullCheckpoint(elements.Checkpoint):
-  def __init__(self, directory, step, identity, streams, key_steps=(), reserve_gib=10):
+  def __init__(self, directory, step, identity, streams, key_steps=(), reserve_gib=10, keep_all=False):
     super().__init__(directory, keep=None, step=step)
     self._directory = Path(directory)
     self._identity, self._streams = plain(identity), streams
     self._key_steps = set(int(x) for x in key_steps)
     self._reserve = float(reserve_gib) * 1024 ** 3
+    self._keep_all = bool(keep_all)
 
   def latest(self):
     if not self._directory.exists():
@@ -304,6 +305,8 @@ class FullCheckpoint(elements.Checkpoint):
     pointer = self._directory / '.latest.tmp'
     pointer.write_text(dest.name)
     os.replace(pointer, self._directory / 'latest')
+    if self._keep_all:
+      return
     regular = []
     for candidate in sorted(self._directory.glob('step_*')):
       try:

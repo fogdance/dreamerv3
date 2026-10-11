@@ -14,9 +14,9 @@ import elements
 import embodied
 import numpy as np
 import portal
-import ruamel.yaml as yaml
 import gym_trading_env
 
+from .configuration import read_config_yaml
 from .walk_forward_guard import validate_walk_forward_split
 
 
@@ -167,8 +167,7 @@ def main(argv=None):
   from .agent import Agent
   [elements.print(line) for line in Agent.banner]
 
-  configs = elements.Path(folder / 'configs.yaml').read()
-  configs = yaml.YAML(typ='safe').load(configs)
+  configs = read_config_yaml(folder / 'configs.yaml')
   parsed, other = elements.Flags(configs=['defaults']).parse_known(argv)
   config = elements.Config(configs['defaults'])
   for name in parsed.configs:

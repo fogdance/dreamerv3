@@ -52,6 +52,11 @@ class Agent(embodied.jax.Agent):
     self.obs_space = obs_space
     self.act_space = act_space
     self.config = config
+    mode = config.get('replay_context_mode', 'stored')
+    if mode not in ('stored', 'recompute_prefix'):
+      raise ValueError('Unknown Replay context input mode')
+    if mode == 'recompute_prefix' and config.replay_context != 1:
+      raise ValueError('Causal prefix reconstruction requires exactly one frame')
 
     assert 'action_mask' in obs_space, sorted(obs_space)
     assert len(act_space) == 1, act_space
@@ -110,6 +115,7 @@ class Agent(embodied.jax.Agent):
         self.pol, self.val]
     self.opt = embodied.jax.Optimizer(
         self.modules, self._make_opt(**config.opt), summary_depth=1,
+        diagnostics=config.get('update_diagnostics', False),
         name='opt')
 
     scales = self.config.loss_scales.copy()
@@ -126,7 +132,7 @@ class Agent(embodied.jax.Agent):
     spaces = {}
     spaces['consec'] = elements.Space(np.int32)
     spaces['stepid'] = elements.Space(np.uint8, 20)
-    if self.config.replay_context:
+    if self.config.replay_context and self.config.get('replay_context_mode', 'stored') == 'stored':
       spaces.update(elements.tree.flatdict(dict(
           enc=self.enc.entry_space,
           dyn=self.dyn.entry_space,
@@ -164,11 +170,13 @@ class Agent(embodied.jax.Agent):
         jax.tree.map(lambda x: x.pred(), policy)
         if mode == 'eval' else sample(policy))
     out = {}
+    if self.config.get('update_diagnostics', False):
+      out['p_add'] = policy[self.action_key].prob(jnp.ones(reset.shape, i32))
     out['finite'] = elements.tree.flatdict(jax.tree.map(
         lambda x: jnp.isfinite(x).all(range(1, x.ndim)),
         dict(obs=obs, carry=carry, tokens=tokens, feat=feat, act=act)))
     carry = (enc_carry, dyn_carry, dec_carry, act)
-    if self.config.replay_context:
+    if self.config.replay_context and self.config.get('replay_context_mode', 'stored') == 'stored':
       out.update(elements.tree.flatdict(dict(
           enc=enc_entry, dyn=dyn_entry, dec=dec_entry)))
     return carry, act, out
@@ -180,7 +188,7 @@ class Agent(embodied.jax.Agent):
     metrics.update(mets)
     self.slowval.update()
     outs = {}
-    if self.config.replay_context:
+    if self.config.replay_context and self.config.get('replay_context_mode', 'stored') == 'stored':
       updates = elements.tree.flatdict(dict(
           stepid=stepid, enc=entries[0], dyn=entries[1], dec=entries[2]))
       B, T = obs['is_first'].shape
@@ -443,6 +451,26 @@ class Agent(embodied.jax.Agent):
       return carry, obs, prevact, stepid
 
     K = self.config.replay_context
+    if self.config.get('replay_context_mode', 'stored') == 'recompute_prefix':
+      # Scripted/Oracle Replay contains observations and actions, not a cache
+      # produced by a historical neural policy. Reconstruct only the causal
+      # prefix with current weights; do not invent cached latent fields.
+      B = data['is_first'].shape[0]
+      enc, dyn, dec, initial_action = self.init_train(B)
+      prefix_obs = {k: v[:, :K] for k, v in obs.items()}
+      prefix_action = {k: v[:, None] for k, v in initial_action.items()}
+      enc, _, tokens = self.enc(
+          enc, prefix_obs, prefix_obs['is_first'], training=False)
+      dyn, _, _ = self.dyn.observe(
+          dyn, tokens, prefix_action, prefix_obs['is_first'], training=False)
+      rep_carry = sg((enc, dyn, dec))
+      rhs = lambda xs: jax.tree.map(lambda x: x[:, K:], xs)
+      rep_prevact = {k: data[k][:, K - 1:-1] for k in self.act_space}
+      first_chunk = data['consec'][:, 0] == 0
+      return jax.tree.map(
+          lambda normal, replay: nn.where(first_chunk, replay, normal),
+          (carry, rhs(obs), rhs(prevact), rhs(stepid)),
+          (rep_carry, rhs(obs), rep_prevact, rhs(stepid)))
     nested = elements.tree.nestdict(data)
     entries = [nested.get(k, {}) for k in ('enc', 'dyn', 'dec')]
     lhs = lambda xs: jax.tree.map(lambda x: x[:, :K], xs)

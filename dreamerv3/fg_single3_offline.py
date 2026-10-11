@@ -1,7 +1,21 @@
-"""Admission and checkpoint identity for the CPU-accepted Single3 offline pilot."""
+"""Strict admission for Single3 pilots and the frozen C1_M1_1M experiment."""
 import json
 import importlib.metadata
 from pathlib import Path
+from decimal import Decimal, InvalidOperation
+
+
+def update_budget(value):
+  """Accept numeric YAML values without truncating fractional/invalid budgets."""
+  if isinstance(value, bool):
+    raise ValueError("Single3 update budget must be a positive integer")
+  try:
+    number = Decimal(str(value))
+  except InvalidOperation as exc:
+    raise ValueError("Single3 update budget must be a positive integer") from exc
+  if not number.is_finite() or number <= 0 or number != number.to_integral_value():
+    raise ValueError("Single3 update budget must be a positive integer")
+  return int(number)
 
 
 def validate(config, *, allow_unapproved=False, persist=True):
@@ -13,10 +27,23 @@ def validate(config, *, allow_unapproved=False, persist=True):
   if (not config.run.fg_single3_offline or config.script!='offline_pretrain' or config.task!='gymnasium_FixedDirectionEntryEnv-v0'
       or config.run.from_checkpoint or config.run.fg_stage_transfer or config.run.fg_full_checkpoint):
     raise ValueError('Single3 pilot requires joint offline training and a fresh/same-identity checkpoint')
+  budget = update_budget(config.run.steps)
+  profile = options.get('profile', 'pilot_2k')
+  if profile not in ('pilot_2k', 'C1_M1_1M') or budget != (62500 if profile == 'C1_M1_1M' else 2000):
+    raise ValueError('Single3 baseline profile/update budget changed')
+  if profile == 'C1_M1_1M' and (
+      options.candidate != 'C1' or options.pool != 'C1_natural_oracle'
+      or config.agent.replay_context_mode != 'recompute_prefix'
+      or not config.agent.update_diagnostics or not config.jax.sync_train_metrics
+      or not config.run.fg_single3_audit or not config.run.fg_keep_all_checkpoints
+      or config.run.fg_report_every_steps != 100 or config.run.fg_save_every_steps != 2000
+      or list(config.run.fg_key_steps) != [0,2000,10000,25000,50000,62500]
+      or Path(config.logdir).name != 'C1_M1_1M'):
+    raise ValueError('C1_M1_1M frozen experiment, causal input or audit configuration changed')
   if (config.batch_size!=16 or config.batch_length!=64 or config.replay_context!=1
       or config.consec_train!=1 or config.consec_report!=1 or config.report_length!=64
       or config.agent.horizon!=333 or config.agent.imag_length!=15 or not config.agent.contdisc
-      or float(config.run.steps)!=2000 or config.seed!=0 or config.seed_protocol.replay_seed!=202
+      or config.seed!=0 or config.seed_protocol.replay_seed!=202
       or config.replay.online or config.replay.fracs.uniform!=1
       or not config.action_mask_warmup.enabled or not config.action_mask_warmup.add_recall_enabled
       or config.agent.avail_actor_enabled or config.agent.avail_always_available_index!=0):
@@ -66,11 +93,26 @@ def validate(config, *, allow_unapproved=False, persist=True):
   identity=dict(packages=versions, learning=learning_spec(config), code_sha256={
       str(p.relative_to(Path(__file__).parents[1])):digest(p) for p in (
           Path(__file__), Path(__file__).with_name('agent.py'),
+          Path(__file__).with_name('rssm.py'), Path(__file__).with_name('main.py'),
+          Path(__file__).with_name('configuration.py'),
+          Path(__file__).with_name('fg_entry_guard.py'),
+          Path(__file__).with_name('configs.yaml'),
+          Path(__file__).parents[1]/'embodied/jax/agent.py',
+          Path(__file__).parents[1]/'embodied/jax/opt.py',
+          Path(__file__).parents[1]/'embodied/core/replay.py',
+          Path(__file__).parents[1]/'embodied/core/streams.py',
+          Path(__file__).parents[1]/'embodied/run/fg_checkpoint.py',
+          Path(__file__).parents[1]/'embodied/run/fg_single3_audit.py',
           Path(__file__).parents[1]/'embodied/run/offline_pretrain.py')}, protocol='FG_SINGLE3_OFFLINE_V1',dataset_sha256=digest(root/'manifest.json'),
       coverage_sha256=digest(Path(options.coverage)/'manifest.json'),horizon_sha256=digest(horizon_path/'manifest.json'),
       pool=pool,candidate=options.candidate,reward_params_hash=members[0]['reward_params_hash'],
       observation_identity=members[0]['observation_identity'],capacity=capacity,
-      model_seed=0,replay_seed=202,gradient_updates=2000,agent_config=dict(config.agent),
+      model_seed=0,replay_seed=202,gradient_updates=budget,profile=profile,
+      training_positions=budget*16*64,
+      replay_context_mode=config.agent.get("replay_context_mode", "stored"),
+      context_initialization="initial_WAIT_then_one_causal_prefix_stop_gradient" if profile == "C1_M1_1M" else "stored_latent",
+      checkpoint_schedule=dict(report=config.run.fg_report_every_steps,save=config.run.fg_save_every_steps,
+          keys=list(config.run.fg_key_steps),keep_all=config.run.get("fg_keep_all_checkpoints",False)),agent_config=dict(config.agent),
       batch_size=16,batch_length=64,replay_context=1,mode='joint_full_agent_with_existing_Mask_Gate')
   identity_hash=fingerprint(identity)
   if options.identity_hash and options.identity_hash!=identity_hash:

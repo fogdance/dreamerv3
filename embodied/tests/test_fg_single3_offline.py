@@ -6,11 +6,11 @@ import elements
 import embodied
 import numpy as np
 import pytest
-import yaml
 
 from embodied.run.offline_pretrain import offline_pretrain
 from embodied.run.fg_checkpoint import validate_bundle
 from dreamerv3.fg_single3_offline import validate
+from dreamerv3.configuration import read_config_yaml
 
 
 class FakeAgent:
@@ -34,7 +34,7 @@ class FakeAgent:
 
 
 def defaults():
-  return elements.Config(yaml.safe_load((Path(__file__).parents[2]/'dreamerv3/configs.yaml').read_text())['defaults'])
+  return elements.Config(read_config_yaml(Path(__file__).parents[2]/'dreamerv3/configs.yaml')['defaults'])
 
 
 def test_single3_unapproved_and_legacy_entry_fail_before_agent():
@@ -48,7 +48,7 @@ def test_single3_unapproved_and_legacy_entry_fail_before_agent():
 def test_real_single3_preset_reaches_data_admission(monkeypatch):
   from dreamerv3.main import _resolve_seed_protocol
   from gym_trading_env.research import fg_single3_dataset
-  definitions=yaml.safe_load((Path(__file__).parents[2]/'dreamerv3/configs.yaml').read_text())
+  definitions=read_config_yaml(Path(__file__).parents[2]/'dreamerv3/configs.yaml')
   config=_resolve_seed_protocol(elements.Config(definitions['defaults'])
       .update(definitions['fg_entry_v1']).update(definitions['fg_single3_joint_offline']))
   def data_gate(_):raise RuntimeError('reached real data admission')
@@ -62,7 +62,9 @@ def test_real_single3_preset_reaches_data_admission(monkeypatch):
 def test_real_single3_replay_capacity_is_numeric_and_exact(tmp_path, monkeypatch):
   from dreamerv3.main import _resolve_seed_protocol, make_replay
   from gym_trading_env.research import fg_single3_dataset, fg_single3_coverage, fg_replay
-  definitions=yaml.safe_load((Path(__file__).parents[2]/'dreamerv3/configs.yaml').read_text())
+  definitions=read_config_yaml(Path(__file__).parents[2]/'dreamerv3/configs.yaml')
+  # Preserve compatibility with legacy configurations containing a string size.
+  definitions['defaults']['replay']['size']='1e6'
   dataset=tmp_path/'dataset';dataset.mkdir()
   coverage=tmp_path/'coverage';coverage.mkdir()
   horizon=tmp_path/'horizon';horizon.mkdir()
@@ -87,7 +89,7 @@ def test_real_single3_replay_capacity_is_numeric_and_exact(tmp_path, monkeypatch
           'run.replay_dir':str(dataset/'pool'),'fg_single3_offline.dataset':str(dataset),
           'fg_single3_offline.coverage':str(coverage),'fg_single3_offline.horizon':str(horizon),
           'fg_single3_offline.candidate':'C0','fg_single3_offline.pool':'C0_natural'}))
-  # The actual YAML scientific-notation default preserves a string type.
+  # Explicit legacy string size must still be validated without truncation.
   assert config.replay.size == str(capacity)
   assert validate(config,allow_unapproved=True,persist=False)['identity_hash']
   with pytest.raises(ValueError,match='capacity/directory'):

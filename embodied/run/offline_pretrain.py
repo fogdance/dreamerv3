@@ -6,7 +6,7 @@ import embodied
 import numpy as np
 
 
-def offline_pretrain(
+def _offline_pretrain(
     make_agent,
     make_replay,
     make_stream,
@@ -38,9 +38,11 @@ def offline_pretrain(
   train_agg = elements.Agg()
   report_agg = elements.Agg()
   single3 = bool(args.get('fg_single3_offline', False))
-  # The existing scientific-notation YAML default has string type in Config.
-  # Normalize the new pilot budget before comparing it with Counter.
-  target_steps = int(float(args.steps)) if single3 else args.steps
+  # Accept legacy string budgets while rejecting fractional/non-finite values.
+  from dreamerv3.fg_single3_offline import update_budget
+  target_steps = update_budget(args.steps) if single3 else args.steps
+  audited = bool(args.get("fg_single3_audit", False))
+  audit = None
   warmup = runtime = schedule = None
   if single3:
     from .action_mask_warmup import ActionMaskWarmup, METRICS, ADD_RECALL_METRICS
@@ -116,9 +118,14 @@ def offline_pretrain(
         get_carry, set_carry, dict(train=train_agg, report=report_agg, warmup=warmup_agg), warmup_samples)
     cp = FullCheckpoint(logdir / 'ckpt', step,
         dict(protocol='FG_SINGLE3_OFFLINE_V1', identity_hash=args.fg_single3_identity),
-        (stream_train, stream_report), args.fg_key_steps, args.fg_reserve_gib)
+        (stream_train, stream_report), args.fg_key_steps, args.fg_reserve_gib,
+        keep_all=args.get("fg_keep_all_checkpoints", False))
     cp.runtime = runtime
     cp.action_mask_warmup = warmup
+    if audited:
+      from .fg_single3_audit import TrainingAudit
+      audit = TrainingAudit(str(logdir), batch_steps)
+      cp.training_audit = audit
   else:
     cp = elements.Checkpoint(logdir / 'ckpt')
   cp.step = step
@@ -139,6 +146,8 @@ def offline_pretrain(
   if single3:
     _apply_action_mask_warmup_gate(agent, warmup, step)
 
+  if audited and (int(agent.n_updates) != int(step) or audit.state["last_update"] != int(step)):
+    raise ValueError("Restored Agent, logger and audit counters differ")
   print('Start OFFLINE pretrain loop')
   print(
       f'[offline_pretrain] target gradient steps = {int(args.steps)} '
@@ -167,6 +176,8 @@ def offline_pretrain(
       batch = next(stream_train)
 
     carry_train[0], outs, mets = agent.train(carry_train[0], batch)
+    if audited:
+      audit.observe(int(step) + 1, mets)
     train_fps.step(batch_steps)
 
     # 如果 agent 产生了 priority update，则更新 replay.sampler
@@ -188,6 +199,11 @@ def offline_pretrain(
     # 报表（可选）：在离线 pretrain 阶段也可以看 open-loop 等指标
     do_report, do_save = schedule.advance(step) if single3 else (should_report(step), False)
     if do_report:
+      if audited:
+        logger.add(usage.stats(), prefix='usage')
+        logger.add(audit.save(), prefix='training_audit')
+        from .fg_single3_audit import atomic_json
+        atomic_json(str(logdir) + '/progress.json', dict(status='RUNNING', **audit.save()))
       report_agg.reset()
       for _ in range(args.consec_report * args.report_batches):
         with elements.timer.section('offline_stream_report'):
@@ -226,6 +242,38 @@ def offline_pretrain(
       cp.save()
 
   if single3:
+    if audited:
+      pending_outs, pending_metrics = agent.drain_train()
+      if pending_outs or pending_metrics:
+        raise ValueError('Synchronous experiment has unaccounted pending metrics')
+      if int(agent.n_updates) != target_steps:
+        raise ValueError('Final neural update counter differs from budget')
+      logger.add(train_agg.result())
+      logger.add(audit.save(), prefix='training_audit')
+      logger.add(usage.stats(), prefix='usage')
+      logger.write()
     cp.save(final=True)
   logger.close()
+  if audited:
+    from .fg_checkpoint import validate_bundle, file_hash
+    from .fg_single3_audit import atomic_json
+    final = cp.latest()
+    meta = validate_bundle(final, cp._identity)
+    if meta['step'] != target_steps:
+      raise ValueError('Final checkpoint step differs from budget')
+    summary = audit.summary(args.fg_single3_identity, final, target_steps)
+    summary['checkpoint_manifest_sha256'] = file_hash(final / 'manifest.json')
+    summary['log_sha256'] = file_hash(str(logdir) + '/train_updates.jsonl')
+    atomic_json(str(logdir) + '/training_summary.json', summary)
+    atomic_json(str(logdir) + '/progress.json', dict(status='TRAINING_COMPLETE', **audit.save()))
   print('OFFLINE pretrain done.')
+
+
+def offline_pretrain(make_agent, make_replay, make_stream, make_logger, args, replay_dir=None):
+  try:
+    return _offline_pretrain(make_agent, make_replay, make_stream, make_logger, args, replay_dir)
+  except BaseException as error:
+    if args.get('fg_single3_audit', False):
+      from .fg_single3_audit import failure_evidence
+      failure_evidence(args.logdir, error)
+    raise

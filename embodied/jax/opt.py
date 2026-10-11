@@ -17,10 +17,11 @@ class Optimizer(nj.Module):
 
   summary_depth: int = 2
 
-  def __init__(self, modules, opt):
+  def __init__(self, modules, opt, diagnostics=False):
     modules = modules if isinstance(modules, (list, tuple)) else (modules,)
     self.modules = modules
     self.opt = opt
+    self.diagnostics = diagnostics
     self.step = nj.Variable(jnp.array, 0, i32, name='step')
     self.scaling = (nets.COMPUTE_DTYPE == jnp.float16)
     if self.scaling:
@@ -59,7 +60,8 @@ class Optimizer(nj.Module):
 
     state = self.sub('state', nj.Tree, self.opt.init, params)
     updates, new_state = self.opt.update(grads, state.read(), params)
-    nj.context().update(optax.apply_updates(params, updates))
+    new_params = optax.apply_updates(params, updates)
+    nj.context().update(new_params)
     state.write(new_state)
     grad_norm = optax.global_norm(grads)
     if self.scaling:
@@ -77,6 +79,21 @@ class Optimizer(nj.Module):
     metrics['update_rms'] = nets.rms(updates)
     metrics['param_rms'] = nets.rms([x.values for x in self.modules])
     metrics['param_count'] = jnp.array(list(counts.values()), f32).sum()
+    if self.diagnostics:
+      finite = lambda xs: jnp.stack([
+          jnp.isfinite(x).all() for x in jax.tree.leaves(xs)]).all()
+      metrics['finite'] = (jnp.isfinite(loss) & finite(grads)
+          & finite(updates) & finite(new_params) & finite(new_state))
+      for label, prefixes in (
+          ('actor', ('pol/',)), ('critic', ('val/',)),
+          ('reward', ('rew/',)), ('wm', ('enc/', 'dyn/', 'dec/'))):
+        keys = [k for k in params if k.startswith(prefixes)]
+        if not keys:
+          raise ValueError(f'No parameters found for diagnostic group {label}')
+        metrics[label + '_grad_norm'] = optax.global_norm({k: grads[k] for k in keys})
+        delta = {k: new_params[k] - params[k] for k in keys}
+        metrics[label + '_delta_norm'] = optax.global_norm(delta)
+        metrics[label + '_changed'] = jnp.stack([jnp.any(delta[k] != 0) for k in keys]).any()
     metrics = {f'{self.name}/{k}': v for k, v in metrics.items()}
     return (metrics, aux) if has_aux else metrics
 
