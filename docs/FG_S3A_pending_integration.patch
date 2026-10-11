@@ -1,0 +1,12 @@
+diff --git a/dreamerv3/agent.py b/dreamerv3/agent.py
+--- a/dreamerv3/agent.py
++++ b/dreamerv3/agent.py
+@@ -171,7 +171,7 @@ class Agent(embodied.jax.Agent):
+         if mode == 'eval' else sample(policy))
+     out = {}
+     if self.config.get('update_diagnostics', False):
+-      out['p_add'] = policy[self.action_key].prob(jnp.ones(reset.shape, i32))
++      out['p_add'] = jax.nn.softmax(policy[self.action_key].logits)[..., 1]
+     out['finite'] = elements.tree.flatdict(jax.tree.map(
+         lambda x: jnp.isfinite(x).all(range(1, x.ndim)),
+         dict(obs=obs, carry=carry, tokens=tokens, feat=feat, act=act)))
