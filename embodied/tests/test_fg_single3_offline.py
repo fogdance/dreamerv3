@@ -59,6 +59,48 @@ def test_real_single3_preset_reaches_data_admission(monkeypatch):
     validate(config.update({'run.steps':2001}),allow_unapproved=True,persist=False)
 
 
+def test_real_single3_replay_capacity_is_numeric_and_exact(tmp_path, monkeypatch):
+  from dreamerv3.main import _resolve_seed_protocol, make_replay
+  from gym_trading_env.research import fg_single3_dataset, fg_single3_coverage, fg_replay
+  definitions=yaml.safe_load((Path(__file__).parents[2]/'dreamerv3/configs.yaml').read_text())
+  dataset=tmp_path/'dataset';dataset.mkdir()
+  coverage=tmp_path/'coverage';coverage.mkdir()
+  horizon=tmp_path/'horizon';horizon.mkdir()
+  view=tmp_path/'view.json';view.write_text('{}')
+  env=tmp_path/'env.yaml';env.write_text('entry:\n  protocol: fg_single3_v1\n')
+  for root in (dataset,coverage):
+    fg_replay.write_json(root/'manifest.json',fg_replay.signed({'fixture':True}))
+  fg_replay.write_json(horizon/'manifest.json',fg_replay.signed(dict(stage='H',status='PASS',pairs=576,
+      dataset_manifest_sha256=fg_replay.digest(dataset/'manifest.json'),
+      coverage_manifest_sha256=fg_replay.digest(coverage/'manifest.json'),frozen_inputs={},files={})))
+  fg_replay.write_json(dataset/'inputs.json',fg_replay.signed(dict(provenance=dict(code_files={}),
+      training_views={'C0':dict(path=str(view),rows=[dict(env_config=str(env))])})))
+  capacity=1949908
+  data=dict(full_training_fold=True,pool_members={'C0_natural':[0]},views={'C0_natural':'pool'},
+      traces=[dict(sequence_starts=capacity,reward_params_hash='fixture',observation_identity='fixture')])
+  monkeypatch.setattr(fg_single3_dataset,'validate_dataset',lambda _:data)
+  monkeypatch.setattr(fg_single3_coverage,'require_coverage',lambda *_:None)
+  config=_resolve_seed_protocol(elements.Config(definitions['defaults'])
+      .update(definitions['fg_entry_v1']).update(definitions['fg_single3_joint_offline']).update({
+          'logdir':str(tmp_path/'run'),'fg_entry.manifest':str(view),
+          'env.gymnasium.config_path':str(env),'replay.size':capacity,
+          'run.replay_dir':str(dataset/'pool'),'fg_single3_offline.dataset':str(dataset),
+          'fg_single3_offline.coverage':str(coverage),'fg_single3_offline.horizon':str(horizon),
+          'fg_single3_offline.candidate':'C0','fg_single3_offline.pool':'C0_natural'}))
+  # The actual YAML scientific-notation default preserves a string type.
+  assert config.replay.size == str(capacity)
+  assert validate(config,allow_unapproved=True,persist=False)['identity_hash']
+  with pytest.raises(ValueError,match='capacity/directory'):
+    validate(config.update({'replay.size':capacity+.25}),allow_unapproved=True,persist=False)
+  for mode in ('train','report'):
+    replay=make_replay(config,'replay_'+mode,mode=mode)
+    try:
+      assert replay.capacity == (capacity if mode=='train' else int(capacity/10))
+      assert isinstance(replay.capacity,int) and replay.length==65
+    finally:
+      replay.workers.shutdown(wait=True)
+
+
 def test_joint_offline_reuses_add_recall_gate_and_full_checkpoint(tmp_path):
   cfg=defaults()
   gate=cfg.action_mask_warmup.update(enabled=True,add_recall_enabled=True,

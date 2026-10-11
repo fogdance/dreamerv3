@@ -43,7 +43,7 @@ def validate(config, *, allow_unapproved=False, persist=True):
     raise ValueError('Single3 M0/M1 pool does not match the one selected Reward')
   members=[dataset['traces'][i] for i in dataset['pool_members'][pool]]
   capacity=sum(r['sequence_starts'] for r in members)
-  if config.replay.size!=capacity or Path(config.run.replay_dir).resolve()!=root/dataset['views'][pool]:
+  if float(config.replay.size)!=capacity or Path(config.run.replay_dir).resolve()!=root/dataset['views'][pool]:
     raise ValueError('Single3 needs the complete audited Uniform pool capacity/directory')
   inputs=read_manifest(root/'inputs.json')
   engine={p:h for p,h in inputs['provenance']['code_files'].items()

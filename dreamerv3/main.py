@@ -379,7 +379,12 @@ def make_logger(config):
 def make_replay(config, folder, mode='train'):
   batlen = config.batch_length if mode == 'train' else config.report_length
   consec = config.consec_train if mode == 'train' else config.consec_report
-  capacity = config.replay.size if mode == 'train' else config.replay.size / 10
+  size = config.replay.size
+  if config.get('fg_single3_offline', {}).get('enabled', False):
+    # elements.Config retains the YAML scientific-notation string type.
+    # Single3 admission already requires the exact audited integer capacity.
+    size = float(size)
+  capacity = size if mode == 'train' else size / 10
   length = consec * batlen + config.replay_context
   assert config.batch_size * length <= capacity
 
