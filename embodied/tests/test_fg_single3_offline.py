@@ -59,12 +59,12 @@ def test_real_single3_preset_reaches_data_admission(monkeypatch):
     validate(config.update({'run.steps':2001}),allow_unapproved=True,persist=False)
 
 
-@pytest.mark.parametrize('profile', ('pilot_2k', 'C1_M1_1M'))
+@pytest.mark.parametrize('profile', ('pilot_2k', 'C1_M1_1M', 'C1_M1_OFFLINE_10K'))
 def test_real_single3_replay_capacity_is_numeric_and_exact(tmp_path, monkeypatch, profile):
-  full = profile == 'C1_M1_1M'
+  full = profile != 'pilot_2k'
   candidate = 'C1' if full else 'C0'
   pool = candidate + ('_natural_oracle' if full else '_natural')
-  logdir = tmp_path / ('C1_M1_1M' if full else 'run')
+  logdir = tmp_path / (profile if full else 'run')
   from dreamerv3.main import _resolve_seed_protocol, make_replay
   from gym_trading_env.research import fg_single3_dataset, fg_single3_coverage, fg_replay
   definitions=read_config_yaml(Path(__file__).parents[2]/'dreamerv3/configs.yaml')
@@ -95,6 +95,9 @@ def test_real_single3_replay_capacity_is_numeric_and_exact(tmp_path, monkeypatch
           'run.replay_dir':str(dataset/'pool'),'fg_single3_offline.dataset':str(dataset),
           'fg_single3_offline.coverage':str(coverage),'fg_single3_offline.horizon':str(horizon),
           'fg_single3_offline.candidate':candidate,'fg_single3_offline.pool':pool}))
+  if profile == 'C1_M1_OFFLINE_10K':
+    config=config.update({'fg_single3_offline.profile':profile,'run.steps':10000,
+        'run.fg_key_steps':[0,2000,10000]})
   # Explicit legacy string size must still be validated without truncation.
   assert config.replay.size == str(capacity)
   # The launcher persists identity before the CLI checks it in another process.

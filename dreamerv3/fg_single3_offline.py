@@ -29,17 +29,20 @@ def validate(config, *, allow_unapproved=False, persist=True):
     raise ValueError('Single3 pilot requires joint offline training and a fresh/same-identity checkpoint')
   budget = update_budget(config.run.steps)
   profile = options.get('profile', 'pilot_2k')
-  if profile not in ('pilot_2k', 'C1_M1_1M') or budget != (62500 if profile == 'C1_M1_1M' else 2000):
+  budgets = {'pilot_2k': 2000, 'C1_M1_1M': 62500, 'C1_M1_OFFLINE_10K': 10000}
+  if profile not in budgets or budget != budgets[profile]:
     raise ValueError('Single3 baseline profile/update budget changed')
-  if profile == 'C1_M1_1M' and (
+  full_profile = profile != 'pilot_2k'
+  key_steps = [0,2000,10000] if profile == 'C1_M1_OFFLINE_10K' else [0,2000,10000,25000,50000,62500]
+  if full_profile and (
       options.candidate != 'C1' or options.pool != 'C1_natural_oracle'
       or config.agent.replay_context_mode != 'recompute_prefix'
       or not config.agent.update_diagnostics or not config.jax.sync_train_metrics
       or not config.run.fg_single3_audit or not config.run.fg_keep_all_checkpoints
       or config.run.fg_report_every_steps != 100 or config.run.fg_save_every_steps != 2000
-      or list(config.run.fg_key_steps) != [0,2000,10000,25000,50000,62500]
-      or Path(config.logdir).name != 'C1_M1_1M'):
-    raise ValueError('C1_M1_1M frozen experiment, causal input or audit configuration changed')
+      or list(config.run.fg_key_steps) != key_steps
+      or Path(config.logdir).name != profile):
+    raise ValueError('Single3 frozen experiment, causal input or audit configuration changed')
   if (config.batch_size!=16 or config.batch_length!=64 or config.replay_context!=1
       or config.consec_train!=1 or config.consec_report!=1 or config.report_length!=64
       or config.agent.horizon!=333 or config.agent.imag_length!=15 or not config.agent.contdisc
@@ -111,11 +114,11 @@ def validate(config, *, allow_unapproved=False, persist=True):
       model_seed=0,replay_seed=202,gradient_updates=budget,profile=profile,
       training_positions=budget*16*64,
       replay_context_mode=config.agent.get("replay_context_mode", "stored"),
-      context_initialization="initial_WAIT_then_one_causal_prefix_stop_gradient" if profile == "C1_M1_1M" else "stored_latent",
+      context_initialization="initial_WAIT_then_one_causal_prefix_stop_gradient" if full_profile else "stored_latent",
       checkpoint_schedule=dict(report=config.run.fg_report_every_steps,save=config.run.fg_save_every_steps,
           keys=list(config.run.fg_key_steps),keep_all=config.run.get("fg_keep_all_checkpoints",False)),agent_config=dict(config.agent),
       batch_size=16,batch_length=64,replay_context=1,mode='world_model_only_actor_critic_frozen')
-  if profile == 'C1_M1_1M':
+  if full_profile:
     from embodied.run.action_mask_warmup import ActionMaskWarmup
     gate = ActionMaskWarmup.for_single3_1m(config.action_mask_warmup)
     identity['mask_gate_opening'] = dict(thresholds=gate.opening_thresholds,

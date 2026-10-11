@@ -50,7 +50,7 @@ def _offline_pretrain(
     from .train import _apply_action_mask_warmup_gate
     from .fg_checkpoint import FullCheckpoint, RuntimeState, StepSchedule
     gate_factory = (ActionMaskWarmup.for_single3_1m
-        if audited and target_steps == 62500 else ActionMaskWarmup)
+        if audited and target_steps in (10000, 62500) else ActionMaskWarmup)
     warmup = gate_factory(args.action_mask_warmup, args.action_mask_actor_initial)
     warmup_agg = elements.Agg()
     warmup_samples = [0]
@@ -271,7 +271,8 @@ def _offline_pretrain(
     meta = validate_bundle(final, cp._identity)
     if meta['step'] != target_steps:
       raise ValueError('Final checkpoint step differs from budget')
-    summary = audit.summary(args.fg_single3_identity, final, target_steps)
+    summary = audit.summary(args.fg_single3_identity, final, target_steps,
+        experiment=logdir.name)
     summary['checkpoint_manifest_sha256'] = file_hash(final / 'manifest.json')
     summary['log_sha256'] = file_hash(str(logdir) + '/train_updates.jsonl')
     atomic_json(str(logdir) + '/training_summary.json', summary)

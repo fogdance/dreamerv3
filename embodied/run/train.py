@@ -37,8 +37,15 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
   episodes = collections.defaultdict(elements.Agg)
   policy_fps = elements.FPS()
   train_fps = elements.FPS()
-  warmup = ActionMaskWarmup(
-      args.action_mask_warmup, args.action_mask_actor_initial)
+  transfer = args.get('fg_stage_transfer', '')
+  receipt = {}
+  if transfer:
+    import json
+    from pathlib import Path
+    receipt = json.loads(Path(transfer).read_text())
+  single3_transfer = receipt.get('source_kind') == 'single3_offline'
+  gate_factory = ActionMaskWarmup.for_single3_1m if single3_transfer else ActionMaskWarmup
+  warmup = gate_factory(args.action_mask_warmup, args.action_mask_actor_initial)
 
   batch_steps = args.batch_size * args.batch_length
   should_train = elements.when.Ratio(args.train_ratio / batch_steps)
@@ -189,15 +196,18 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
       cp.save()
       retention.maybe_retain(cp, step)
 
-  transfer = args.get('fg_stage_transfer', '')
   if transfer and not cp.exists():
     if len(replay):
       raise ValueError('C recent stage requires empty Replay')
-    import json
-    from pathlib import Path
-    receipt = json.loads(Path(transfer).read_text())
-    elements.checkpoint.load(receipt['checkpoint'], dict(
-        agent=bind(agent.load_exact, transfer=True) if full_checkpoint else agent.load, action_mask_warmup=warmup.load))
+    components = dict(agent=bind(agent.load_exact, transfer=True) if full_checkpoint else agent.load)
+    if not single3_transfer:
+      components['action_mask_warmup'] = warmup.load
+    elements.checkpoint.load(receipt['checkpoint'], components)
+    if single3_transfer:
+      # Begin the online observation window anew and publish pretrained weights.
+      if agent.get_avail_actor_enabled():
+        raise ValueError('Single3 offline source has an activated Actor/Critic Gate')
+      agent.sync_policy_from_train(reset_counter=True)
     if full_checkpoint:
       # Initial recurrent states may depend on loaded parameters.
       carry_train[0] = agent.init_train(args.batch_size)
