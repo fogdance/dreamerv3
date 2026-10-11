@@ -168,3 +168,46 @@ def test_fg_missing_support_still_stops_on_observed_global_regression():
     assert 'regressed' in str(exc)
   else:
     raise AssertionError('Global regression was hidden by missing ADD support')
+
+
+def test_single3_1m_gate_requires_margin_and_twenty_consecutive_windows():
+  config = _fg_add_config(consecutive_reports=5, regression_reports=5)
+  state = ActionMaskWarmup.for_single3_1m(config)
+  good = _fg_add_metrics()
+  good.update({'avail/prior_accuracy': 0.9915, 'avail/prior_fpr': 0.004})
+  near_floor = dict(good, **{'avail/prior_accuracy': 0.991})
+  for step in range(100, 2100, 100):
+    assert not state.update(near_floor, step)
+  assert not state.actor_enabled
+  for step in range(2100, 4000, 100):
+    assert not state.update(good, step)
+  assert state.consecutive_passes == 19
+  assert not state.update(dict(good, **{'avail/prior_fpr': 0.0041}), 4000)
+  assert state.consecutive_passes == 0
+  for step in range(4100, 6000, 100):
+    assert not state.update(good, step)
+  restored = ActionMaskWarmup.for_single3_1m(config)
+  restored.load(state.save())
+  assert restored.save() == state.save()
+  assert restored.update(good, 6000)
+  assert restored.actor_enabled and restored.switched_step == 6000
+  assert restored.metrics()['opening_required_reports'] == 20
+
+
+def test_single3_1m_gate_keeps_running_floor_and_five_regression_stop():
+  import pytest
+  state = ActionMaskWarmup.for_single3_1m(
+      _fg_add_config(consecutive_reports=5, regression_reports=5))
+  for step in range(100, 2100, 100):
+    state.update(_fg_add_metrics(), step)
+  assert state.actor_enabled
+  above_floor = _fg_add_metrics()
+  above_floor.update({'avail/prior_accuracy': 0.99, 'avail/prior_fpr': 0.005})
+  for step in range(2100, 4100, 100):
+    assert not state.update(above_floor, step)
+  assert state.consecutive_regressions == 0
+  bad = dict(above_floor, **{'avail/prior_accuracy': 0.9899})
+  for step in range(4100, 4500, 100):
+    assert not state.update(bad, step)
+  with pytest.raises(RuntimeError, match='5 consecutive reports'):
+    state.update(bad, 4500)

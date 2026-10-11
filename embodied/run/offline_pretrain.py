@@ -48,7 +48,9 @@ def _offline_pretrain(
     from .action_mask_warmup import ActionMaskWarmup, METRICS, ADD_RECALL_METRICS
     from .train import _apply_action_mask_warmup_gate
     from .fg_checkpoint import FullCheckpoint, RuntimeState, StepSchedule
-    warmup = ActionMaskWarmup(args.action_mask_warmup, args.action_mask_actor_initial)
+    gate_factory = (ActionMaskWarmup.for_single3_1m
+        if audited and target_steps == 62500 else ActionMaskWarmup)
+    warmup = gate_factory(args.action_mask_warmup, args.action_mask_actor_initial)
     warmup_agg = elements.Agg()
     warmup_samples = [0]
   train_fps = elements.FPS()

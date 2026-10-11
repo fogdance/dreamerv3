@@ -30,6 +30,7 @@ class ActionMaskWarmup:
     active_metrics = {**METRICS, **(ADD_RECALL_METRICS if self.add_recall_enabled else {})}
     self.thresholds = {
         name: float(getattr(config, name)) for name in active_metrics}
+    self.opening_thresholds = dict(self.thresholds)
     if self.add_recall_enabled and self.min_add_positives < 1:
       raise ValueError('min_add_positives must be at least 1')
     if self.min_train_samples < 1:
@@ -48,6 +49,14 @@ class ActionMaskWarmup:
     self.switched_step = -1
     self.last_passed = False
     self.last_add_support_sufficient = not self.add_recall_enabled
+
+  @classmethod
+  def for_single3_1m(cls, config, actor_enabled=False):
+    # Fixed admission margin for C1_M1_1M; running thresholds stay unchanged.
+    state = cls(config, actor_enabled)
+    state.opening_thresholds.update(prior_accuracy=0.9915, prior_fpr=0.004)
+    state.required_passes = 20
+    return state
 
   def ready(self, train_samples):
     return self.enabled and int(train_samples) >= self.min_train_samples
@@ -90,6 +99,9 @@ class ActionMaskWarmup:
         "last_passed": float(self.last_passed),
         "add_support_sufficient": float(self.last_add_support_sufficient),
         "switched_step": self.switched_step,
+        "opening_prior_accuracy": self.opening_thresholds["prior_accuracy"],
+        "opening_prior_fpr": self.opening_thresholds["prior_fpr"],
+        "opening_required_reports": self.required_passes,
     }
 
   def save(self):
@@ -126,16 +138,18 @@ class ActionMaskWarmup:
     if not self._has_add_support(metrics):
       return False
     active_metrics = {**METRICS, **(ADD_RECALL_METRICS if self.add_recall_enabled else {})}
-    return self._metrics_passed(metrics, active_metrics)
+    thresholds = self.thresholds if self.actor_enabled else self.opening_thresholds
+    return self._metrics_passed(metrics, active_metrics, thresholds)
 
-  def _metrics_passed(self, metrics, active_metrics):
+  def _metrics_passed(self, metrics, active_metrics, thresholds=None):
+    thresholds = self.thresholds if thresholds is None else thresholds
     for name, (key, mode) in active_metrics.items():
       if key not in metrics:
         return False
       value = float(metrics[key])
       if not math.isfinite(value):
         return False
-      threshold = self.thresholds[name]
+      threshold = thresholds[name]
       if mode == "min" and value < threshold:
         return False
       if mode == "max" and value > threshold:

@@ -103,6 +103,7 @@ def validate(config, *, allow_unapproved=False, persist=True):
           Path(__file__).parents[1]/'embodied/core/streams.py',
           Path(__file__).parents[1]/'embodied/run/fg_checkpoint.py',
           Path(__file__).parents[1]/'embodied/run/fg_single3_audit.py',
+          Path(__file__).parents[1]/'embodied/run/action_mask_warmup.py',
           Path(__file__).parents[1]/'embodied/run/offline_pretrain.py')}, protocol='FG_SINGLE3_OFFLINE_V1',dataset_sha256=digest(root/'manifest.json'),
       coverage_sha256=digest(Path(options.coverage)/'manifest.json'),horizon_sha256=digest(horizon_path/'manifest.json'),
       pool=pool,candidate=options.candidate,reward_params_hash=members[0]['reward_params_hash'],
@@ -114,6 +115,12 @@ def validate(config, *, allow_unapproved=False, persist=True):
       checkpoint_schedule=dict(report=config.run.fg_report_every_steps,save=config.run.fg_save_every_steps,
           keys=list(config.run.fg_key_steps),keep_all=config.run.get("fg_keep_all_checkpoints",False)),agent_config=dict(config.agent),
       batch_size=16,batch_length=64,replay_context=1,mode='joint_full_agent_with_existing_Mask_Gate')
+  if profile == 'C1_M1_1M':
+    from embodied.run.action_mask_warmup import ActionMaskWarmup
+    gate = ActionMaskWarmup.for_single3_1m(config.action_mask_warmup)
+    identity['mask_gate_opening'] = dict(thresholds=gate.opening_thresholds,
+        consecutive_reports=gate.required_passes,
+        report_every_updates=config.run.fg_report_every_steps)
   # Compare the same JSON representation in launcher, CLI and checkpoint tags.
   identity=plain(identity)
   identity_hash=fingerprint(identity)

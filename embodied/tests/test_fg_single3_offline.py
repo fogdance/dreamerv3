@@ -59,7 +59,12 @@ def test_real_single3_preset_reaches_data_admission(monkeypatch):
     validate(config.update({'run.steps':2001}),allow_unapproved=True,persist=False)
 
 
-def test_real_single3_replay_capacity_is_numeric_and_exact(tmp_path, monkeypatch):
+@pytest.mark.parametrize('profile', ('pilot_2k', 'C1_M1_1M'))
+def test_real_single3_replay_capacity_is_numeric_and_exact(tmp_path, monkeypatch, profile):
+  full = profile == 'C1_M1_1M'
+  candidate = 'C1' if full else 'C0'
+  pool = candidate + ('_natural_oracle' if full else '_natural')
+  logdir = tmp_path / ('C1_M1_1M' if full else 'run')
   from dreamerv3.main import _resolve_seed_protocol, make_replay
   from gym_trading_env.research import fg_single3_dataset, fg_single3_coverage, fg_replay
   definitions=read_config_yaml(Path(__file__).parents[2]/'dreamerv3/configs.yaml')
@@ -76,19 +81,20 @@ def test_real_single3_replay_capacity_is_numeric_and_exact(tmp_path, monkeypatch
       dataset_manifest_sha256=fg_replay.digest(dataset/'manifest.json'),
       coverage_manifest_sha256=fg_replay.digest(coverage/'manifest.json'),frozen_inputs={},files={})))
   fg_replay.write_json(dataset/'inputs.json',fg_replay.signed(dict(provenance=dict(code_files={}),
-      training_views={'C0':dict(path=str(view),rows=[dict(env_config=str(env))])})))
+      training_views={candidate:dict(path=str(view),rows=[dict(env_config=str(env))])})))
   capacity=1949908
-  data=dict(full_training_fold=True,pool_members={'C0_natural':[0]},views={'C0_natural':'pool'},
+  data=dict(full_training_fold=True,pool_members={pool:[0]},views={pool:'pool'},
       traces=[dict(sequence_starts=capacity,reward_params_hash='fixture',observation_identity='fixture')])
   monkeypatch.setattr(fg_single3_dataset,'validate_dataset',lambda _:data)
   monkeypatch.setattr(fg_single3_coverage,'require_coverage',lambda *_:None)
   config=_resolve_seed_protocol(elements.Config(definitions['defaults'])
-      .update(definitions['fg_entry_v1']).update(definitions['fg_single3_joint_offline']).update({
-          'logdir':str(tmp_path/'run'),'fg_entry.manifest':str(view),
+      .update(definitions['fg_entry_v1']).update(definitions['fg_single3_joint_offline'])
+      .update(definitions['fg_single3_1m'] if full else {}).update({
+          'logdir':str(logdir),'fg_entry.manifest':str(view),
           'env.gymnasium.config_path':str(env),'replay.size':capacity,
           'run.replay_dir':str(dataset/'pool'),'fg_single3_offline.dataset':str(dataset),
           'fg_single3_offline.coverage':str(coverage),'fg_single3_offline.horizon':str(horizon),
-          'fg_single3_offline.candidate':'C0','fg_single3_offline.pool':'C0_natural'}))
+          'fg_single3_offline.candidate':candidate,'fg_single3_offline.pool':pool}))
   # Explicit legacy string size must still be validated without truncation.
   assert config.replay.size == str(capacity)
   # The launcher persists identity before the CLI checks it in another process.
@@ -97,7 +103,18 @@ def test_real_single3_replay_capacity_is_numeric_and_exact(tmp_path, monkeypatch
   first=validate(config,allow_unapproved=True,persist=True)
   second=validate(config,allow_unapproved=True,persist=False)
   assert first==second
-  tag=tmp_path/'run/single3_identity.json'
+  gate_file=Path(__file__).parents[1]/'run/action_mask_warmup.py'
+  assert first['identity']['code_sha256']['embodied/run/action_mask_warmup.py']==fg_replay.digest(gate_file)
+  if full:
+    opening=first['identity']['mask_gate_opening']
+    assert opening['thresholds']['prior_accuracy']==0.9915
+    assert opening['thresholds']['prior_fpr']==0.004
+    assert opening['consecutive_reports']==20 and opening['report_every_updates']==100
+    assert config.action_mask_warmup.prior_accuracy==0.99
+    assert config.action_mask_warmup.prior_fpr==0.005
+  else:
+    assert 'mask_gate_opening' not in first['identity']
+  tag=logdir/'single3_identity.json'
   stored=json.loads(tag.read_text())
   assert stored==second
   foreign=json.loads(tag.read_text())
