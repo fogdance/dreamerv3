@@ -5,6 +5,9 @@ from pathlib import Path
 
 
 def validate_fg_entry(config):
+  if getattr(config, 'fg_single3_offline', {}).get('enabled', False):
+    from .fg_single3_offline import validate
+    return validate(config)
   if config.task not in ('gymnasium_FixedDirectionEntryEnv-v0','gymnasium_FGEntryDatasetEnv-v0'):
     return
   if config.script != 'train':

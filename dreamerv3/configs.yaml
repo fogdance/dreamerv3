@@ -12,6 +12,15 @@ defaults:
     seed: 0
   fg_entry:
     manifest: ''
+  fg_single3_offline:
+    enabled: False
+    authorized: False
+    dataset: ''
+    coverage: ''
+    horizon: ''
+    candidate: ''
+    pool: ''
+    identity_hash: ''
   audit:
     matched_random_seed: 20260615
     entry_eval_version: ''
@@ -141,6 +150,9 @@ defaults:
 
   run:
     env_checkpoint: False
+    fg_single3_offline: False
+    fg_single3_identity: ''
+    replay_dir: ''
     steps: 1e10
     duration: 0
     train_ratio: 32.0
@@ -533,3 +545,21 @@ fg_entry_v1:
 
 fg_entry_dataset_v1:
   task: gymnasium_FGEntryDatasetEnv-v0
+
+fg_single3_joint_offline:
+  script: offline_pretrain
+  task: gymnasium_FixedDirectionEntryEnv-v0
+  report_length: 64
+  replay.online: False
+  replay.seed: 202
+  fg_single3_offline.enabled: True
+  run.fg_single3_offline: True
+  run.env_checkpoint: False
+  run.steps: 2000
+  run.fg_report_every_steps: 100
+  run.fg_save_every_steps: 500
+  run.fg_key_steps: [0, 1000, 2000]
+  run.fg_reserve_gib: 20
+  run.usage.nvsmi: False
+  walk_forward_guard.enabled: False
+  logger.outputs: [jsonl]

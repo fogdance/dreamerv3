@@ -178,7 +178,9 @@ def main(argv=None):
       config.logdir.format(timestamp=elements.timestamp())))
   config = _resolve_seed_protocol(config)
   from .fg_entry_guard import validate_fg_entry
-  validate_fg_entry(config)
+  fg_admission = validate_fg_entry(config)
+  if config.fg_single3_offline.enabled:
+    config = config.update({'run.fg_single3_identity': fg_admission['identity_hash']})
   guard_result = validate_walk_forward_split(config, dreamer_root=folder.parent)
   config = config.update(walk_forward_guard_result=guard_result)
   if guard_result.get('status') == 'pass':
@@ -249,7 +251,7 @@ def main(argv=None):
         bind(make_replay, config, 'replay'),
         bind(make_stream, config),
         bind(make_logger, config),
-        args)
+        args, replay_dir=config.run.replay_dir or None)
 
   elif config.script == 'train_eval':
     embodied.run.train_eval(
