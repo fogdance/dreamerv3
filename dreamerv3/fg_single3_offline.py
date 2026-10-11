@@ -16,7 +16,7 @@ def validate(config, *, allow_unapproved=False, persist=True):
   if (config.batch_size!=16 or config.batch_length!=64 or config.replay_context!=1
       or config.consec_train!=1 or config.consec_report!=1 or config.report_length!=64
       or config.agent.horizon!=333 or config.agent.imag_length!=15 or not config.agent.contdisc
-      or config.run.steps!=2000 or config.seed!=0 or config.seed_protocol.replay_seed!=202
+      or float(config.run.steps)!=2000 or config.seed!=0 or config.seed_protocol.replay_seed!=202
       or config.replay.online or config.replay.fracs.uniform!=1
       or not config.action_mask_warmup.enabled or not config.action_mask_warmup.add_recall_enabled
       or config.agent.avail_actor_enabled or config.agent.avail_always_available_index!=0):

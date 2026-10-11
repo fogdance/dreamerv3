@@ -38,6 +38,9 @@ def offline_pretrain(
   train_agg = elements.Agg()
   report_agg = elements.Agg()
   single3 = bool(args.get('fg_single3_offline', False))
+  # The existing scientific-notation YAML default has string type in Config.
+  # Normalize the new pilot budget before comparing it with Counter.
+  target_steps = int(float(args.steps)) if single3 else args.steps
   warmup = runtime = schedule = None
   if single3:
     from .action_mask_warmup import ActionMaskWarmup, METRICS, ADD_RECALL_METRICS
@@ -146,14 +149,14 @@ def offline_pretrain(
   # 5. 纯离线训练主循环（无 env，无 driver）
   # -----------------------------
   # 现在的逻辑：
-  #   while step < args.steps:
+  #   while step < target_steps:
   #       batch = next(stream_train)
   #       agent.train(...)
   #       step.increment()
   #
   # 所有数据都来自之前加载好的 replay。
   # -----------------------------
-  while step < args.steps:
+  while step < target_steps:
 
     if single3:
       runtime.start()

@@ -45,6 +45,20 @@ def test_single3_unapproved_and_legacy_entry_fail_before_agent():
     validate(config.update({'fg_single3_offline.authorized':True}))
 
 
+def test_real_single3_preset_reaches_data_admission(monkeypatch):
+  from dreamerv3.main import _resolve_seed_protocol
+  from gym_trading_env.research import fg_single3_dataset
+  definitions=yaml.safe_load((Path(__file__).parents[2]/'dreamerv3/configs.yaml').read_text())
+  config=_resolve_seed_protocol(elements.Config(definitions['defaults'])
+      .update(definitions['fg_entry_v1']).update(definitions['fg_single3_joint_offline']))
+  def data_gate(_):raise RuntimeError('reached real data admission')
+  monkeypatch.setattr(fg_single3_dataset,'validate_dataset',data_gate)
+  with pytest.raises(RuntimeError,match='reached real data admission'):
+    validate(config,allow_unapproved=True,persist=False)
+  with pytest.raises(ValueError,match='baseline'):
+    validate(config.update({'run.steps':2001}),allow_unapproved=True,persist=False)
+
+
 def test_joint_offline_reuses_add_recall_gate_and_full_checkpoint(tmp_path):
   cfg=defaults()
   gate=cfg.action_mask_warmup.update(enabled=True,add_recall_enabled=True,
@@ -57,7 +71,7 @@ def test_joint_offline_reuses_add_recall_gate_and_full_checkpoint(tmp_path):
   replay.save()
   replay.workers.shutdown(wait=True)
   args=elements.Config(dict(cfg.run) | dict(logdir=str(tmp_path/'run'),batch_size=1,batch_length=2,
-      consec_report=1,steps=2,fg_single3_offline=True,fg_single3_identity='fake_test_identity',
+      consec_report=1,steps='2',fg_single3_offline=True,fg_single3_identity='fake_test_identity',
       action_mask_warmup=gate,action_mask_actor_initial=False,fg_report_every_steps=1,
       fg_save_every_steps=1,fg_key_steps=[0,2],fg_reserve_gib=0,
       usage=dict(psutil=False,nvsmi=False,gputil=False,malloc=False,gc=False)))
