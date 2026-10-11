@@ -1,5 +1,6 @@
 """Admission and checkpoint identity for the CPU-accepted Single3 offline pilot."""
 import json
+import importlib.metadata
 from pathlib import Path
 
 
@@ -60,7 +61,9 @@ def validate(config, *, allow_unapproved=False, persist=True):
   # Agent architecture remains the existing baseline. Record its resolved
   # configuration together with data/pool/Reward/Obs, seed and budget.
   from embodied.run.fg_checkpoint import learning_spec
-  identity=dict(learning=learning_spec(config), code_sha256={
+  versions={name:importlib.metadata.version(name) for name in
+      ('numpy','jax','jaxlib','optax','elements','portal','cloudpickle','gymnasium','pandas')}
+  identity=dict(packages=versions, learning=learning_spec(config), code_sha256={
       str(p.relative_to(Path(__file__).parents[1])):digest(p) for p in (
           Path(__file__), Path(__file__).with_name('agent.py'),
           Path(__file__).parents[1]/'embodied/run/offline_pretrain.py')}, protocol='FG_SINGLE3_OFFLINE_V1',dataset_sha256=digest(root/'manifest.json'),
@@ -85,4 +88,13 @@ def validate(config, *, allow_unapproved=False, persist=True):
     temporary=logdir/'.single3_identity.pending'
     temporary.write_text(json.dumps(dict(identity=identity,identity_hash=identity_hash),sort_keys=True,indent=2))
     temporary.replace(tag)
+  checkpoint_root=logdir/'ckpt'
+  expected=dict(protocol='FG_SINGLE3_OFFLINE_V1',identity_hash=identity_hash)
+  if checkpoint_root.exists() and any(checkpoint_root.iterdir()):
+    # Inspect identities before reading any unrelated old checkpoint payload.
+    for meta_path in checkpoint_root.glob('step_*/manifest.json'):
+      if json.loads(meta_path.read_text()).get('identity')!=expected:
+        raise ValueError('Checkpoint belongs to a legacy/other Single3 experiment')
+    from embodied.run.fg_checkpoint import FullCheckpoint
+    FullCheckpoint(checkpoint_root,None,expected,()).latest()
   return dict(identity=identity,identity_hash=identity_hash)

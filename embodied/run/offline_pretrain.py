@@ -219,7 +219,7 @@ def offline_pretrain(
       logger.write()
 
     # 保存 checkpoint
-    if do_save if single3 else should_save(step):
+    if (do_save if single3 else should_save(step)):
       cp.save()
 
   if single3:
