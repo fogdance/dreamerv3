@@ -9,6 +9,15 @@ from .action_mask_warmup import ActionMaskWarmup, METRICS, ADD_RECALL_METRICS
 from .checkpoint_retention import StepCheckpointRetention
 
 
+def _policy_with_logging(agent, *args):
+  carry, acts, outs = agent.policy(*args, mode='train')
+  if 'p_add' in outs:
+    # Driver logs diagnostics; Replay excludes the established log/ channel.
+    outs = dict(outs)
+    outs['log/p_add'] = outs.pop('p_add')
+  return carry, acts, outs
+
+
 def _apply_action_mask_warmup_gate(agent, warmup, step):
   if not warmup.enabled:
     return
@@ -230,7 +239,7 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     snapshot_initial(agent, str(logdir))
 
   print('Start training loop')
-  policy = lambda *args: agent.policy(*args, mode='train')
+  policy = bind(_policy_with_logging, agent)
   if not persistent_env:
     driver.reset(agent.init_policy)
   while step < args.steps:

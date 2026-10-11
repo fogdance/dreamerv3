@@ -33,6 +33,16 @@ def test_masked_categorical_unimix_and_gradients_stay_inside_valid_set():
   assert float(grad[0]) == 0.0
 
 
+def test_masked_probability_reports_zero_for_unavailable_add():
+  mask = jnp.array([[True, False], [True, True]])
+  logits = jnp.zeros((2, 2))
+  probabilities = jax.jit(lambda value: MaskedCategorical(
+      value, mask, unimix=0.1).prob(jnp.ones((2,), jnp.int32)))(logits)
+  np.testing.assert_allclose(probabilities, [0.0, 0.5])
+  with pytest.raises(Exception, match='Action must be valid under its mask'):
+    MaskedCategorical(logits, mask).logp(jnp.ones((2,), jnp.int32))
+
+
 def test_strict_mask_rejects_all_false_input():
   try:
     MaskedCategorical(

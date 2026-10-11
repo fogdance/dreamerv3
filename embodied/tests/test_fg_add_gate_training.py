@@ -53,6 +53,7 @@ def test_fg_training_skips_initial_pending_metrics_and_pools_counts(tmp_path):
 
 def test_single3_online_transfer_syncs_policy_and_restarts_gate_observation(tmp_path):
   import json
+  import numpy as np
   from embodied.run.train import train
   from embodied.run.action_mask_warmup import ActionMaskWarmup
   from embodied.tests.test_fg_full_checkpoint import checkpoint
@@ -62,7 +63,11 @@ def test_single3_online_transfer_syncs_policy_and_restarts_gate_observation(tmp_
     def sync_policy_from_train(self,reset_counter=False):
       assert reset_counter and self.updates==10000
       self.synced=True
+    def policy(self,*args,**kwargs):
+      carry,acts,outs=super().policy(*args,**kwargs)
+      return carry,acts,{**outs,'p_add':np.full((1,),.5,np.float32)}
     def train(self,carry,batch):
+      assert 'p_add' not in batch and 'log/p_add' not in batch
       self.used_gates.append(self.actor_enabled)
       carry,outs,metrics=super().train(carry,batch)
       for prefix in ('post','prior'):

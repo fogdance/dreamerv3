@@ -287,6 +287,12 @@ class MaskedCategorical(Categorical):
     return super().logp(event)
 
 
+  def prob(self, event):
+    # Diagnostics may query unavailable actions; their probability is zero.
+    onehot = jax.nn.one_hot(event, self.logits.shape[-1])
+    return (jax.nn.softmax(self.logits, -1) * onehot).sum(-1)
+
+
 class OneHot(Output):
 
   def __init__(self, logits, unimix=0.0):
