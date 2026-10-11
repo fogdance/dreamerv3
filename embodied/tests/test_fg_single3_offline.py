@@ -91,7 +91,21 @@ def test_real_single3_replay_capacity_is_numeric_and_exact(tmp_path, monkeypatch
           'fg_single3_offline.candidate':'C0','fg_single3_offline.pool':'C0_natural'}))
   # Explicit legacy string size must still be validated without truncation.
   assert config.replay.size == str(capacity)
-  assert validate(config,allow_unapproved=True,persist=False)['identity_hash']
+  # The launcher persists identity before the CLI checks it in another process.
+  # Config sequences are tuples in memory and lists after the JSON round-trip.
+  import json
+  first=validate(config,allow_unapproved=True,persist=True)
+  second=validate(config,allow_unapproved=True,persist=False)
+  assert first==second
+  tag=tmp_path/'run/single3_identity.json'
+  stored=json.loads(tag.read_text())
+  assert stored==second
+  foreign=json.loads(tag.read_text())
+  foreign['identity']['reward_params_hash']='other_reward'
+  tag.write_text(json.dumps(foreign))
+  with pytest.raises(ValueError,match='Cannot resume'):
+    validate(config,allow_unapproved=True,persist=False)
+  tag.write_text(json.dumps(stored))
   with pytest.raises(ValueError,match='capacity/directory'):
     validate(config.update({'replay.size':capacity+.25}),allow_unapproved=True,persist=False)
   for mode in ('train','report'):

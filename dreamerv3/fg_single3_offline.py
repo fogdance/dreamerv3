@@ -87,7 +87,7 @@ def validate(config, *, allow_unapproved=False, persist=True):
   if env['entry'].get('protocol')!='fg_single3_v1':raise ValueError('Legacy six-lot Env cannot feed Single3')
   # Agent architecture remains the existing baseline. Record its resolved
   # configuration together with data/pool/Reward/Obs, seed and budget.
-  from embodied.run.fg_checkpoint import learning_spec
+  from embodied.run.fg_checkpoint import learning_spec,plain
   versions={name:importlib.metadata.version(name) for name in
       ('numpy','jax','jaxlib','optax','elements','portal','cloudpickle','gymnasium','pandas')}
   identity=dict(packages=versions, learning=learning_spec(config), code_sha256={
@@ -114,6 +114,8 @@ def validate(config, *, allow_unapproved=False, persist=True):
       checkpoint_schedule=dict(report=config.run.fg_report_every_steps,save=config.run.fg_save_every_steps,
           keys=list(config.run.fg_key_steps),keep_all=config.run.get("fg_keep_all_checkpoints",False)),agent_config=dict(config.agent),
       batch_size=16,batch_length=64,replay_context=1,mode='joint_full_agent_with_existing_Mask_Gate')
+  # Compare the same JSON representation in launcher, CLI and checkpoint tags.
+  identity=plain(identity)
   identity_hash=fingerprint(identity)
   if options.identity_hash and options.identity_hash!=identity_hash:
     raise ValueError('Frozen Single3 checkpoint/pilot identity differs')
