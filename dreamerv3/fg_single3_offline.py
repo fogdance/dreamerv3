@@ -114,13 +114,14 @@ def validate(config, *, allow_unapproved=False, persist=True):
       context_initialization="initial_WAIT_then_one_causal_prefix_stop_gradient" if profile == "C1_M1_1M" else "stored_latent",
       checkpoint_schedule=dict(report=config.run.fg_report_every_steps,save=config.run.fg_save_every_steps,
           keys=list(config.run.fg_key_steps),keep_all=config.run.get("fg_keep_all_checkpoints",False)),agent_config=dict(config.agent),
-      batch_size=16,batch_length=64,replay_context=1,mode='joint_full_agent_with_existing_Mask_Gate')
+      batch_size=16,batch_length=64,replay_context=1,mode='world_model_only_actor_critic_frozen')
   if profile == 'C1_M1_1M':
     from embodied.run.action_mask_warmup import ActionMaskWarmup
     gate = ActionMaskWarmup.for_single3_1m(config.action_mask_warmup)
     identity['mask_gate_opening'] = dict(thresholds=gate.opening_thresholds,
         consecutive_reports=gate.required_passes,
-        report_every_updates=config.run.fg_report_every_steps)
+        report_every_updates=config.run.fg_report_every_steps,
+        automatic_activation=False)
   # Compare the same JSON representation in launcher, CLI and checkpoint tags.
   identity=plain(identity)
   identity_hash=fingerprint(identity)

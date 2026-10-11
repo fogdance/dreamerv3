@@ -19,6 +19,7 @@ def _offline_pretrain(
   - 不创建 env；
   - 不调用 replay.add(...)；
   - 只从已有 replay 中 sample batch，反复调用 agent.train(...)。
+  - Single3 的 Actor/Critic Gate 全程关闭，达标指标仅作观察。
 
   约定：
   - logger.step（即 step）直接表示“已经做了多少次梯度更新”；
@@ -146,6 +147,10 @@ def _offline_pretrain(
   # 如果 ckpt 目录已有最新 checkpoint，会自动 load；否则会保存初始状态
   cp.load_or_save()
   if single3:
+    if warmup.actor_enabled or (
+        hasattr(agent, 'get_avail_actor_enabled') and agent.get_avail_actor_enabled()):
+      raise ValueError('Offline pretraining requires a closed Actor/Critic Gate; '
+          'cannot resume an activated checkpoint')
     _apply_action_mask_warmup_gate(agent, warmup, step)
 
   if audited and (int(agent.n_updates) != int(step) or audit.state["last_update"] != int(step)):
@@ -223,10 +228,11 @@ def _offline_pretrain(
             positives = float(metrics.get(f'avail/{prefix}_add_positives', 0))
             true = float(metrics.get(f'avail/{prefix}_add_true_positives', 0))
             metrics[f'avail/{prefix}_add_recall'] = true / positives if positives else float('nan')
-          warmup.update(metrics, step)
+          warmup.update(metrics, step, allow_activation=False)
           logger.add(metrics, prefix='action_mask_gate_eval')
         _apply_action_mask_warmup_gate(agent, warmup, step)
-        logger.add(warmup.metrics(), prefix='action_mask_warmup')
+        logger.add(dict(warmup.metrics(), automatic_activation=0.),
+            prefix='action_mask_warmup')
 
     # 写日志
     if should_log(step):
