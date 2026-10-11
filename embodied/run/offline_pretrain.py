@@ -201,7 +201,9 @@ def _offline_pretrain(
     if do_report:
       if audited:
         logger.add(usage.stats(), prefix='usage')
-        logger.add(audit.save(), prefix='training_audit')
+        # Optional event indices remain null in audit JSON/checkpoints;
+        # the scalar logger accepts only numeric values.
+        logger.add({k: v for k, v in audit.save().items() if v is not None}, prefix='training_audit')
         from .fg_single3_audit import atomic_json
         atomic_json(str(logdir) + '/progress.json', dict(status='RUNNING', **audit.save()))
       report_agg.reset()
@@ -249,7 +251,7 @@ def _offline_pretrain(
       if int(agent.n_updates) != target_steps:
         raise ValueError('Final neural update counter differs from budget')
       logger.add(train_agg.result())
-      logger.add(audit.save(), prefix='training_audit')
+      logger.add({k: v for k, v in audit.save().items() if v is not None}, prefix='training_audit')
       logger.add(usage.stats(), prefix='usage')
       logger.write()
     cp.save(final=True)

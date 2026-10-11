@@ -119,11 +119,14 @@ def test_audited_loop_checkpoint_restores_counter_and_gate_without_duplicate_upd
     return embodied.Replay(length=3,capacity=64,chunksize=16,online=False,seed=202,directory=str(tmp_path/'run/replay'))
   def stream(replay,mode):
     return embodied.streams.Stateless(partial(replay.sample,1,mode=mode))
-  logger=lambda:elements.Logger(elements.Counter(),[lambda _:None])
+  logger=lambda:elements.Logger(elements.Counter(),[
+      elements.logger.TerminalOutput(),
+      elements.logger.JSONLOutput(tmp_path/'run','metrics.jsonl')])
   offline_pretrain(factory,buffer,stream,logger,args,replay_dir=str(source))
   offline_pretrain(factory,buffer,stream,logger,args,replay_dir=str(source))
   import json
   result=json.loads((tmp_path/'run/training_summary.json').read_text())
+  assert (tmp_path/'run/metrics.jsonl').is_file()
   assert int(agents[-1].n_updates)==2
   assert agents[-1].calls==[False,True]
   assert result['actor_effective_updates']==1 and result['training_positions']==4
