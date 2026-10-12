@@ -3,6 +3,7 @@ from functools import lru_cache
 from pathlib import Path
 import ast
 import hashlib
+import importlib.metadata
 import json
 import pickle
 import subprocess
@@ -15,6 +16,25 @@ from gym_trading_env.envs.entry_contract import fingerprint
 from gym_trading_env.research.fg_replay import read_manifest, signed
 
 PROTOCOL = 'FG_S3_SOURCE_ADMISSION_V1'
+
+
+def verify_dependency_versions(declared):
+    """Check every producer-declared package, not only A/B's short inventory."""
+    actual={}
+    for name,expected in declared.items():
+        try:
+            actual[name]=importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            raise ValueError('Source dependency missing: '+name) from None
+        if actual[name]!=expected:
+            raise ValueError('Source dependency version mismatch: '+name)
+    return actual
+
+
+def runtime_versions():
+    """Joint full recovery also depends on stream and snapshot serialization."""
+    return {**package_versions(),**{name:importlib.metadata.version(name)
+                                   for name in ('portal','cloudpickle')}}
 
 
 def _normalized_code(data, name):
@@ -110,9 +130,7 @@ def _full(path, catalog):
     if (config['agent'] != identity['agent_config'] or plain(learning_spec(config)) != identity['learning']
             or config['agent']['horizon'] != 333 or not config['agent']['contdisc']):
         raise ValueError('Source model/learning config differs from signed identity')
-    packages = package_versions()
-    if any(packages.get(k) != v for k, v in identity['packages'].items()):
-        raise ValueError('Source dependency version mismatch')
+    verify_dependency_versions(identity['packages'])
     code = verify_producer_code(identity['code_sha256'])
     return dict(path=str(path), manifest_sha256=file_hash(path/'manifest.json'),
                 identity=identity, identity_hash=tag['identity_hash'], config=config,
@@ -189,7 +207,7 @@ def inspect_source(kind, *, catalog, path=None, seed=None, config=None,
         reward_params_hash=catalog.manifest['source']['reward_params_hash'],
         observation_identity=catalog.manifest['observation_identity'],
         optimizer_transfer_policy='retain_base_joint_opt' if kind == 'after_bc_s3a' else 'original_direct',
-        code_sha256=file_hash(__file__), packages=package_versions()))
+        code_sha256=file_hash(__file__), packages=runtime_versions()))
     return receipt
 
 

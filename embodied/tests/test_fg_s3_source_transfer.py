@@ -22,6 +22,18 @@ from embodied.run.fg_s3_source_transfer import make_agent,apply_and_audit_transf
 from dreamerv3.fg_s3a_actor import ActorBC,parameter_digests
 
 
+def test_full_source_dependency_inventory_includes_stream_and_serializer():
+    import importlib.metadata
+    from embodied.run.fg_s3_source_admission import verify_dependency_versions,runtime_versions
+    declared={name:importlib.metadata.version(name) for name in ('portal','cloudpickle')}
+    assert verify_dependency_versions(declared)==declared
+    assert all(runtime_versions()[name]==value for name,value in declared.items())
+    with pytest.raises(ValueError,match='version mismatch: portal'):
+        verify_dependency_versions({**declared,'portal':'foreign'})
+    with pytest.raises(ValueError,match='dependency missing'):
+        verify_dependency_versions({'s3_nonexistent_test_dependency':'1'})
+
+
 @pytest.fixture(scope='module')
 def source_bundle(tmp_path_factory,request):
     root=tmp_path_factory.mktemp('actual_source')
