@@ -23,13 +23,16 @@ from dreamerv3.fg_s3a_actor import ActorBC,parameter_digests
 
 
 @pytest.fixture(scope='module')
-def source_bundle(tmp_path_factory):
+def source_bundle(tmp_path_factory,request):
     root=tmp_path_factory.mktemp('actual_source')
     dataset,oracle,trace,tm=native_dataset(root/'native')
     labels=root/'labels';build_labels(dataset,oracle,labels)
     build_catalog(dataset,oracle,labels,root/'catalog',diagnostic=True)
     c=load_catalog(root/'catalog')
     a,source=diagnostic_source(load_labels(labels),root/'base')
+    if getattr(request,'param',False):
+        # Explicit diagnostic READY source fixture; no production Gate bypass.
+        a.set_avail_actor_enabled(True)
     # Nonzero moments/norms exercise preservation beyond a fresh empty optimizer.
     for k,v in list(a.params.items()):
         if k.startswith(('opt/state/','retnorm/')):
