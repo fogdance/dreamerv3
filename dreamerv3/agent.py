@@ -184,7 +184,8 @@ class Agent(embodied.jax.Agent):
   def train(self, carry, data):
     carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
     metrics, (carry, entries, outs, mets) = self.opt(
-        self.loss, carry, obs, prevact, training=True, has_aux=True)
+        self.training_loss_fn(data, stepid), carry, obs, prevact,
+        training=True, has_aux=True)
     metrics.update(mets)
     self.slowval.update()
     outs = {}
@@ -199,6 +200,10 @@ class Agent(embodied.jax.Agent):
     #   outs['replay']['priority'] = losses['model']
     carry = (*carry, {k: data[k][:, -1] for k in self.act_space})
     return carry, outs, metrics
+
+  def training_loss_fn(self, data, effective_stepid):
+    """Factory for training-only losses; report and policy stay independent."""
+    return self.loss
 
   def loss(self, carry, obs, prevact, training):
     enc_carry, dyn_carry, dec_carry = carry

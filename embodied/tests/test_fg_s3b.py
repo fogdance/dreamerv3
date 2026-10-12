@@ -25,7 +25,7 @@ from gym_trading_env.research.fg_s3b_advantage import build_values
 from gym_trading_env.research.fg_s3b_weights import build_weight_index
 from gym_trading_env.research.fg_s3b_normalization import build_normalization
 
-GYM = Path('/home/v/Documents/work/gym-trading-env2')
+GYM = Path(__file__).resolve().parents[3]/'gym-trading-env'
 sys.path.insert(0,str(GYM/'tests/entry_v1'))
 from test_fg_s3b_weights import certified_native_dataset
 

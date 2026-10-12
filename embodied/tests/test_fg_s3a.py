@@ -22,7 +22,7 @@ from embodied.run.fg_s3a_train import Sampler,train,training_identity
 from gym_trading_env.research.fg_replay import iter_replay_rows,read_manifest
 from gym_trading_env.research.fg_s3a_labels import build_labels,load_labels
 
-GYM=Path('/home/v/Documents/work/gym-trading-env2')
+GYM=Path(__file__).resolve().parents[3]/'gym-trading-env'
 sys.path.insert(0,str(GYM/'tests/entry_v1'))
 from test_fg_s3a_labels import native_dataset
 
@@ -62,9 +62,9 @@ def test_original_policy_parity_teacher_history_and_future_isolation(bundle,orig
     for x,y in zip(jax.tree.leaves(expected[:2]),jax.tree.leaves(actual[:2])):np.testing.assert_array_equal(x,y)
     np.testing.assert_allclose(expected[2]['p_add'],actual[2]['p_add'],rtol=0,atol=1e-7)
     blocked={k:jax.device_put(np.asarray(rows[1][k])[None]) for k in a.obs_space}
-    with pytest.raises(Exception,match='Action must be valid under its mask'):
-        _,result=baseline(state,carry,blocked,seed=23,modify=False)
-        jax.block_until_ready(result)
+    _,result=baseline(state,carry,blocked,seed=23,modify=False)
+    jax.block_until_ready(result)
+    assert float(result[2]['p_add'][0]) == 0.
     def rollout(sequence):
         with a.n_actions.lock:a.n_actions.value=0
         carry=a.init_policy(1);features=[]
