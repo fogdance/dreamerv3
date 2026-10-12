@@ -76,6 +76,13 @@ def test_actual_three_modes_inherit_complete_state_and_reject_foreign(source_bun
     with pytest.raises(ValueError,match='corrupt'):prepare_transfer(corrupt)
     wrong=copy.copy(c);wrong.manifest=copy.deepcopy(c.manifest);wrong.manifest['source']['dataset_sha256']='foreign'
     with pytest.raises(ValueError,match='identity'):inspect_source('direct_full',catalog=wrong,path=b['base'])
+    # Isolated flag-contract test. It does not authenticate a production model.
+    real_flag=copy.copy(c);real_flag.manifest=copy.deepcopy(c.manifest)
+    real_flag.manifest['diagnostic']=False
+    spec=inspect_source('direct_init',catalog=real_flag,seed=0,config=b['config'],diagnostic=True)
+    assert spec['origin']['diagnostic'] and spec['catalog_manifest_sha256']==c.manifest_sha256
+    with pytest.raises(ValueError,match='boolean'):
+        inspect_source('direct_init',catalog=c,seed=0,config=b['config'],diagnostic='false')
 
 
 def test_no_inference_source_and_frozen_snapshot(source_bundle,tmp_path,monkeypatch):

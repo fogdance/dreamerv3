@@ -120,7 +120,9 @@ def _full(path, catalog):
 
 
 def inspect_source(kind, *, catalog, path=None, seed=None, config=None,
-                   base_checkpoint=None, features=None):
+                   base_checkpoint=None, features=None, diagnostic=False):
+    if type(diagnostic) is not bool:
+        raise ValueError('diagnostic must be an explicit boolean')
     if kind == 'resume_s3c':
         raise ValueError('Resume must use the same run FullCheckpoint, not source transfer')
     if kind not in ('direct_init', 'direct_full', 'after_bc_s3a'):
@@ -131,7 +133,8 @@ def inspect_source(kind, *, catalog, path=None, seed=None, config=None,
         cfg = plain(config)
         if cfg['seed'] != seed or cfg['agent']['horizon'] != 333 or not cfg['agent']['contdisc']:
             raise ValueError('Initialization seed/Reward horizon differs')
-        origin = dict(config=cfg, step=0, diagnostic=bool(catalog.manifest['diagnostic']))
+        origin = dict(config=cfg, step=0,
+                      diagnostic=bool(catalog.manifest['diagnostic'] or diagnostic))
     elif kind == 'direct_full':
         if path is None:
             raise ValueError('direct_full requires a source checkpoint')
@@ -178,6 +181,8 @@ def inspect_source(kind, *, catalog, path=None, seed=None, config=None,
                       config=cfg, step=state['agent']['counters']['updates'],
                       diagnostic=identity['diagnostic'], baseline=base,
                       baseline_optimizer_equality='PENDING' if base else 'NOT_VERIFIED')
+    if diagnostic:
+        origin['diagnostic'] = True
     receipt = signed(dict(protocol=PROTOCOL, kind=kind, origin=origin,
         catalog_manifest_sha256=catalog.manifest_sha256,
         dataset_sha256=catalog.manifest['source']['dataset_sha256'],

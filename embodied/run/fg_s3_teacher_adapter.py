@@ -4,6 +4,25 @@ import numpy as np
 from gym_trading_env.research.fg_s3_teacher_catalog import DatasetIdentityError
 
 
+def admit_replay_directory(directory,catalog,*,diagnostic=False):
+    """Authenticate file bytes and pool membership before native Replay.load."""
+    from pathlib import Path
+    import elements
+    from gym_trading_env.research.fg_replay import digest
+    expected={Path(p).name:h for p,h in catalog.manifest['frozen_inputs'].items() if p.endswith('.npz')}
+    files=list(Path(directory).glob('*.npz'))
+    actual={p.name for p in files}
+    if not actual or (not diagnostic and actual!=set(expected)):
+        raise DatasetIdentityError('REPLAY_POOL_FILE_SET_MISMATCH')
+    for p in files:
+        parts=p.name.split('-')
+        if len(parts)!=4:raise DatasetIdentityError('REPLAY_FILENAME_SCHEMA')
+        catalog.require_owner(bytes(elements.UUID(parts[1])),0)
+        if p.name not in expected or digest(p)!=expected[p.name]:
+            raise DatasetIdentityError('REPLAY_FILE_HASH_MISMATCH')
+    return len(files)
+
+
 def attach_teacher(batch, catalog, *, mode, sampling_flags=False):
     ids = np.asarray(batch['stepid'])
     if ids.dtype != np.uint8 or ids.ndim != 3 or ids.shape[-1] != 20:
