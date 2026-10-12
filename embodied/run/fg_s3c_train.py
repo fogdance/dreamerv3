@@ -16,7 +16,7 @@ import cloudpickle
 
 from embodied.run.action_mask_warmup import ActionMaskWarmup,METRICS
 from embodied.run.fg_checkpoint import FullCheckpoint,RuntimeState,StepSchedule,file_hash,plain,validate_bundle
-from embodied.run.fg_s3_source_admission import inspect_source,transfer_control_state
+from embodied.run.fg_s3_source_admission import inspect_source,transfer_control_state,runtime_versions
 from embodied.run.fg_s3_source_transfer import make_agent,apply_and_audit_transfer
 from embodied.run.fg_s3c_stream import TeacherJoinStream
 from embodied.run.fg_s3_teacher_adapter import admit_replay_directory
@@ -43,8 +43,7 @@ def saved_run(run_dir,catalog):
         raise ValueError('Foreign S3-C run protocol')
     if identity['code_sha256']!=code_identity() or identity['catalog_sha256']!=catalog.manifest_sha256:
         raise ValueError('Resume code/Catalog identity changed')
-    from embodied.run.fg_s3a_checkpoint import package_versions
-    if identity['packages']!=package_versions():raise ValueError('Resume package identity changed')
+    if identity['packages']!=runtime_versions():raise ValueError('Resume package identity changed')
     for name,key,label in (
         ('source_admission_receipt.json','source_admission_file_sha256','source receipt'),
         ('source_transfer_receipt.json','source_transfer_file_sha256','transfer receipt'),
@@ -206,7 +205,6 @@ class S3CRun:
         self.runtime=RuntimeState(self.schedule,elements.when.Ratio(1),self.streams,
             lambda:self.carry,set_carry,self.aggregates,self.samples)
         if not resume:
-            from embodied.run.fg_s3a_checkpoint import package_versions
             write_json(root/'run_settings.json',signed(dict(config=plain(cfg),consec=consec,
                 capacity=int(capacity),report_every=report_every,save_every=save_every,
                 target_updates=target_updates,budget_unit='gradient_updates')))
@@ -232,7 +230,7 @@ class S3CRun:
                     for repo in (Path(__file__).resolve().parents[2],Path(__file__).resolve().parents[3]/'gym-trading-env')},
                 network_config_sha256=hashlib.sha256(json.dumps(plain(cfg.agent),sort_keys=True).encode()).hexdigest(),
                 optimizer_config_sha256=hashlib.sha256(json.dumps(plain(cfg.agent.opt),sort_keys=True).encode()).hexdigest(),
-                packages=package_versions(),diagnostic=spec['origin']['diagnostic'],
+                packages=runtime_versions(),diagnostic=spec['origin']['diagnostic'],
                 action_mask_gate_policy=dict(config=plain(cfg.action_mask_warmup),
                     opening_thresholds=self.warmup.opening_thresholds,
                     consecutive_reports=self.warmup.required_passes,automatic_activation=self.warmup.enabled),
