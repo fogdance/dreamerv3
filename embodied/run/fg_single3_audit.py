@@ -83,10 +83,10 @@ class TrainingAudit:
       raise ValueError('Training audit checkpoint schema mismatch')
     self.state = copy.deepcopy(state)
 
-  def summary(self, identity, checkpoint, budget):
+  def summary(self, identity, checkpoint, budget, *, experiment='C1_M1_1M'):
     if self.state['last_update'] != budget:
       raise ValueError('Single3 training budget not completed')
-    return dict(status='TRAINING_COMPLETE', experiment='C1_M1_1M',
+    return dict(status='TRAINING_COMPLETE', experiment=experiment,
         identity_hash=identity, checkpoint=str(checkpoint), **self.save(),
         actor_training='EFFECTIVE_UPDATES_OBSERVED' if self.state['actor_effective_updates'] else 'NO_EFFECTIVE_UPDATES',
         timing_status='NOT_ESTABLISHED', evaluation_status='NOT_RUN')

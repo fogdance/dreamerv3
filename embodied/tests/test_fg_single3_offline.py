@@ -59,12 +59,12 @@ def test_real_single3_preset_reaches_data_admission(monkeypatch):
     validate(config.update({'run.steps':2001}),allow_unapproved=True,persist=False)
 
 
-@pytest.mark.parametrize('profile', ('pilot_2k', 'C1_M1_1M'))
+@pytest.mark.parametrize('profile', ('pilot_2k', 'C1_M1_1M', 'C1_M1_OFFLINE_10K'))
 def test_real_single3_replay_capacity_is_numeric_and_exact(tmp_path, monkeypatch, profile):
-  full = profile == 'C1_M1_1M'
+  full = profile != 'pilot_2k'
   candidate = 'C1' if full else 'C0'
   pool = candidate + ('_natural_oracle' if full else '_natural')
-  logdir = tmp_path / ('C1_M1_1M' if full else 'run')
+  logdir = tmp_path / (profile if full else 'run')
   from dreamerv3.main import _resolve_seed_protocol, make_replay
   from gym_trading_env.research import fg_single3_dataset, fg_single3_coverage, fg_replay
   definitions=read_config_yaml(Path(__file__).parents[2]/'dreamerv3/configs.yaml')
@@ -95,6 +95,9 @@ def test_real_single3_replay_capacity_is_numeric_and_exact(tmp_path, monkeypatch
           'run.replay_dir':str(dataset/'pool'),'fg_single3_offline.dataset':str(dataset),
           'fg_single3_offline.coverage':str(coverage),'fg_single3_offline.horizon':str(horizon),
           'fg_single3_offline.candidate':candidate,'fg_single3_offline.pool':pool}))
+  if profile == 'C1_M1_OFFLINE_10K':
+    config=config.update({'fg_single3_offline.profile':profile,'run.steps':10000,
+        'run.fg_key_steps':[0,2000,10000]})
   # Explicit legacy string size must still be validated without truncation.
   assert config.replay.size == str(capacity)
   # The launcher persists identity before the CLI checks it in another process.
@@ -103,6 +106,7 @@ def test_real_single3_replay_capacity_is_numeric_and_exact(tmp_path, monkeypatch
   first=validate(config,allow_unapproved=True,persist=True)
   second=validate(config,allow_unapproved=True,persist=False)
   assert first==second
+  assert first['identity']['mode']=='world_model_only_actor_critic_frozen'
   gate_file=Path(__file__).parents[1]/'run/action_mask_warmup.py'
   assert first['identity']['code_sha256']['embodied/run/action_mask_warmup.py']==fg_replay.digest(gate_file)
   if full:
@@ -110,6 +114,7 @@ def test_real_single3_replay_capacity_is_numeric_and_exact(tmp_path, monkeypatch
     assert opening['thresholds']['prior_accuracy']==0.9915
     assert opening['thresholds']['prior_fpr']==0.004
     assert opening['consecutive_reports']==20 and opening['report_every_updates']==100
+    assert opening['automatic_activation'] is False
     assert config.action_mask_warmup.prior_accuracy==0.99
     assert config.action_mask_warmup.prior_fpr==0.005
   else:
@@ -134,7 +139,7 @@ def test_real_single3_replay_capacity_is_numeric_and_exact(tmp_path, monkeypatch
       replay.workers.shutdown(wait=True)
 
 
-def test_joint_offline_reuses_add_recall_gate_and_full_checkpoint(tmp_path):
+def test_offline_monitors_add_recall_with_gate_closed_across_resume(tmp_path,monkeypatch):
   cfg=defaults()
   gate=cfg.action_mask_warmup.update(enabled=True,add_recall_enabled=True,
       min_train_samples=1,consecutive_reports=1)
@@ -158,12 +163,21 @@ def test_joint_offline_reuses_add_recall_gate_and_full_checkpoint(tmp_path):
   def make_stream(buffer,mode):return embodied.streams.Stateless(partial(buffer.sample,1,mode=mode))
   def make_logger():return elements.Logger(elements.Counter(),[lambda _: None])
   offline_pretrain(make_agent,make_replay,make_stream,make_logger,args,replay_dir=str(directory))
-  assert agents[-1].calls==[False,True]
+  assert agents[-1].calls==[False,False] and not agents[-1].actor
   meta=validate_bundle(tmp_path/'run/ckpt/step_000000000002')
   assert meta['identity']['protocol']=='FG_SINGLE3_OFFLINE_V1' and meta['protected']
   offline_pretrain(make_agent,make_replay,make_stream,make_logger,args,replay_dir=str(directory))
-  assert agents[-1].calls==[False,True] and agents[-1].actor  # no duplicate updates on resume
+  assert agents[-1].calls==[False,False] and not agents[-1].actor  # no duplicate updates on resume
   with pytest.raises(ValueError,match='identity mismatch'):
     offline_pretrain(make_agent,make_replay,make_stream,make_logger,
         args.update(fg_single3_identity='other_reward'),replay_dir=str(directory))
+  load_exact=FakeAgent.load_exact
+  def restore_open_gate(agent,state):
+    load_exact(agent,state)
+    agent.actor=True
+  monkeypatch.setattr(FakeAgent,'load_exact',restore_open_gate)
+  with pytest.raises(ValueError,match='closed Actor/Critic Gate'):
+    offline_pretrain(make_agent,make_replay,make_stream,make_logger,
+        args.update(steps='3'),replay_dir=str(directory))
+  assert agents[-1].calls==[False,False]  # reject before another update
   replay.workers.shutdown(wait=True)

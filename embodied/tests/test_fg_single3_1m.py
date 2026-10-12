@@ -90,6 +90,10 @@ def test_audited_loop_checkpoint_restores_counter_and_gate_without_duplicate_upd
       carry,outs,mets=super().train(carry,batch)
       self.n_updates.increment()
       mets.update(metrics(int(self.n_updates),self.actor,True))
+      if not self.actor:
+        for head in ('actor','critic'):
+          mets['opt/'+head+'_delta_norm']=0.
+          mets['opt/'+head+'_changed']=False
       return carry,outs,mets
     def save(self):
       return dict(super().save(),updates=int(self.n_updates))
@@ -128,5 +132,8 @@ def test_audited_loop_checkpoint_restores_counter_and_gate_without_duplicate_upd
   result=json.loads((tmp_path/'run/training_summary.json').read_text())
   assert (tmp_path/'run/metrics.jsonl').is_file()
   assert int(agents[-1].n_updates)==2
-  assert agents[-1].calls==[False,True]
-  assert result['actor_effective_updates']==1 and result['training_positions']==4
+  assert agents[-1].calls==[False,False]
+  assert result['actor_effective_updates']==result['critic_effective_updates']==0
+  assert result['gate_open_updates']==result['actor_changes_gate_closed']==0
+  assert result['wm_effective_updates']==result['reward_effective_updates']==2
+  assert result['training_positions']==4

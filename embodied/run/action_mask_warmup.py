@@ -61,7 +61,7 @@ class ActionMaskWarmup:
   def ready(self, train_samples):
     return self.enabled and int(train_samples) >= self.min_train_samples
 
-  def update(self, metrics, step):
+  def update(self, metrics, step, *, allow_activation=True):
     if not self.enabled:
       return False
     passed = self._passed(metrics)
@@ -70,7 +70,7 @@ class ActionMaskWarmup:
     self.last_add_support_sufficient = self._has_add_support(metrics)
     if not self.actor_enabled:
       self.consecutive_passes = self.consecutive_passes + 1 if passed else 0
-      if self.consecutive_passes >= self.required_passes:
+      if allow_activation and self.consecutive_passes >= self.required_passes:
         self.actor_enabled = True
         self.switched_step = int(step)
         self.consecutive_regressions = 0
