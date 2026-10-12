@@ -4,6 +4,7 @@ from pathlib import Path
 import copy
 import hashlib
 import json
+import os
 import pickle
 import subprocess
 import uuid
@@ -14,7 +15,8 @@ import jax
 import numpy as np
 import cloudpickle
 
-from embodied.run.action_mask_warmup import ActionMaskWarmup,METRICS
+from embodied.run.action_mask_warmup import METRICS
+from embodied.run.fg_s3_gate import make_gate_controller
 from embodied.run.fg_checkpoint import FullCheckpoint,RuntimeState,StepSchedule,file_hash,plain,validate_bundle
 from embodied.run.fg_s3_source_admission import inspect_source,transfer_control_state,runtime_versions
 from embodied.run.fg_s3_source_transfer import make_agent,apply_and_audit_transfer
@@ -24,7 +26,7 @@ from dreamerv3.fg_s3c_agent import S3CAgent
 from gym_trading_env.research.fg_replay import read_manifest,signed,write_json
 from gym_trading_env.research.fg_s3_teacher_catalog import load_catalog,guard_output
 
-PROTOCOL='FG_SINGLE3_S3C1_CONCURRENT_BC_V3'
+PROTOCOL='FG_SINGLE3_S3C1_CONCURRENT_BC_V4'
 
 
 def code_identity():
@@ -114,17 +116,44 @@ class JointCounters:
             recall=s['tp']/(s['tp']+s['fn']) if s['tp']+s['fn'] else None)
 
 
+def reconcile_update_log(root, step, offset):
+    """Archive an uncommitted log tail before restoring the checkpoint boundary."""
+    path = root/'updates.jsonl'
+    raw = path.read_bytes() if path.exists() else b''
+    lines = raw.splitlines(keepends=True)
+    prefix = []
+    for i in range(step):
+        if i >= len(lines):
+            raise ValueError('Update log missing checkpointed updates')
+        row = json.loads(lines[i])
+        if row['local_update'] != i+1 or row['agent_update'] != offset+i+1:
+            raise ValueError('Checkpointed update log chronology differs')
+        prefix.append(lines[i])
+    committed = b''.join(prefix)
+    if committed == raw:
+        return
+    backups = root/'recovery_logs';backups.mkdir(exist_ok=True)
+    token = uuid.uuid4().hex
+    backup = backups/('updates_before_resume_'+token+'.jsonl')
+    backup.write_bytes(raw)
+    pending = root/('.updates.pending_'+token)
+    pending.write_bytes(committed);os.replace(pending,path)
+    write_json(backups/(token+'.json'),signed(dict(checkpoint_local_update=step,
+        source_update_offset=offset,archive=str(backup),archive_sha256=file_hash(backup),
+        restored_log_sha256=file_hash(path))))
+
+
 class S3CRun:
     def __init__(self,run_dir,*,catalog,config=None,source_kind=None,source_checkpoint=None,
                  base_checkpoint=None,features=None,seed=None,bc_lambda=None,replay_seed=202,
                  replay_directory=None,capacity=None,consec=1,report_every=100,save_every=100,
                  resume=False,device='cpu',diagnostic=False,target_updates=None,managed_binding=None,
-                 expected_source_hash=None):
+                 expected_source_hash=None,gate_protocol=None):
         root=Path(run_dir).resolve();self.root=root
         self.catalog=cat=load_catalog(catalog)
         self.weight=bc_lambda
         if resume:
-            if any(x is not None for x in (source_kind,source_checkpoint,base_checkpoint,features,seed,config,managed_binding,expected_source_hash)):
+            if any(x is not None for x in (source_kind,source_checkpoint,base_checkpoint,features,seed,config,managed_binding,expected_source_hash,gate_protocol)):
                 raise ValueError('Resume forbids a new source transfer')
             identity,saved=saved_run(root,cat)
             if bc_lambda is not None and bc_lambda!=identity['bc_lambda']:
@@ -132,6 +161,7 @@ class S3CRun:
             if target_updates is not None and target_updates!=saved['target_updates']:
                 raise ValueError('Resume update budget differs')
             config=saved['config'];self.weight=identity['bc_lambda'];consec=saved['consec']
+            spec=read_manifest(root/'source_admission_receipt.json')
             report_every=saved['report_every'];save_every=saved['save_every'];capacity=saved['capacity']
             target_updates=saved['target_updates']
             replay_seed=identity['replay_seed'];control=pickle.loads((root/'source_control.pkl').read_bytes());offset=identity['source_update_offset']
@@ -139,14 +169,13 @@ class S3CRun:
             if source_kind is None or bc_lambda is None or not np.isfinite(bc_lambda) or bc_lambda<0:
                 raise ValueError('New run requires explicit source and finite nonnegative lambda')
             spec=inspect_source(source_kind,catalog=cat,path=source_checkpoint,seed=seed,config=config,
-                                base_checkpoint=base_checkpoint,features=features,diagnostic=diagnostic)
+                                base_checkpoint=base_checkpoint,features=features,diagnostic=diagnostic,
+                                gate_protocol=gate_protocol)
             if expected_source_hash is not None and spec['content_hash']!=expected_source_hash:
                 raise ValueError('Source changed after immutable preparation')
             if spec['origin']['diagnostic'] and device!='cpu':
                 raise ValueError('Diagnostic sources require CPU')
-            cfg=plain(config or spec['origin']['config'])
-            if source_kind!='direct_init' and cfg['agent']!=spec['origin']['config']['agent']:
-                raise ValueError('Target changed source network/optimizer config')
+            cfg=plain(spec['target_config'])
             config=cfg;config['batch_length']=64
             control=transfer_control_state(spec)
             if not control['complete'] and not spec['origin']['diagnostic']:
@@ -191,13 +220,13 @@ class S3CRun:
         self.streams=(stream('train'),stream('report'))
         self.carry=dict(train=agent.init_train(cfg.batch_size),report=agent.init_report(cfg.batch_size))
         self.aggregates={k:elements.Agg() for k in ('train','report','warmup')}
-        self.samples=[control['samples']]
-        self.warmup=ActionMaskWarmup(cfg.action_mask_warmup,False)
-        if control['opening']:
-            self.warmup.opening_thresholds=dict(control['opening']['thresholds'])
-            self.warmup.required_passes=control['opening']['consecutive_reports']
-        if control['gate']:self.warmup.load(control['gate'])
-        else:self.warmup.actor_enabled=agent.get_avail_actor_enabled()
+        self.samples=[0 if resume else control['samples']]
+        if resume:
+            # Source READY can differ from the fresh model. FullCheckpoint.load
+            # restores both sides below; do not reapply a source transfer here.
+            control = dict(gate=None,aggregate=None,samples=0)
+        self.warmup=make_gate_controller(plain(cfg),spec['gate_policy'],control,
+                                         agent.get_avail_actor_enabled())
         if control['aggregate']:self.aggregates['warmup'].reducers=copy.deepcopy(control['aggregate'])
         self.step=elements.Counter();self.counters=JointCounters()
         self.schedule=StepSchedule(report_every,save_every)
@@ -221,6 +250,7 @@ class S3CRun:
                 managed_preparation=managed_binding,target_updates=target_updates,budget_unit='gradient_updates',
                 catalog_sha256=cat.manifest_sha256,catalog_protocol=cat.manifest['protocol'],
                 source_admission_protocol=spec['protocol'],dataset_sha256=cat.manifest['source']['dataset_sha256'],
+                gate_protocol=spec['gate_policy']['protocol'],
                 reward_params_hash=cat.manifest['source']['reward_params_hash'],obs_version=cat.manifest['obs_version'],
                 observation_identity=cat.manifest['observation_identity'],training_fold='TRAIN',pool='C1_natural_oracle',
                 oracle_sha256=cat.manifest['source']['oracle_sha256'],oracle_optimality='exact_proven',
@@ -247,6 +277,9 @@ class S3CRun:
             self.cp.load()
             if int(agent.n_updates)!=offset+int(self.step) or self.counters.state['all_updates']!=int(self.step):
                 raise ValueError('Restored source offset/local counters disagree')
+            if agent.get_avail_actor_enabled() != self.warmup.actor_enabled:
+                raise ValueError('Restored model/controller Gate disagree')
+            reconcile_update_log(root,int(self.step),offset)
         else:self.cp.save()
 
     def update(self):

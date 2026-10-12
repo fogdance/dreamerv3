@@ -47,7 +47,7 @@ def main():
         if args.source_checkpoint:protected.append(Path(args.source_checkpoint).resolve().parent.parent)
         if args.base_checkpoint:protected.append(Path(args.base_checkpoint).resolve().parent.parent)
         out=guard_output(args.output,protected);out.mkdir(parents=True)
-        agent=make_agent(spec['origin']['config'],out)
+        agent=make_agent(spec['target_config'],out)
         result=apply_and_audit_transfer(agent,spec)
         write_json(out/'source_admission_receipt.json',spec)
         write_json(out/'transfer_receipt.json',result)

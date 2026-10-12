@@ -23,8 +23,24 @@ IMAG_ACTION_MASK = '_action_mask'
 IMAG_MASK_FALLBACK = '_action_mask_fallback'
 
 
-def hard_nonempty_mask(prob, threshold, always_available_index=-1):
-  mask = prob >= threshold
+def validate_availability_threshold(threshold):
+  if isinstance(threshold, bool) or not np.isfinite(threshold) or not 0 < threshold < 1:
+    raise ValueError('Availability threshold must be finite and strictly between 0 and 1')
+  return float(threshold)
+
+
+def availability_prediction(logits, threshold):
+  threshold = validate_availability_threshold(threshold)
+  logits = f32(logits)
+  prob = jax.nn.sigmoid(logits)
+  # Keep the original Gate's exact half boundary, including logits whose
+  # sigmoid rounds to 0.5. Other thresholds compare probabilities in float32.
+  pred = logits >= 0 if threshold == 0.5 else prob >= f32(threshold)
+  return prob, pred
+
+
+def hard_nonempty_mask(prob, threshold, always_available_index=-1, raw_mask=None):
+  mask = prob >= threshold if raw_mask is None else jnp.asarray(raw_mask, bool)
   fallback_used = ~mask.any(-1)
   fallback = jax.nn.one_hot(
       jnp.argmax(prob, -1), prob.shape[-1], dtype=bool)
@@ -52,6 +68,7 @@ class Agent(embodied.jax.Agent):
     self.obs_space = obs_space
     self.act_space = act_space
     self.config = config
+    validate_availability_threshold(config.avail_threshold)
     mode = config.get('replay_context_mode', 'stored')
     if mode not in ('stored', 'recompute_prefix'):
       raise ValueError('Unknown Replay context input mode')
@@ -238,8 +255,8 @@ class Agent(embodied.jax.Agent):
     losses['avail_prior'] = avail_prior.loss(avail_target)
     postlogit = self._binary_logits(avail_post)
     priorlogit = self._binary_logits(avail_prior)
-    postpred = postlogit >= 0
-    priorpred = priorlogit >= 0
+    postpred = availability_prediction(postlogit, self.config.avail_threshold)[1]
+    priorpred = availability_prediction(priorlogit, self.config.avail_threshold)[1]
     metrics.update(self._availability_metrics('post', postpred, avail_target))
     metrics.update(self._availability_metrics('prior', priorpred, avail_target))
     for key, recon in recons.items():
@@ -356,9 +373,10 @@ class Agent(embodied.jax.Agent):
 
   def _predicted_action_mask_info(self, feat, bdims):
     avail = self.avail(self.feat2tensor(feat), bdims)
-    prob = jax.nn.sigmoid(self._binary_logits(avail))
+    prob, raw_mask = availability_prediction(
+        self._binary_logits(avail), self.config.avail_threshold)
     return hard_nonempty_mask(prob, self.config.avail_threshold,
-        self.config.get('avail_always_available_index', -1))
+        self.config.get('avail_always_available_index', -1), raw_mask=raw_mask)
 
   def _sample_imag_action(self, feat, bdims):
     mask, fallback = self._predicted_action_mask_info(feat, bdims)

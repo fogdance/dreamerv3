@@ -6,10 +6,11 @@ import elements
 import jax
 import numpy as np
 
-from embodied.run.fg_checkpoint import file_hash
+from embodied.run.fg_checkpoint import file_hash, plain
 from embodied.run.fg_s3_source_admission import prepare_transfer
 from dreamerv3.fg_s3a_actor import parameter_digests
 from gym_trading_env.research.fg_replay import signed
+from gym_trading_env.envs.entry_contract import fingerprint
 
 
 def make_agent(config, output, *, agent_cls=None, device='cpu', bc_lambda=None):
@@ -30,6 +31,11 @@ def make_agent(config, output, *, agent_cls=None, device='cpu', bc_lambda=None):
 
 
 def apply_and_audit_transfer(agent, spec):
+    expected = spec['target_config']['agent']
+    if {k:plain(agent.config[k]) for k in expected} != expected:
+        raise ValueError('Target model network/optimizer/loss config differs from SourceAdmission')
+    if agent.config.avail_threshold != spec['gate_policy']['classification_threshold']:
+        raise ValueError('Target model threshold differs from SourceAdmission')
     schema = {k:(v.shape,str(v.dtype)) for k,v in agent.params.items()}
     state = prepare_transfer(spec, schema)
     if state is None:
@@ -37,6 +43,11 @@ def apply_and_audit_transfer(agent, spec):
             raise ValueError('direct_init target is not fresh')
         state = agent.save_exact()
     before = parameter_digests(state['params'])
+    original = spec.get('source_param_digests', before)
+    changed = [k for k in before if before[k] != original[k]]
+    allowed = ['avail_actor_gate/value'] if spec['gate_transfer']['reset_required'] else []
+    if any(k not in allowed for k in changed):
+        raise RuntimeError('Transfer changed parameters outside the admitted Gate reset')
     prepared = dict(state)
     initialized_policy = state['policy_params'] is None
     if initialized_policy:
@@ -67,8 +78,13 @@ def apply_and_audit_transfer(agent, spec):
         path = Path(baseline['path'])
         if file_hash(path/'manifest.json') != baseline['manifest_sha256']:
             raise ValueError('Baseline changed after admission')
-        original = pickle.loads((path/'agent.pkl').read_bytes())
-        base_hashes = parameter_digests(original['params'])
+        baseline_state = pickle.loads((path/'agent.pkl').read_bytes())
+        base_hashes = parameter_digests(baseline_state['params'])
+        gate_reset = spec['gate_transfer']['reset_required'] or bool(
+            spec['origin'].get('inherited_admission', {}).get('gate_transfer', {}).get('reset_required'))
+        if gate_reset:
+            key = 'avail_actor_gate/value'
+            base_hashes[key] = parameter_digests({key:np.zeros_like(baseline_state['params'][key])})[key]
         if any(after[k] != base_hashes[k] for k in after if not k.startswith('pol/')):
             raise RuntimeError('BC non-Actor/base joint optimizer equality failed')
         baseline_equality = 'PASS'
@@ -76,6 +92,9 @@ def apply_and_audit_transfer(agent, spec):
         diagnostic=spec['origin']['diagnostic'],
         transfer_code_sha256=file_hash(__file__),
         source_admission_sha256=spec['content_hash'], kind=spec['kind'],
+        gate_transfer=spec['gate_transfer'],
+        target_config_sha256=fingerprint(spec['target_config']),
+        original_source_param_digests=original, gate_reset_changed_keys=changed,
         source_update_offset=spec['origin']['step'], source_bc_updates=spec['origin'].get('bc_updates',0),
         source_checkpoint_step=spec['origin'].get('checkpoint_step',spec['origin']['step']),
         source_checkpoint_step_unit=spec['origin'].get('checkpoint_step_unit','gradient_updates'),

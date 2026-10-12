@@ -21,6 +21,7 @@ def tree_equal(a,b):
 
 def test_real_neural_joint_runtime_exact_resume_no_source_reload(source_bundle,tmp_path,monkeypatch):
     b=source_bundle;cfg=config_for(b)
+    cfg['agent']['avail_threshold']=.3
     # Controlled diagnostic thresholds open the real controller after report 2.
     # Production thresholds remain unchanged; no manual READY call is used.
     cfg['agent']['avail_actor_enabled']=False
@@ -54,6 +55,11 @@ def test_real_neural_joint_runtime_exact_resume_no_source_reload(source_bundle,t
     tree_equal(jax.device_get(restored.carry),carry)
     assert restored.counters.save()==counters and restored.warmup.save()==gate
     assert restored.replay.sampler.rng.bit_generator.state==sampler
+    rows=[json.loads(line) for line in (tmp_path/'run/updates.jsonl').read_text().splitlines()]
+    assert [row['local_update'] for row in rows]==[1,2,3]
+    archives=list((tmp_path/'run/recovery_logs').glob('*.jsonl'))
+    assert len(archives)==1
+    assert [json.loads(line)['local_update'] for line in archives[0].read_text().splitlines()]==[1,2,3]
     # Teacher fields were not persisted into native chunks.
     assert all(not any(k.startswith('teacher_') for k in chunk.data) for chunk in restored.replay.chunks.values())
     with pytest.raises(ValueError,match='source transfer'):

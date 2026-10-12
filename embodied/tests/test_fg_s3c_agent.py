@@ -41,17 +41,20 @@ def on_device(agent,batch,seed=17):
 @pytest.mark.parametrize('source_bundle',[True],indirect=True)
 def test_lambda_zero_real_agent_equivalence_each_source(source_bundle,tmp_path,kind):
     b=source_bundle;cfg=config_for(b)
+    cfg['agent']['avail_threshold']=.3
     if kind=='direct_init':
         cfg['agent']['avail_actor_enabled']=True  # Controlled READY equivalence fixture.
     kwargs=dict(catalog=b['catalog'])
     if kind=='direct_init':kwargs.update(seed=0,config=cfg)
     if kind=='direct_full':kwargs['path']=b['base']
     if kind=='after_bc_s3a':kwargs.update(path=b['bc'],base_checkpoint=b['base'])
+    kwargs['config']=cfg
     spec=inspect_source(kind,**kwargs)
     original=make_agent(cfg,tmp_path/'original')
     concurrent=make_agent(cfg,tmp_path/'s3c',agent_cls=S3CAgent,bc_lambda=0.)
     apply_and_audit_transfer(original,spec);apply_and_audit_transfer(concurrent,spec)
-    assert original.get_avail_actor_enabled() and concurrent.get_avail_actor_enabled()
+    assert original.get_avail_actor_enabled()==(kind=='direct_init')
+    assert concurrent.get_avail_actor_enabled()==(kind=='direct_init')
     assert parameter_digests(original.params)==parameter_digests(concurrent.params)
     assert original.model.scales==concurrent.model.scales
     oc,cc=original.init_train(2),concurrent.init_train(2)

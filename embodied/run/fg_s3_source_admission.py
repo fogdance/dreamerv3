@@ -15,7 +15,11 @@ from embodied.run.fg_s3a_checkpoint import audit_bc, package_versions
 from gym_trading_env.envs.entry_contract import fingerprint
 from gym_trading_env.research.fg_replay import read_manifest, signed
 
-PROTOCOL = 'FG_S3_SOURCE_ADMISSION_V1'
+PROTOCOL = 'FG_S3_SOURCE_ADMISSION_V2'
+GATE_HELPER_AST = {
+    'validate_availability_threshold': 'ae187898bdf0dff46f14d0c20fc1252d11728c4c37c8fb6a354208b05308b11f',
+    'availability_prediction': '3ebc25f59e6b70ec09142e935d499cdd3b6155813fdf6e4639911426e0bd9a4e',
+}
 
 
 def verify_dependency_versions(declared):
@@ -37,21 +41,88 @@ def runtime_versions():
                                    for name in ('portal','cloudpickle')}}
 
 
+def _normalize_gate_transfer(tree):
+    """Normalize only the reviewed shared threshold delta for a new transfer."""
+    helper_hashes = GATE_HELPER_AST
+    kept = []
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name in helper_hashes:
+            checksum = hashlib.sha256(ast.dump(node, include_attributes=False).encode()).hexdigest()
+            if checksum != helper_hashes[node.name]:
+                raise ValueError('Unreviewed availability helper transition: '+node.name)
+            continue
+        kept.append(node)
+        if isinstance(node, ast.FunctionDef) and node.name == 'hard_nonempty_mask':
+            if [a.arg for a in node.args.args] == ['prob','threshold','always_available_index','raw_mask']:
+                expected = ast.parse('mask = prob >= threshold if raw_mask is None else jnp.asarray(raw_mask, bool)').body[0]
+                if (ast.dump(node.body[0], include_attributes=False) != ast.dump(expected, include_attributes=False)
+                        or ast.dump(node.args.defaults[-1]) != ast.dump(ast.Constant(None))):
+                    raise ValueError('Unreviewed mask transfer transition')
+                node.args.args.pop();node.args.defaults.pop()
+                node.body[0] = ast.parse('mask = prob >= threshold').body[0]
+        if isinstance(node, ast.ClassDef) and node.name == 'Agent':
+            validation = ast.parse('validate_availability_threshold(config.avail_threshold)').body[0]
+            for fn in node.body:
+                if not isinstance(fn, ast.FunctionDef):continue
+                if fn.name == '__init__':
+                    fn.body = [stmt for stmt in fn.body if ast.dump(stmt, include_attributes=False) != ast.dump(validation, include_attributes=False)]
+                if fn.name == 'loss':
+                    for stmt in fn.body:
+                        if not isinstance(stmt,ast.Assign) or len(stmt.targets)!=1:continue
+                        for pred,logit in (('postpred','postlogit'),('priorpred','priorlogit')):
+                            expected = ast.parse(pred+' = availability_prediction('+logit+', self.config.avail_threshold)[1]').body[0]
+                            if ast.dump(stmt,include_attributes=False)==ast.dump(expected,include_attributes=False):
+                                stmt.value = ast.parse(logit+' >= 0',mode='eval').body
+                if fn.name == '_predicted_action_mask_info':
+                    expected = ast.parse('''def _predicted_action_mask_info(self, feat, bdims):
+    avail = self.avail(self.feat2tensor(feat), bdims)
+    prob, raw_mask = availability_prediction(self._binary_logits(avail), self.config.avail_threshold)
+    return hard_nonempty_mask(prob, self.config.avail_threshold, self.config.get('avail_always_available_index', -1), raw_mask=raw_mask)
+''').body[0]
+                    if ast.dump(fn,include_attributes=False)==ast.dump(expected,include_attributes=False):
+                        fn.body = ast.parse('''avail = self.avail(self.feat2tensor(feat), bdims)
+prob = jax.nn.sigmoid(self._binary_logits(avail))
+return hard_nonempty_mask(prob, self.config.avail_threshold, self.config.get('avail_always_available_index', -1))
+''').body
+    tree.body = kept
+    return tree
+
+
 def _normalized_code(data, name):
     tree = ast.parse(data)
+    if name == 'dreamerv3/agent.py':
+        tree = _normalize_gate_transfer(tree)
     for item in tree.body:
         if isinstance(item, ast.ClassDef):
             if name == 'dreamerv3/agent.py' and item.name == 'Agent':
+                factory = ast.parse('''def training_loss_fn(self, data, effective_stepid):
+    """Factory for training-only losses; report and policy stay independent."""
+    return self.loss
+''').body[0]
+                for fn in item.body:
+                    if isinstance(fn, ast.FunctionDef) and fn.name == 'training_loss_fn' and ast.dump(fn, include_attributes=False) != ast.dump(factory, include_attributes=False):
+                        raise ValueError('Unreviewed training loss factory transition')
                 item.body = [x for x in item.body if not isinstance(x, ast.FunctionDef)
                              or x.name != 'training_loss_fn']
                 for fn in item.body:
                     if isinstance(fn, ast.FunctionDef) and fn.name == 'train':
                         for call in ast.walk(fn):
                             if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == 'opt':
+                                approved = [ast.parse(value, mode='eval').body for value in (
+                                    'self.loss', 'self.training_loss_fn(data, stepid)')]
+                                if not any(ast.dump(call.args[0]) == ast.dump(value) for value in approved):
+                                    raise ValueError('Unreviewed optimizer loss transition')
                                 call.args[0] = ast.Attribute(ast.Name('self', ast.Load()), 'loss', ast.Load())
             if name == 'embodied/jax/outs.py' and item.name == 'MaskedCategorical':
                 item.body = [x for x in item.body if not isinstance(x, ast.FunctionDef) or x.name != 'prob']
     return ast.dump(tree, include_attributes=False)
+
+
+def audit_code_transition(source, target, name):
+    normalized = _normalized_code(source, name)
+    if normalized != _normalized_code(target, name):
+        raise ValueError('Source network/training semantics changed: '+name)
+    return hashlib.sha256(normalized.encode()).hexdigest()
 
 
 @lru_cache(maxsize=64)
@@ -72,10 +143,11 @@ def _verify_code(name, expected, actual):
     for rev in revisions:
         data = subprocess.check_output(['git', 'show', rev+':'+rel], cwd=repo)
         if hashlib.sha256(data).hexdigest() == expected:
-            if _normalized_code(data, name) != _normalized_code(path.read_bytes(), name):
-                raise ValueError('Source network/training semantics changed: '+name)
+            normalized_hash = audit_code_transition(data, path.read_bytes(), name)
             return dict(source_sha256=expected, target_sha256=actual,
-                        disposition='AUDITED_TRANSFER_ONLY', source_git=rev)
+                        disposition='AUDITED_TRANSFER_ONLY', source_git=rev,
+                        normalized_ast_sha256=normalized_hash,
+                        gate_helper_ast_sha256=GATE_HELPER_AST if name == 'dreamerv3/agent.py' else {})
     raise ValueError('Source producer bytes unavailable: '+name)
 
 
@@ -231,7 +303,7 @@ def _full(path, catalog):
 
 
 def inspect_source(kind, *, catalog, path=None, seed=None, config=None,
-                   base_checkpoint=None, features=None, diagnostic=False):
+                   base_checkpoint=None, features=None, diagnostic=False, gate_protocol=None):
     if type(diagnostic) is not bool:
         raise ValueError('diagnostic must be an explicit boolean')
     if kind == 'resume_s3c':
@@ -259,18 +331,22 @@ def inspect_source(kind, *, catalog, path=None, seed=None, config=None,
         identity = audited['identity']
         if identity['label_manifest_sha256'] != catalog.manifest['labels_manifest_sha256']:
             raise ValueError('BC/catalog label identity mismatch')
+        inherited = _managed_bc_admission(path, identity, catalog)
+        reference_identity = (inherited['origin']['identity_hash'] if inherited is not None
+                              else identity['source_identity_hash'])
         fm = None
         if features:
             fm = read_manifest(Path(features)/'manifest.json')
             if (file_hash(Path(features)/'manifest.json') != identity['feature_manifest_sha256']
                     or fm['source']['manifest_sha256'] != identity['source_manifest_sha256']
-                    or fm['source']['identity_hash'] != identity['source_identity_hash']):
+                    or fm['source']['identity_hash'] not in {
+                        reference_identity, identity['source_identity_hash']}):
                 raise ValueError('BC feature/source provenance mismatch')
             if base_checkpoint is None and Path(fm['source']['path']).is_dir():
                 base_checkpoint = fm['source']['path']
         if base_checkpoint:
             base = _full(base_checkpoint, catalog)
-            if base['manifest_sha256'] != identity['source_manifest_sha256'] or base['identity_hash'] != identity['source_identity_hash']:
+            if base['manifest_sha256'] != identity['source_manifest_sha256'] or base['identity_hash'] != reference_identity:
                 raise ValueError('BC baseline reference differs')
             cfg = base['config']
         else:
@@ -294,16 +370,94 @@ def inspect_source(kind, *, catalog, path=None, seed=None, config=None,
                       environment_steps=base.get('environment_steps') if base else producer.get('environment_steps'),
                       diagnostic=identity['diagnostic'], baseline=base,
                       baseline_optimizer_equality='PENDING' if base else 'NOT_VERIFIED')
-    if diagnostic:
+        if inherited is not None:
+            if (base is None or inherited['origin']['manifest_sha256'] != base['manifest_sha256']
+                    or inherited['origin']['identity_hash'] != base['identity_hash']):
+                raise ValueError('Managed BC admission differs from audited baseline')
+            from dreamerv3.fg_s3a_actor import parameter_digests
+            if parameter_digests(prepare_transfer(inherited)['params']) != state['source_digests']:
+                raise ValueError('BC source parameters differ from admitted Gate transfer')
+            origin.update(config=inherited['target_config'], inherited_admission=inherited)
+    if diagnostic or catalog.manifest['diagnostic']:
         origin['diagnostic'] = True
-    receipt = signed(dict(protocol=PROTOCOL, kind=kind, origin=origin,
+    from embodied.run.fg_s3_gate import gate_policy, target_config, transfer_policy
+    base = origin.get('baseline') if kind == 'after_bc_s3a' else origin
+    source_opening = base.get('identity', {}).get('mask_gate_opening') if base else None
+    inherited = origin.get('inherited_admission')
+    if inherited is not None:
+        source_opening = inherited['gate_policy']['opening']
+    source_policy = gate_policy(origin['config'], diagnostic=origin['diagnostic'],
+                                source_opening=source_opening, protocol=gate_protocol)
+    cfg = target_config(origin['config'], plain(config) if config is not None else None)
+    policy = gate_policy(cfg, diagnostic=origin['diagnostic'], source_opening=source_opening,
+                         protocol=gate_protocol)
+    fields = dict(protocol=PROTOCOL, kind=kind, origin=origin,
+        target_config=cfg, source_gate_policy=source_policy, gate_policy=policy,
         catalog_manifest_sha256=catalog.manifest_sha256,
         dataset_sha256=catalog.manifest['source']['dataset_sha256'],
         reward_params_hash=catalog.manifest['source']['reward_params_hash'],
         observation_identity=catalog.manifest['observation_identity'],
         optimizer_transfer_policy='retain_base_joint_opt' if kind == 'after_bc_s3a' else 'original_direct',
-        code_sha256=file_hash(__file__), packages=runtime_versions()))
-    return receipt
+        code_sha256=file_hash(__file__), packages=runtime_versions())
+    initial = signed(fields)
+    state = prepare_transfer(initial)
+    if state is not None:
+        from dreamerv3.fg_s3a_actor import parameter_digests
+        fields['source_param_digests'] = parameter_digests(state['params'])
+    enabled = bool(origin['config']['agent']['avail_actor_enabled']) if state is None else bool(
+        np.asarray(state['params']['avail_actor_gate/value']))
+    control = _source_control_state(initial)
+    if not control['complete'] and not origin['diagnostic']:
+        raise ValueError('Formal source lacks Gate controller/window state')
+    _, gate_transfer = transfer_policy(source_policy, policy, control, enabled)
+    model_identity = dict(protocol='FG_S3_ADMITTED_MODEL_V1', kind=kind,
+        source_manifest_sha256=origin.get('manifest_sha256'),
+        source_identity_hash=origin.get('identity_hash'),
+        source_param_digests=fields.get('source_param_digests'),seed=cfg['seed'],
+        agent_config=cfg['agent'],gate_policy=policy,gate_transfer=gate_transfer,
+        admission_code_sha256=file_hash(__file__),
+        gate_code_sha256=file_hash(Path(__file__).with_name('fg_s3_gate.py')))
+    return signed(dict(fields, gate_transfer=gate_transfer,target_model_identity=model_identity,
+                       target_model_identity_hash=fingerprint(model_identity)))
+
+
+def _managed_bc_admission(path, identity, catalog):
+    """Read the hash-bound managed snapshot; never infer BC threshold from a name."""
+    from gym_trading_env.research.fg_replay import check_files
+    root = path.parent.parent
+    snapshot = root/'managed_snapshot'
+    if not snapshot.exists():
+        return None
+    manifest = read_manifest(snapshot/'manifest.json')
+    if manifest['protocol'] != 'FG_S3_RUN_SNAPSHOT_V1':
+        raise ValueError('Foreign managed BC snapshot')
+    check_files({str(snapshot/n):h for n,h in manifest['files'].items()})
+    preparation = read_manifest(snapshot/'preparation_receipt.json')
+    if (manifest['binding']['prepared_manifest_sha256'] != file_hash(snapshot/'preparation_receipt.json')
+            or identity['run_id'] != preparation['experiment']+'_'+preparation['content_hash'][:16]
+            or read_manifest(root/'run_identity.json')['identity'] != identity):
+        raise ValueError('BC training identity is not bound to its preparation')
+    name = 'source_admission_receipt.json'
+    if name not in manifest['files']:
+        return None  # Historical managed BC before shared source admission.
+    if (preparation['files'][name] != file_hash(snapshot/name)
+            or manifest['binding']['feature_binding_sha256'] != file_hash(snapshot/'features_binding.json')):
+        raise ValueError('Managed BC source/feature binding differs')
+    binding = read_manifest(snapshot/'features_binding.json')
+    spec = read_manifest(snapshot/name)
+    if (binding['feature_manifest_sha256'] != identity['feature_manifest_sha256']
+            or spec['catalog_manifest_sha256'] != catalog.manifest_sha256
+            or spec['kind'] != 'direct_full'
+            or spec['origin']['manifest_sha256'] != identity['source_manifest_sha256']):
+        raise ValueError('Managed BC shared source/Catalog differs')
+    if spec['protocol'] == 'FG_S3_SOURCE_ADMISSION_V1':
+        return None  # Historical receipt did not change the baseline threshold.
+    if spec['protocol'] != PROTOCOL:
+        raise ValueError('Foreign managed BC admission protocol')
+    if (spec['target_model_identity_hash'] != identity['source_identity_hash']
+            or fingerprint(spec['target_model_identity']) != identity['source_identity_hash']):
+        raise ValueError('BC admitted target model identity differs')
+    return spec
 
 
 def prepare_transfer(spec, target_schema=None):
@@ -331,10 +485,22 @@ def prepare_transfer(spec, target_schema=None):
     for k, v in state['params'].items():
         if not np.isfinite(v).all():
             raise ValueError('Nonfinite source parameter: '+k)
+    if 'source_param_digests' in spec:
+        from dreamerv3.fg_s3a_actor import parameter_digests
+        if parameter_digests(state['params']) != spec['source_param_digests']:
+            raise ValueError('Source parameter evidence changed after admission')
     if target_schema is not None:
         actual = {k:(v.shape,str(v.dtype)) for k,v in state['params'].items()}
         if actual != target_schema:
             raise ValueError('Source parameter keys/dtypes/shapes differ from target')
+    if spec.get('gate_transfer', {}).get('reset_required'):
+        state = dict(state, params=dict(state['params']))
+        key = 'avail_actor_gate/value'
+        state['params'][key] = np.zeros_like(state['params'][key])
+        if state['policy_params'] is not None:
+            state['policy_params'] = dict(state['policy_params'])
+            if key in state['policy_params']:
+                state['policy_params'][key] = np.zeros_like(state['policy_params'][key])
     return state
 
 
@@ -385,13 +551,14 @@ def freeze_source(path, output):
     return receipt
 
 
-def transfer_control_state(spec):
-    """Public transfer boundary for external Gate/window state; never restore RNG/carry."""
+def _source_control_state(spec):
     origin = spec['origin']
+    if origin.get('inherited_admission') is not None:
+        return transfer_control_state(origin['inherited_admission'])
     base = origin.get('baseline') if spec['kind']=='after_bc_s3a' else origin
     if spec['kind']=='direct_init':
         return dict(complete=True, new_experiment=True, gate=None, aggregate=None, samples=0,
-                    opening=None)
+                    opening=spec['gate_policy']['opening'])
     if not base or not base.get('path'):
         return dict(complete=not bool(origin['config']['action_mask_warmup']['enabled']),
                     new_experiment=True, gate=None, aggregate=None, samples=0,
@@ -408,3 +575,14 @@ def transfer_control_state(spec):
     return dict(complete=not enabled or (gate is not None and aggregate is not None),
                 new_experiment=True,gate=gate,aggregate=aggregate,samples=runtime.get('samples',0),
                 opening=base.get('identity',{}).get('mask_gate_opening'))
+
+
+def transfer_control_state(spec):
+    """Apply the admitted new-run policy; exact resume never calls this boundary."""
+    from embodied.run.fg_s3_gate import transfer_policy
+    state = _source_control_state(spec)
+    enabled = spec['gate_transfer']['original_gate_state']['actor_enabled']
+    control, proof = transfer_policy(spec['source_gate_policy'], spec['gate_policy'], state, enabled)
+    if proof != spec['gate_transfer']:
+        raise ValueError('Source Gate control changed after admission')
+    return control
