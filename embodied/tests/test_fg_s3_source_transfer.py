@@ -34,6 +34,32 @@ def test_full_source_dependency_inventory_includes_stream_and_serializer():
         verify_dependency_versions({'s3_nonexistent_test_dependency':'1'})
 
 
+def test_online_model_and_environment_counters_have_separate_domains(tmp_path):
+    """Serialized contract fixture only; real online model proof is separate."""
+    import json
+    from embodied.run.fg_checkpoint import file_hash
+    from gym_trading_env.research.fg_replay import signed
+    from embodied.run.fg_s3_source_admission import PROTOCOL
+    node=tmp_path/'step_000000180000';node.mkdir()
+    counts=dict(updates=21183,batches=21399,actions=180000)
+    state=dict(params={'opt/step/value':np.array(21183,np.int32)},counters=counts,
+               policy_params=None,pending_sync=None,pending_outs=None,pending_mets=None)
+    (node/'agent.pkl').write_bytes(pickle.dumps(state,protocol=5))
+    (node/'step.pkl').write_bytes(pickle.dumps(180000,protocol=5))
+    meta=dict(schema=1,protocol='FG_FULL_V1',step=180000,identity={},
+              files={p.name:file_hash(p) for p in node.iterdir()})
+    (node/'manifest.json').write_text(json.dumps(meta));(node/'done').touch()
+    spec=signed(dict(protocol=PROTOCOL,kind='direct_full',origin=dict(path=str(node),
+        manifest_sha256=file_hash(node/'manifest.json'),step=21183,agent_counters=counts)))
+    assert prepare_transfer(spec)['counters']==counts
+    wrong=copy.deepcopy(spec);wrong['origin']['step']=180000;wrong.pop('content_hash')
+    with pytest.raises(ValueError,match='Agent state/counters'):
+        prepare_transfer(signed(wrong))
+    wrong=copy.deepcopy(spec);wrong['origin']['agent_counters']['batches']+=1;wrong.pop('content_hash')
+    with pytest.raises(ValueError,match='actual Agent'):
+        prepare_transfer(signed(wrong))
+
+
 @pytest.fixture(scope='module')
 def source_bundle(tmp_path_factory,request):
     root=tmp_path_factory.mktemp('actual_source')

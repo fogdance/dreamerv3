@@ -10,7 +10,7 @@ import subprocess
 
 import numpy as np
 
-from embodied.run.fg_checkpoint import file_hash, plain, validate_bundle, learning_spec
+from embodied.run.fg_checkpoint import file_hash, plain, validate_bundle, learning_spec, digest as state_digest, stage_origin
 from embodied.run.fg_s3a_checkpoint import audit_bc, package_versions
 from gym_trading_env.envs.entry_contract import fingerprint
 from gym_trading_env.research.fg_replay import read_manifest, signed
@@ -98,9 +98,102 @@ def _match_training(identity, catalog):
         raise ValueError('Source/catalog TRAIN/Reward/Observation identity mismatch')
 
 
+def _online_code(config, expected):
+    """Locate producer evidence by its hash, without selecting a code version."""
+    candidates = []
+    for parent in Path(config['fg_entry']['manifest']).parents:
+        diagnostics = parent / 'diagnostics'
+        if diagnostics.is_dir():
+            candidates.extend(diagnostics.rglob('*code_hashes.json'))
+            break
+    for path in sorted(candidates):
+        mapping = json.loads(path.read_text())
+        if state_digest(mapping) == expected:
+            return mapping
+    raise ValueError('Online producer code map unavailable for checkpoint code_hash')
+
+
+def _online_full(path, meta, catalog):
+    """Admit a frozen online node; environment and model counters are distinct."""
+    from gym_trading_env.research.fg_replay import check_files
+    from dreamerv3.configuration import read_config_yaml
+    if not (path.parent.parent / 'source_snapshot.json').is_file():
+        raise ValueError('SOURCE_REQUIRES_FROZEN_ONLINE_SNAPSHOT')
+    snapshot = read_manifest(path.parent.parent / 'source_snapshot.json')
+    if (snapshot.get('format') != 'FG_ONLINE_FULL_SOURCE_V1'
+            or snapshot['manifest_sha256'] != file_hash(path / 'manifest.json')
+            or Path(snapshot['snapshot']).resolve() != path):
+        raise ValueError('Online source requires an authenticated frozen snapshot')
+    root = path.parent.parent
+    expected_files = {'producer_code_hashes.json', 'entry_manifest.json', 'online_transfer.json',
+                      'selector.yaml', 'agent_counters.json'}
+    if set(snapshot['files']) != expected_files:
+        raise ValueError('Incomplete online source provenance')
+    check_files({str(root/n):h for n,h in snapshot['files'].items()})
+    config = read_config_yaml(path / 'config.yaml')
+    runtime = meta['identity']
+    if (runtime.get('schema') != 1 or runtime['learning'] != plain(learning_spec(config))
+            or runtime['origin'] != stage_origin(config)):
+        raise ValueError('Online learning/origin identity mismatch')
+    entry = read_manifest(root / 'entry_manifest.json')
+    if (entry['content_hash'] != runtime['dataset']
+            or entry['original_content_hash'] != catalog.manifest['source']['training_hash']
+            or entry['single3_protocol'] != 'fg_single3_v1' or entry['reward_candidate'] != 'C1'
+            or not entry['files'] or any(r['role'] != 'train' for r in entry['files'])):
+        raise ValueError('Online source/catalog TRAIN/Reward identity mismatch')
+    if (file_hash(config['fg_entry']['manifest']) != snapshot['files']['entry_manifest.json']
+            or file_hash(config['run']['fg_stage_transfer']) != snapshot['files']['online_transfer.json']
+            or file_hash(config['env']['gymnasium']['config_path']) != runtime['selector_hash']
+            or file_hash(root / 'selector.yaml') != runtime['selector_hash']):
+        raise ValueError('Online input provenance changed')
+    transfer = read_manifest(root / 'online_transfer.json')
+    if (transfer.get('source_kind') != 'single3_offline'
+            or transfer['source_step_unit'] != 'gradient_updates'
+            or transfer['target_step_unit'] != 'environment_steps'):
+        raise ValueError('Unsupported online phase origin')
+    base = _full(transfer['checkpoint'], catalog)
+    if (transfer['source_identity_hash'] != base['identity_hash']
+            or transfer['source_steps'] != base['step']
+            or config['agent'] != base['config']['agent']
+            or Path(config['fg_entry']['manifest']).resolve() != Path(base['config']['fg_entry']['manifest']).resolve()):
+        raise ValueError('Online source differs from audited C1 baseline')
+    mapping = json.loads((root / 'producer_code_hashes.json').read_text())
+    if state_digest(mapping) != runtime['code_hash']:
+        raise ValueError('Online producer code provenance mismatch')
+    normalized = {n.removeprefix('dreamerv3/'):h for n,h in mapping.items()}
+    code = verify_producer_code(normalized)
+    verify_dependency_versions(runtime['versions'])
+    counts = read_manifest(root / 'agent_counters.json')['counters']
+    if (set(counts) != {'updates','batches','actions'}
+            or any(type(v) is not int or v < 0 for v in counts.values())
+            or counts['actions'] != meta['step'] or counts['updates'] < base['step']):
+        raise ValueError('Online environment/model counter mismatch')
+    identity = dict({k:base['identity'][k] for k in (
+        'candidate','pool','dataset_sha256','reward_params_hash','observation_identity')},
+        protocol='FG_SINGLE3_ONLINE_SOURCE_V1',source_kind='FROZEN_ONLINE_FG_FULL',
+        model_seed=config['seed'],replay_seed=config['replay']['seed'],
+        model_updates=counts['updates'],environment_steps=meta['step'],
+        agent_config=config['agent'], learning=plain(learning_spec(config)),
+        code_sha256=normalized, packages=runtime['versions'], runtime_provenance=runtime,
+        base_manifest_sha256=base['manifest_sha256'],base_identity_hash=base['identity_hash'])
+    from embodied.run.action_mask_warmup import ActionMaskWarmup
+    import elements
+    gate = ActionMaskWarmup.for_single3_1m(elements.Config(config['action_mask_warmup']))
+    identity['mask_gate_opening'] = dict(thresholds=gate.opening_thresholds,
+        consecutive_reports=gate.required_passes, automatic_activation=gate.enabled)
+    return dict(path=str(path), manifest_sha256=file_hash(path/'manifest.json'), identity=identity,
+        identity_hash=fingerprint(identity), config=config, step=counts['updates'],
+        checkpoint_step=meta['step'], checkpoint_step_unit='environment_steps',
+        environment_steps=meta['step'], agent_counters=counts, diagnostic=base['diagnostic'],
+        producer_code=code, provenance_files={str(root/n):h for n,h in snapshot['files'].items()} |
+        {str(root/'source_snapshot.json'):file_hash(root/'source_snapshot.json')})
+
+
 def _full(path, catalog):
     path = Path(path).resolve()
     meta = validate_bundle(path)
+    if meta['identity'].get('schema') == 1 and 'code_hash' in meta['identity']:
+        return _online_full(path, meta, catalog)
     parent = path.parent.parent
     diagnostic = (parent/'s3a_diagnostic_identity.json').exists()
     frozen = False
@@ -197,6 +290,8 @@ def inspect_source(kind, *, catalog, path=None, seed=None, config=None,
         origin = dict(path=str(path), manifest_sha256=file_hash(path/'manifest.json'),
                       bc_identity=identity, bc_updates=state['bc_updates'],
                       config=cfg, step=state['agent']['counters']['updates'],
+                      checkpoint_step=state['bc_updates'], checkpoint_step_unit='bc_gradient_updates',
+                      environment_steps=base.get('environment_steps') if base else producer.get('environment_steps'),
                       diagnostic=identity['diagnostic'], baseline=base,
                       baseline_optimizer_equality='PENDING' if base else 'NOT_VERIFIED')
     if diagnostic:
@@ -229,6 +324,8 @@ def prepare_transfer(spec, target_schema=None):
     required = {'params','counters','policy_params','pending_sync','pending_outs','pending_mets'}
     if set(state) != required or state['counters']['updates'] != origin['step']:
         raise ValueError('Incomplete full Agent state/counters')
+    if origin.get('agent_counters') is not None and state['counters'] != origin['agent_counters']:
+        raise ValueError('Online frozen counter evidence differs from actual Agent')
     if any('s3a_bc_opt' in k or 's3b_bc_opt' in k for k in state['params']):
         raise ValueError('Independent BC optimizer in Agent state')
     for k, v in state['params'].items():
@@ -248,23 +345,40 @@ def freeze_source(path, output):
     from gym_trading_env.research.fg_s3_teacher_catalog import guard_output
     from gym_trading_env.research.fg_replay import write_json
     source = Path(path).resolve()
-    validate_bundle(source)
+    meta = validate_bundle(source)
     initial = file_hash(source/'manifest.json')
     root = guard_output(output, (source.parent.parent,))
     root.mkdir(parents=True)
     dest = root/'ckpt'/source.name
     shutil.copytree(source, dest)
-    tags = [name for name in ('single3_identity.json','s3a_diagnostic_identity.json')
-            if (source.parent.parent/name).is_file()]
-    if len(tags) != 1:
-        raise ValueError('Source snapshot requires one parent identity')
-    shutil.copyfile(source.parent.parent/tags[0],root/tags[0])
+    online = meta['identity'].get('schema') == 1 and 'code_hash' in meta['identity']
+    extras = {}
+    if online:
+        from dreamerv3.configuration import read_config_yaml
+        config = read_config_yaml(dest/'config.yaml')
+        mapping = _online_code(config, meta['identity']['code_hash'])
+        (root/'producer_code_hashes.json').write_text(json.dumps(mapping,sort_keys=True))
+        for name,src in (('entry_manifest.json',config['fg_entry']['manifest']),
+                         ('online_transfer.json',config['run']['fg_stage_transfer']),
+                         ('selector.yaml',config['env']['gymnasium']['config_path'])):
+            shutil.copyfile(src,root/name)
+        counts = pickle.loads((dest/'agent.pkl').read_bytes())['counters']
+        write_json(root/'agent_counters.json',signed(dict(counters=counts)))
+        extras = {p.name:file_hash(p) for p in root.iterdir() if p.is_file()}
+    else:
+        tags = [name for name in ('single3_identity.json','s3a_diagnostic_identity.json')
+                if (source.parent.parent/name).is_file()]
+        if len(tags) != 1:
+            raise ValueError('Source snapshot requires one parent identity')
+        shutil.copyfile(source.parent.parent/tags[0],root/tags[0])
     validate_bundle(dest)
     validate_bundle(source)
     if file_hash(source/'manifest.json') != initial or file_hash(dest/'manifest.json') != initial:
         raise ValueError('Source changed during snapshot copy')
+    evidence = dict(format='FG_ONLINE_FULL_SOURCE_V1',files=extras) if online else dict(
+        parent_identity_sha256=file_hash(root/tags[0]))
     receipt = signed(dict(protocol=PROTOCOL, source=str(source), snapshot=str(dest),
-        manifest_sha256=initial, parent_identity_sha256=file_hash(root/tags[0])))
+        manifest_sha256=initial, **evidence))
     write_json(root/'source_snapshot.json',receipt)
     for p in root.rglob('*'):
         if p.is_file(): os.chmod(p,0o444)
