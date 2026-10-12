@@ -13,7 +13,8 @@ from embodied.run.fg_s3a_train import Sampler,evaluate_classifier
 from embodied.run.fg_s3b_checkpoint import PROTOCOL,code_identity,restore_bc,save_bc
 from embodied.run.fg_checkpoint import file_hash
 from gym_trading_env.research.fg_replay import read_manifest,signed,write_json
-from gym_trading_env.research.fg_s3b_weights import MODES,bind_feature_cache
+from gym_trading_env.research.fg_s3b_weights import MODES
+from gym_trading_env.research.fg_s3b_normalization import bind_feature_cache,training_normalization
 
 
 class TrainingRows:
@@ -28,6 +29,8 @@ class TrainingRows:
                         else np.flatnonzero(self.raw_weights > 0).astype(np.int64))
         if not len(self.indices): raise ValueError('INSUFFICIENT_SUPERVISION_COVERAGE: empty feature subset')
         self.index_hash = hashlib.sha256(self.indices.tobytes()).hexdigest()
+        self.normalization = training_normalization(self.manifest,mode,self.raw_weights,
+                                                     self.indices,diagnostic=diagnostic)
 
     def batch(self,local_indices):
         local_indices = np.asarray(local_indices)
@@ -51,6 +54,7 @@ def training_identity(source,cache,rows,weights,*,seed,run_id,batch_size,opt_con
         weights_manifest_sha256=file_hash(Path(weights)/'manifest.json'),
         scale_sha256=rows.manifest['scale_sha256'],matched_index_sha256=rows.manifest['matched_index_sha256'],
         feature_subset_sha256=rows.index_hash,feature_subset_rows=len(rows.indices),
+        loss_normalization=rows.normalization,
         seed=seed,run_id=run_id,batch_size=batch_size,comparison_updates=comparison_updates,
         optimizer=dict(DEFAULT_OPT,**(opt_config or {})),sampler='uniform_permutation_same_matched_indices',
         code_sha256=code_identity(),packages=package_versions(),config_sha256=config_sha256)
@@ -80,7 +84,7 @@ def train(source,cache,weights,output,*,mode='S3B_CERTIFIED',seed=0,run_id='s3b'
         root.mkdir(parents=True,exist_ok=False)
         write_json(root/'run_identity.json',signed(dict(identity=identity)))
     agent = agent or load_source(source,root,device=device)
-    bc = WeightedActorBC(agent,opt_config)
+    bc = WeightedActorBC(agent,opt_config,global_mean_weight=rows.normalization['global_mean_weight'])
     if bc.source_digests != cache.manifest['source_param_digests']:
         raise ValueError('Loaded source differs from feature-producing model')
     sampler = Sampler(len(rows.indices),seed)

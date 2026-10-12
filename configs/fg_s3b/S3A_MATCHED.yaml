@@ -1,8 +1,8 @@
-schema: FG_S3B_TRAIN_CONFIG_V1
+schema: FG_S3B_TRAIN_CONFIG_V2
 dataset: /home/v/Documents/work/gym-trading-env/artifacts/fg_single3_v1/replay/run_20261011_01
 oracle_receipt: /home/v/Documents/work/gym-trading-env/artifacts/fg_single3_v1/oracle/run_20261011_01
 s3a_label_index: /home/v/Documents/work/gym-trading-env2/artifacts/fg_s3a_v1/labels_20261011_v2
-weights: /home/v/Documents/work/gym-trading-env2/artifacts/fg_s3b_v1/weights_full_v1
+weights: /home/v/Documents/work/gym-trading-env2/artifacts/fg_s3b_v2/weights_global_mean_v2
 source_checkpoint: REQUIRED_COMPLETED_C1_M1_1M_CHECKPOINT
 feature_cache: REQUIRED_COMPLETE_S3A_FEATURE_CACHE
 mode: S3A_MATCHED

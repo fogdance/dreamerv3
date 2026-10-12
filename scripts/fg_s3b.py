@@ -44,7 +44,7 @@ def main():
     if args.config:
         import yaml
         cfg = yaml.safe_load(Path(args.config).read_text())
-        if cfg.get('schema') != 'FG_S3B_TRAIN_CONFIG_V1' or set(cfg)-{
+        if cfg.get('schema') != 'FG_S3B_TRAIN_CONFIG_V2' or set(cfg)-{
             'schema','dataset','oracle_receipt','s3a_label_index','weights','feature_cache','source_checkpoint',
             'mode','seed','batch_size','updates','comparison_updates','save_every','optimizer'}:
             raise ValueError('Foreign/unknown S3-B train configuration')
@@ -54,7 +54,7 @@ def main():
         if value is None: parser.error('Missing --'+name.replace('_','-'))
         return value
     from gym_trading_env.research.fg_s3a_labels import load_labels
-    from gym_trading_env.research.fg_s3b_weights import audit_weights
+    from gym_trading_env.research.fg_s3b_normalization import audit_weights
     from embodied.run.fg_s3a_checkpoint import validate_source
     from embodied.run.fg_s3a_features import FeatureCache
     from embodied.run.fg_s3b_train import TrainingRows,train

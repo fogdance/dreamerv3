@@ -9,15 +9,16 @@ import jax
 import numpy as np
 
 from dreamerv3.fg_s3a_actor import parameter_digests
+from dreamerv3.fg_s3b_bc import LOSS_VERSION
 from embodied.run.fg_checkpoint import file_hash
 from embodied.run.fg_s3a_checkpoint import code_identity as s3a_code_identity,package_versions
 from gym_trading_env.research.fg_replay import check_files,read_manifest,signed,write_json
 
-PROTOCOL = 'FG_S3B_BC_V1'
+PROTOCOL = 'FG_S3B_BC_V2'
 
 
 def code_identity():
-    from gym_trading_env.research.fg_s3b_weights import code_identity as gym_identity
+    from gym_trading_env.research.fg_s3b_normalization import code_identity as gym_identity
     root = Path(__file__).resolve().parents[2]
     extra = ['dreamerv3/fg_s3b_bc.py','embodied/run/fg_s3b_checkpoint.py',
              'embodied/run/fg_s3b_train.py','scripts/fg_s3b.py']
@@ -28,12 +29,16 @@ def code_identity():
 
 
 def save_bc(directory,bc,sampler,identity):
+    if (identity['loss_normalization']['loss_version'] != LOSS_VERSION
+            or identity['loss_normalization']['global_mean_weight'] != bc.global_mean_weight):
+        raise ValueError('S3-B frozen loss normalization differs from training identity')
     root = Path(directory); root.mkdir(parents=True,exist_ok=True)
     dest = root/f'bc_{bc.bc_updates:012d}_{bc.bc_attempts:012d}'
     if dest.exists(): raise FileExistsError('S3-B checkpoint already exists')
     pending = root/('.pending_'+uuid.uuid4().hex); pending.mkdir()
     audit = bc.freeze_audit(require_actor_change=bc.bc_updates > 0)
-    state = dict(agent=bc.agent.save_exact(),
+    state = dict(agent=bc.agent.save_exact(),loss_version=LOSS_VERSION,
+        global_mean_weight=bc.global_mean_weight,
         s3b_bc_opt=jax.tree.map(lambda a:np.array(jax.device_get(a),copy=True),bc.s3b_bc_opt),
         bc_updates=bc.bc_updates,bc_attempts=bc.bc_attempts,skipped_batches=bc.skipped_batches,
         sampler=sampler.save(),source_digests=bc.source_digests,source_shapes=bc.source_shapes)
@@ -66,6 +71,14 @@ def audit_bc(path,identity=None):
     m = validate_bc(path,identity)
     state = pickle.loads((Path(path)/'state.pkl').read_bytes())
     proof = json.loads((Path(path)/'freeze_audit.json').read_text())
+    norm = m['identity']['loss_normalization']
+    if (state['loss_version'] != LOSS_VERSION or norm['loss_version'] != LOSS_VERSION
+            or proof['loss_version'] != LOSS_VERSION
+            or state['global_mean_weight'] != norm['global_mean_weight']
+            or proof['global_mean_weight'] != norm['global_mean_weight']
+            or norm['global_mean_weight_hex'] != float(norm['global_mean_weight']).hex()
+            or not np.isfinite(norm['global_mean_weight']) or norm['global_mean_weight'] <= 0):
+        raise ValueError('S3-B saved global loss normalization differs')
     params = state['agent']['params']
     before,after = state['source_digests'],parameter_digests(params)
     changed = sorted(k for k in before if before[k] != after.get(k))
@@ -94,6 +107,8 @@ def audit_bc(path,identity=None):
 
 def restore_bc(path,bc,sampler,identity):
     m = audit_bc(path,identity)
+    if m['identity']['loss_normalization']['global_mean_weight'] != bc.global_mean_weight:
+        raise ValueError('S3-B restore frozen global mean differs')
     state = pickle.loads((Path(path)/'state.pkl').read_bytes())
     if state['source_digests'] != bc.source_digests or state['source_shapes'] != bc.source_shapes:
         raise ValueError('S3-B source checkpoint fingerprint/schema differs')
