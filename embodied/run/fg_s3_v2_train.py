@@ -123,7 +123,8 @@ class LiveRun:
         self.collector = collector = V2Collector(env, query, root/'rollout', s['dreamer_root'],
             seed=s['replay_seed'], beta=s['beta'], actor=lambda c, o: agent.policy(c, o, mode='train'),
             agent=agent, source_checkpoint_identity=spec['target_model_identity_hash'], existing=resume,
-            replay_capacity=s['replay_capacity'], max_env_steps=s['env_steps'])
+            replay_capacity=s['replay_capacity'], max_env_steps=s['env_steps'],
+            beta_schedule=s['beta_schedule'])
         self.gate = make_gate_controller(plain(cfg), spec['gate_policy'], control,
                                         agent.get_avail_actor_enabled())
         source = embodied.streams.Consec(embodied.streams.Stateless(partial(collector.sample, cfg.batch_size)),
@@ -156,7 +157,8 @@ class LiveRun:
                 immutable_files={str(root/'source_transfer.json'): file_hash(root/'source_transfer.json'),
                                  str(root/'config.yaml'): file_hash(root/'config.yaml'),
                                  str(root/'source_admission.json'): file_hash(root/'source_admission.json')},
-                seed=cfg.seed, mix_replay_seed=s['replay_seed'], beta=s['beta'], bc_lambda=s['bc_lambda'],
+                seed=cfg.seed, mix_replay_seed=s['replay_seed'], beta=s['beta'],
+                beta_schedule=s['beta_schedule'], bc_lambda=s['bc_lambda'],
                 versions=preparation['versions'], diagnostic=s['scope'] == 'diagnostic')
             write_json(root/'run_identity.json', signed(dict(identity=identity)))
         else:
@@ -238,6 +240,7 @@ class LiveRun:
             f.write(json.dumps(row, allow_nan=False)+'\n')
         print(f"A2/C2 env={int(self.step)} update={c['all_updates']} BC={float(mets['bc/nll']):.6f} "
               f"valid={int(valid.sum())} ADD={int((valid & (y == 1)).sum())} "
+              f"beta={self.collector.policy.beta:.6f} "
               f"actor_grad={float(mets.get('opt/actor_grad_norm', 0)):.6f}", flush=True)
         return row
 
@@ -293,6 +296,7 @@ class LiveRun:
                          actor_changed=any(r['metrics']['opt/actor_changed'] for r in updated),
                          wm_changed=any(r['metrics']['opt/wm_changed'] for r in updated),
                          counts=dict(self.collector.counts), gate=self.gate.metrics(),
+                         beta_schedule=self.collector.beta_schedule.save(),
                          collect_seconds=collect_seconds, update_seconds=time.perf_counter()-updates_started,
                          retained_teacher_rows=len(self.collector.records), replay_items=len(self.collector.replay))
             with (self.root/'cycles.jsonl').open('a') as f:
@@ -319,6 +323,7 @@ class LiveRun:
             run_dir=str(self.root), identity=self.identity, env_steps=int(self.step),
             counters=self.counters.save(), model_updates=int(self.agent.n_updates),
             counts=dict(self.collector.counts), reward=float(self.collector.counts['reward_sum']),
+            beta_schedule=self.collector.beta_schedule.save(),
             checkpoint=str(node), checkpoint_manifest_sha256=file_hash(node/'manifest.json'),
             devices=[str(d) for d in jax.devices()], elapsed_seconds=elapsed,
             collect_seconds=collect_seconds, update_seconds=update_seconds,
