@@ -76,18 +76,21 @@ def reconcile_cycles(root, count, env_steps, agent_updates):
 
 
 class LiveRun:
-    def __init__(self, prepared, run_dir, *, resume=False):
+    def __init__(self, prepared, run_dir, *, resume=False, authorize_training=False):
         self.prepared = Path(prepared).resolve()
         preparation = read_manifest(self.prepared/'manifest.json')
         check_files({str(self.prepared/n): h for n, h in preparation['files'].items()})
         if preparation['code'] != execution_code():
             raise ValueError('Prepared V2 code changed; create a new preparation')
         self.settings = s = read_manifest(self.prepared/'settings.json')['settings']
+        from gym_trading_env.research.fg_s3_v2_experiment import require_training_authorization
+        require_training_authorization(s, authorize_training)
         self.spec = spec = read_manifest(self.prepared/'source_admission.json')
         if s['device'] != 'gpu':
             raise ValueError('V2 model work is GPU-only')
         self.root = root = Path(run_dir).resolve()
-        allowed = Path(__file__).resolve().parents[3]/'gym-trading-env/artifacts/fg_s3_v2/runs'
+        allowed = (Path('/data/logdir/fg_single3/s3_v2') if s['scope'] == 'formal' else
+                   Path(__file__).resolve().parents[3]/'gym-trading-env/artifacts/fg_s3_v2/runs')
         if not root.is_relative_to(allowed):
             raise ValueError('V2 diagnostic output escaped its development run directory')
         if resume:
@@ -98,7 +101,11 @@ class LiveRun:
             check_files(saved['immutable_files'])
         else:
             root.mkdir(parents=True, exist_ok=False)
-        query, env, _, _, _ = load_train_query(s['env_receipt'], s['oracle_receipt'], s['contract'])
+        if s['contracts'] is None:
+            query, env, _, _, _ = load_train_query(s['env_receipt'], s['oracle_receipt'], s['contract'])
+        else:
+            from gym_trading_env.research.fg_s3_v2_train_pool import load_pool
+            query, env = load_pool(s, self.prepared)
         if query.identity_hash != preparation['oracle_identity']:
             raise ValueError('Prepared Oracle identity changed')
         self.offset = int(spec['origin']['step'])
@@ -115,7 +122,8 @@ class LiveRun:
             control = dict(gate=None, aggregate=None, samples=0)
         self.collector = collector = V2Collector(env, query, root/'rollout', s['dreamer_root'],
             seed=s['replay_seed'], beta=s['beta'], actor=lambda c, o: agent.policy(c, o, mode='train'),
-            agent=agent, source_checkpoint_identity=spec['target_model_identity_hash'], existing=resume)
+            agent=agent, source_checkpoint_identity=spec['target_model_identity_hash'], existing=resume,
+            replay_capacity=s['replay_capacity'], max_env_steps=s['env_steps'])
         self.gate = make_gate_controller(plain(cfg), spec['gate_policy'], control,
                                         agent.get_avail_actor_enabled())
         source = embodied.streams.Consec(embodied.streams.Stateless(partial(collector.sample, cfg.batch_size)),
@@ -136,21 +144,26 @@ class LiveRun:
         if not resume:
             import yaml
             (root/'config.yaml').write_text(yaml.safe_dump(plain(cfg)))
+            write_json(root/'source_admission.json', spec)
             identity = dict(protocol=PROTOCOL, run_id=uuid.uuid4().hex, mode=s['mode'],
                 budget_unit='environment_advances', env_steps=s['env_steps'],
                 source_update_offset=self.offset, oracle_identity=query.identity_hash,
                 preparation_sha256=file_hash(self.prepared/'manifest.json'),
                 code=execution_code(), packages=runtime_versions(), device='gpu',
                 source_kind=spec['kind'], source_model_identity=spec['target_model_identity_hash'],
+                training_identity=preparation['training_identity'], scope=s['scope'],
+                gate_policy=spec['gate_policy'], model_config_sha256=fingerprint(plain(cfg)),
                 immutable_files={str(root/'source_transfer.json'): file_hash(root/'source_transfer.json'),
-                                 str(root/'config.yaml'): file_hash(root/'config.yaml')},
+                                 str(root/'config.yaml'): file_hash(root/'config.yaml'),
+                                 str(root/'source_admission.json'): file_hash(root/'source_admission.json')},
                 seed=cfg.seed, mix_replay_seed=s['replay_seed'], beta=s['beta'], bc_lambda=s['bc_lambda'],
-                versions=preparation['versions'], diagnostic=True)
+                versions=preparation['versions'], diagnostic=s['scope'] == 'diagnostic')
             write_json(root/'run_identity.json', signed(dict(identity=identity)))
         else:
             identity = saved
         self.identity = identity
-        self.cp = FullCheckpoint(root/'ckpt', self.step, identity, [self.stream], reserve_gib=1, keep_all=True)
+        self.cp = FullCheckpoint(root/'ckpt', self.step, identity, [self.stream],
+                                 reserve_gib=10 if s['scope'] == 'formal' else 1, keep_all=True)
         self.cp.agent = agent
         self.cp.replay = collector.replay
         self.cp.driver = collector.driver
@@ -216,6 +229,8 @@ class LiveRun:
             teacher_sha256=hashlib.sha256(y.tobytes() + valid.tobytes()).hexdigest(),
             metrics={k: float(np.asarray(v)) for k, v in mets.items()
                      if np.asarray(v).size == 1 and np.isfinite(v).all()})
+        positives = float(mets.get('bc/tp', 0)) + float(mets.get('bc/fn', 0))
+        row['oracle_add_recall'] = float(mets['bc/tp'])/positives if positives else None
         with (self.root/'updates.jsonl').open('a') as f:
             f.write(json.dumps(row, allow_nan=False)+'\n')
         print(f"A2/C2 env={int(self.step)} update={c['all_updates']} BC={float(mets['bc/nll']):.6f} "
@@ -245,27 +260,34 @@ class LiveRun:
             raise ValueError('Stop boundary must be a configured collection cycle within the frozen budget')
         started = time.perf_counter()
         while int(self.step) < target:
+            cycle_started = time.perf_counter()
             end = min(int(self.step) + s['collect_every'], target)
             with self.stream.pause():
                 self.collector.advance(end)
                 self.step.increment(self.collector.counts['env_steps'] - int(self.step))
             if int(self.step) != end:
                 raise RuntimeError('TRAIN contract ended before the configured diagnostic budget')
+            collect_seconds = time.perf_counter() - cycle_started
+            self.collector.prune()
+            updates_started = time.perf_counter()
             before = parameter_digests(self.agent.params)
+            cycle_rl_ready = self.gate.actor_enabled
             for _ in range(s['updates_per_collect']):
                 self.update()
             self.agent.sync_policy_from_train()
             self.report_gate()
             after = parameter_digests(self.agent.params)
             changed = [k for k in before if before[k] != after[k]]
-            if (s['mode'] == 'a2' or not self.gate.actor_enabled) and any(k.startswith(
+            if (s['mode'] == 'a2' or not cycle_rl_ready) and any(k.startswith(
                                        ('val/', 'slowval/', 'slowval_count/', 'retnorm/', 'valnorm/', 'advnorm/'))
                                        or (k.startswith('opt/state/') and '/val/' in k) for k in changed):
                 raise RuntimeError('Gate-closed/A2 update changed a frozen Critic/RL state')
             cycle = dict(env_steps=int(self.step), agent_updates=int(self.agent.n_updates), changed_keys=changed,
                          actor_changed=any(k.startswith('pol/') for k in changed),
                          wm_changed=any(k.startswith(('enc/', 'dyn/')) for k in changed),
-                         counts=dict(self.collector.counts), gate=self.gate.metrics())
+                         counts=dict(self.collector.counts), gate=self.gate.metrics(),
+                         collect_seconds=collect_seconds, update_seconds=time.perf_counter()-updates_started,
+                         retained_teacher_rows=len(self.collector.records), replay_items=len(self.collector.replay))
             with (self.root/'cycles.jsonl').open('a') as f:
                 f.write(json.dumps(cycle)+'\n')
             self.counters.state['cycles'] += 1
@@ -275,19 +297,33 @@ class LiveRun:
         self.cp.save(final=target == s['env_steps'])
         node = self.cp.latest()
         write_json(self.root/'env_state.json', self.collector.env.export_state())
-        with (self.root/'sidecar.jsonl').open('w') as f:
-            for r in self.collector.records:
-                f.write(json.dumps(r, allow_nan=False)+'\n')
+        # Complete history is written once during publication. Checkpoints
+        # contain the bounded teachers corresponding to all retained Replay.
+        import resource
+        elapsed = time.perf_counter()-started
+        cycles = [json.loads(line) for line in (self.root/'cycles.jsonl').read_text().splitlines()]
+        collect_seconds = sum(r['collect_seconds'] for r in cycles)
+        update_seconds = sum(r['update_seconds'] for r in cycles)
+        tp, fn = (self.collector.counts[k] for k in ('actor_oracle_ADD_tp', 'actor_oracle_ADD_fn'))
         result = signed(dict(protocol=PROTOCOL,
-            status='DIAGNOSTIC_COMPLETE' if target == s['env_steps'] else 'DIAGNOSTIC_STOPPED',
+            status=(('FORMAL' if s['scope'] == 'formal' else 'DIAGNOSTIC') +
+                    ('_COMPLETE' if target == s['env_steps'] else '_STOPPED')),
             run_dir=str(self.root), identity=self.identity, env_steps=int(self.step),
             counters=self.counters.save(), model_updates=int(self.agent.n_updates),
-            counts=dict(self.collector.counts), reward=float(self.collector.env.total_reward),
+            counts=dict(self.collector.counts), reward=float(self.collector.counts['reward_sum']),
             checkpoint=str(node), checkpoint_manifest_sha256=file_hash(node/'manifest.json'),
-            devices=[str(d) for d in jax.devices()], elapsed_seconds=time.perf_counter()-started,
-            actor_proposal_versions=sorted({r['policy_model_update'] for r in self.collector.records}),
+            devices=[str(d) for d in jax.devices()], elapsed_seconds=elapsed,
+            collect_seconds=collect_seconds, update_seconds=update_seconds,
+            core_env_steps_per_second=int(self.step)/max(collect_seconds+update_seconds, 1e-6),
+            process_peak_rss_mib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024,
+            oracle_query_recent_seconds={str(p): float(np.percentile(self.collector.query_seconds, p))
+                for p in (50, 95, 99)},
+            actor_oracle_add_recall=tp/(tp+fn) if tp+fn else None,
+            retained_teacher_rows=len(self.collector.records), teacher_journal=str(self.collector.journal),
+            actor_proposal_versions=sorted(self.collector.model_versions),
             label_ratio=self.collector.counts['certified_labels']/max(int(self.step), 1),
-            formal_1m='NOT_RUN', test='NOT_RUN', independent_actor_success='NOT_ESTABLISHED'))
+            formal_1m='RUN' if s['scope'] == 'formal' else 'NOT_RUN',
+            test='NOT_RUN', independent_actor_success='NOT_ESTABLISHED'))
         write_json(self.root/'training_receipt.json', result)
         return result
 
