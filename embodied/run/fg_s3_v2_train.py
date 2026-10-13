@@ -173,6 +173,7 @@ class LiveRun:
         self.cp.action_mask_warmup = self.gate
         self.cp.v2_counters = self.counters
         self.last_batch = None
+        self.just_restored = resume
         if resume:
             self.cp.load()
             if (int(agent.n_updates) != self.offset + self.counters.state['all_updates']
@@ -200,6 +201,8 @@ class LiveRun:
         new_step = int(np.asarray(jax.device_get(self.agent.params['opt/step/value'])))
         if new_step != old_step + 1:
             raise ValueError('V2 update must call the joint optimizer exactly once')
+        if not bool(mets['v2/rl_active']) and bool(mets['opt/critic_changed']):
+            raise RuntimeError('Inactive RL changed the Critic during a joint update')
         c = self.counters.state
         c['all_updates'] += 1
         c['wm_updates'] += 1
@@ -270,27 +273,32 @@ class LiveRun:
             collect_seconds = time.perf_counter() - cycle_started
             self.collector.prune()
             updates_started = time.perf_counter()
-            before = parameter_digests(self.agent.params)
+            audit = (self.just_restored or not self.counters.state['cycles']
+                     or end % s['save_every'] == 0 or end == target)
+            before = parameter_digests(self.agent.params) if audit else None
             cycle_rl_ready = self.gate.actor_enabled
+            updated = []
             for _ in range(s['updates_per_collect']):
-                self.update()
+                updated.append(self.update())
             self.agent.sync_policy_from_train()
             self.report_gate()
-            after = parameter_digests(self.agent.params)
-            changed = [k for k in before if before[k] != after[k]]
-            if (s['mode'] == 'a2' or not cycle_rl_ready) and any(k.startswith(
+            after = parameter_digests(self.agent.params) if audit else None
+            changed = [k for k in before if before[k] != after[k]] if audit else None
+            if audit and (s['mode'] == 'a2' or not cycle_rl_ready) and any(k.startswith(
                                        ('val/', 'slowval/', 'slowval_count/', 'retnorm/', 'valnorm/', 'advnorm/'))
                                        or (k.startswith('opt/state/') and '/val/' in k) for k in changed):
                 raise RuntimeError('Gate-closed/A2 update changed a frozen Critic/RL state')
             cycle = dict(env_steps=int(self.step), agent_updates=int(self.agent.n_updates), changed_keys=changed,
-                         actor_changed=any(k.startswith('pol/') for k in changed),
-                         wm_changed=any(k.startswith(('enc/', 'dyn/')) for k in changed),
+                         parameter_audited=audit,
+                         actor_changed=any(r['metrics']['opt/actor_changed'] for r in updated),
+                         wm_changed=any(r['metrics']['opt/wm_changed'] for r in updated),
                          counts=dict(self.collector.counts), gate=self.gate.metrics(),
                          collect_seconds=collect_seconds, update_seconds=time.perf_counter()-updates_started,
                          retained_teacher_rows=len(self.collector.records), replay_items=len(self.collector.replay))
             with (self.root/'cycles.jsonl').open('a') as f:
                 f.write(json.dumps(cycle)+'\n')
             self.counters.state['cycles'] += 1
+            self.just_restored = False
             _, save = self.schedule.advance(self.step)
             if save:
                 self.cp.save()
