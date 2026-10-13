@@ -222,7 +222,7 @@ class Agent(embodied.jax.Agent):
     """Factory for training-only losses; report and policy stay independent."""
     return self.loss
 
-  def loss(self, carry, obs, prevact, training):
+  def world_model(self, carry, obs, prevact, training):
     enc_carry, dyn_carry, dec_carry = carry
     reset = obs['is_first']
     B, T = reset.shape
@@ -268,6 +268,14 @@ class Agent(embodied.jax.Agent):
     B, T = reset.shape
     shapes = {k: v.shape for k, v in losses.items()}
     assert all(x == (B, T) for x in shapes.values()), ((B, T), shapes)
+
+    return (enc_carry, dyn_carry, dec_carry, enc_entries, dyn_entries,
+            dec_entries, tokens, repfeat, reset, B, T, losses, metrics)
+
+  def loss(self, carry, obs, prevact, training):
+    (enc_carry, dyn_carry, dec_carry, enc_entries, dyn_entries,
+     dec_entries, tokens, repfeat, reset, B, T, losses, metrics) = self.world_model(
+         carry, obs, prevact, training)
 
     # Imagination
     K = min(self.config.imag_last or T, T)

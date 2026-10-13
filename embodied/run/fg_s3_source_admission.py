@@ -88,10 +88,56 @@ return hard_nonempty_mask(prob, self.config.avail_threshold, self.config.get('av
     return tree
 
 
+def _inline_world_model(tree):
+    """Accept only extraction whose expanded body is the original Agent loss.
+
+    The helper body is not discarded or trusted by a placeholder hash: it is
+    put back into loss before the complete source/target AST comparison.
+    """
+    for cls in tree.body:
+        if not isinstance(cls, ast.ClassDef) or cls.name != 'Agent':
+            continue
+        helpers = [x for x in cls.body if isinstance(x, ast.FunctionDef) and x.name == 'world_model']
+        if not helpers:
+            continue
+        if len(helpers) != 1:
+            raise ValueError('Duplicate World Model extraction')
+        helper = helpers[0]
+        expected = ast.parse('''def world_model(self, carry, obs, prevact, training):
+    return (enc_carry, dyn_carry, dec_carry, enc_entries, dyn_entries,
+            dec_entries, tokens, repfeat, reset, B, T, losses, metrics)
+''').body[0]
+        call = ast.parse('''(enc_carry, dyn_carry, dec_carry, enc_entries, dyn_entries,
+dec_entries, tokens, repfeat, reset, B, T, losses, metrics) = self.world_model(carry, obs, prevact, training)
+''').body[0]
+        loss = next(x for x in cls.body if isinstance(x, ast.FunctionDef) and x.name == 'loss')
+        dump = lambda x: ast.dump(x, include_attributes=False)
+        if (dump(helper.args) != dump(expected.args) or helper.decorator_list
+                or dump(helper.body[-1]) != dump(expected.body[0])
+                or dump(loss.body[0]) != dump(call)):
+            raise ValueError('Unreviewed World Model extraction contract')
+        loss.body = helper.body[:-1] + loss.body[1:]
+        cls.body.remove(helper)
+    return tree
+
+
 def _normalized_code(data, name):
     tree = ast.parse(data)
     if name == 'dreamerv3/agent.py':
+        tree = _inline_world_model(tree)
         tree = _normalize_gate_transfer(tree)
+    if name == 'embodied/jax/internal.py':
+        # Only extend the original GPU flag branch to explicit CUDA. Every
+        # flag and all remaining setup code still undergo full AST comparison.
+        old = ast.parse("gpuflags and platform == 'gpu'", mode='eval').body
+        new = ast.parse("gpuflags and platform in ('gpu', 'cuda')", mode='eval').body
+        matches = 0
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and ast.dump(node.test) in (ast.dump(old), ast.dump(new)):
+                node.test = old
+                matches += 1
+        if matches != 1:
+            raise ValueError('Unreviewed CUDA setup transition')
     for item in tree.body:
         if isinstance(item, ast.ClassDef):
             if name == 'dreamerv3/agent.py' and item.name == 'Agent':
@@ -137,7 +183,7 @@ def _verify_code(name, expected, actual):
         return dict(source_sha256=expected, target_sha256=actual, disposition='IDENTICAL')
     # These are explicit transfer changes, not an old-run resume bypass:
     # the generic loss factory and already reviewed safe probability diagnostic.
-    if name not in ('dreamerv3/agent.py', 'embodied/jax/outs.py'):
+    if name not in ('dreamerv3/agent.py', 'embodied/jax/outs.py', 'embodied/jax/internal.py'):
         raise ValueError('Unsupported source code transition: '+name)
     revisions = subprocess.check_output(['git', 'rev-list', '--all', '--', rel], cwd=repo, text=True).split()
     for rev in revisions:

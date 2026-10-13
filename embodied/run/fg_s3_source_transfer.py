@@ -13,17 +13,24 @@ from gym_trading_env.research.fg_replay import signed
 from gym_trading_env.envs.entry_contract import fingerprint
 
 
-def make_agent(config, output, *, agent_cls=None, device='cpu', bc_lambda=None):
+def make_agent(config, output, *, agent_cls=None, device='cpu', bc_lambda=None,
+               extra_agent_config=None):
     from dreamerv3.agent import Agent
     from gym_trading_env.research.fg_replay import FIELDS
     obs = {k:elements.Space(dtype, shape) for k,(shape,dtype) in FIELDS.items() if k!='action'}
     act = {'action': elements.Space(np.int32, (), 0, 2)}
     cfg = elements.Config(config)
+    if device not in ('cpu', 'gpu'):
+        raise ValueError('Unknown model device')
     jcfg = dict(cfg.jax)
+    # Explicit CUDA avoids the generic gpu alias also initializing ROCm.
     jcfg.update(platform='cpu' if device=='cpu' else 'cuda', precompile=False,
                 profiler=False, prealloc=False, enable_policy=True, transfer_guard=False,
                 sync_train_metrics=True)
     extra = {} if bc_lambda is None else dict(bc_lambda=bc_lambda)
+    extra.update(extra_agent_config or {})
+    if set(extra).intersection(cfg.agent):
+        raise ValueError('Training extension must not overwrite admitted Agent config')
     return (agent_cls or Agent)(obs, act, elements.Config(**dict(cfg.agent), **extra,
         logdir=str(output), seed=cfg.seed, jax=jcfg, batch_size=cfg.batch_size,
         batch_length=cfg.batch_length, replay_context=cfg.replay_context,
