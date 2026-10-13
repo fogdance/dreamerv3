@@ -83,11 +83,10 @@ class LiveRun:
         if preparation['code'] != execution_code():
             raise ValueError('Prepared V2 code changed; create a new preparation')
         self.settings = s = read_manifest(self.prepared/'settings.json')['settings']
-        from gym_trading_env.research.fg_s3_v2_experiment import require_training_authorization
+        from gym_trading_env.research.fg_s3_v2_experiment import require_training_authorization, require_device
         require_training_authorization(s, authorize_training)
         self.spec = spec = read_manifest(self.prepared/'source_admission.json')
-        if s['device'] != 'gpu':
-            raise ValueError('V2 model work is GPU-only')
+        device = require_device(s)
         self.root = root = Path(run_dir).resolve()
         allowed = (Path('/data/logdir/fg_single3/s3_v2') if s['scope'] == 'formal' else
                    Path(__file__).resolve().parents[3]/'gym-trading-env/artifacts/fg_s3_v2/runs')
@@ -110,10 +109,10 @@ class LiveRun:
             raise ValueError('Prepared Oracle identity changed')
         self.offset = int(spec['origin']['step'])
         cfg = self.config = elements.Config(read_manifest(self.prepared/'model_config.json')['config'])
-        self.agent = agent = make_agent(plain(cfg), root/'model', device='gpu',
+        self.agent = agent = make_agent(plain(cfg), root/'model', device=device,
             agent_cls=S3V2Agent, bc_lambda=s['bc_lambda'], extra_agent_config={'s3_v2_mode': s['mode']})
-        if not all(d.platform == 'gpu' for d in jax.devices()):
-            raise RuntimeError('V2 model did not initialize on CUDA')
+        if not all(d.platform == device for d in agent.train_devices + agent.policy_devices):
+            raise RuntimeError('V2 model backend differs from its frozen device')
         if not resume:
             transfer = apply_and_audit_transfer(agent, spec)
             write_json(root/'source_transfer.json', transfer)
@@ -150,7 +149,7 @@ class LiveRun:
                 budget_unit='environment_advances', env_steps=s['env_steps'],
                 source_update_offset=self.offset, oracle_identity=query.identity_hash,
                 preparation_sha256=file_hash(self.prepared/'manifest.json'),
-                code=execution_code(), packages=runtime_versions(), device='gpu',
+                code=execution_code(), packages=runtime_versions(), device=device,
                 source_kind=spec['kind'], source_model_identity=spec['target_model_identity_hash'],
                 training_identity=preparation['training_identity'], scope=s['scope'],
                 gate_policy=spec['gate_policy'], model_config_sha256=fingerprint(plain(cfg)),
@@ -241,7 +240,9 @@ class LiveRun:
         print(f"A2/C2 env={int(self.step)} update={c['all_updates']} BC={float(mets['bc/nll']):.6f} "
               f"valid={int(valid.sum())} ADD={int((valid & (y == 1)).sum())} "
               f"beta={self.collector.policy.beta:.6f} "
-              f"actor_grad={float(mets.get('opt/actor_grad_norm', 0)):.6f}", flush=True)
+              f"actor_grad={float(mets.get('opt/actor_grad_norm', 0)):.6f} "
+              f"rl={bool(mets['v2/rl_active'])} "
+              f"critic_grad={float(mets.get('opt/critic_grad_norm', 0)):.6f}", flush=True)
         return row
 
     def report_gate(self):

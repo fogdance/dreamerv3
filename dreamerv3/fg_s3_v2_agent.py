@@ -89,6 +89,9 @@ class S3V2Agent(S3CAgent):
                   k.startswith(('avail/post_', 'avail/prior_')) or
                   k in {f'loss/{x}' for x in wm_keys}}
         common.update({'v2/wm_loss': wm, 'v2/rl_loss': loss - wm,
+            'v2/rl_actor_loss': metrics.get('loss/policy', jnp.float32(0)) * self.scales['policy'],
+            'v2/rl_critic_loss': sum(metrics.get('loss/'+k, jnp.float32(0)) * self.scales[k]
+                                      for k in ('value', 'repval') if k in self.scales),
             'avail/img_fallback_rate': metrics.get('avail/img_fallback_rate', jnp.float32(0)),
             'avail/img_action_invalid_rate': metrics.get('avail/img_action_invalid_rate', jnp.float32(0))})
         return loss, (carry, entries, outs['repfeat'], common)
