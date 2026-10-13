@@ -144,7 +144,9 @@ class S3V2Agent(S3CAgent):
         else:
             nll, logits = jnp.zeros_like(y, dtype=jnp.float32), jnp.zeros((*y.shape, 2))
         bc, metrics = tutor_objective(nll, logits, y, valid, obs['is_first'],
-            alpha=self.tutor['tutor_alpha'], tau=self.tutor['tutor_pair_tau'], evaluated=evaluated)
+            alpha=self.tutor['tutor_alpha'], tau=self.tutor['tutor_pair_tau'],
+            hard_kappa=self.tutor['tutor_hard_kappa'], hard_wmax=self.tutor['tutor_hard_wmax'],
+            evaluated=evaluated)
         metrics['tutor/pair_active'] = jnp.float32(
             (self.tutor['tutor_pair_lambda'] > 0) & (metrics['tutor/pair_count'] > 0))
         metrics['tutor/actor_active'] = jnp.float32(

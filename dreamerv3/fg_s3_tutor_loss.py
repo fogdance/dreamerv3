@@ -1,4 +1,4 @@
-"""Static Tutor objectives on one masked Actor distribution; no replay state."""
+"""Tutor objectives and bounded batch-local difficulty; no replay state."""
 import math
 
 import jax
@@ -26,8 +26,8 @@ def agent_extensions(settings):
         raise ValueError('Tutor requires alpha in [0,1] and nonnegative pair lambda')
     if result['tutor_pair_tau'] <= 0 or result['tutor_hard_wmax'] < 1:
         raise ValueError('Tutor requires positive tau and hard weight maximum >= 1')
-    if result['tutor_hard_kappa'] != 0:
-        raise ValueError('Tutor V0 static curriculum requires hard_kappa=0; E2 is deferred')
+    if result['tutor_hard_kappa'] < 0:
+        raise ValueError('Tutor difficulty kappa must be nonnegative')
     return result
 
 
@@ -55,7 +55,8 @@ def pair_mask(y, valid, is_first):
             & (episode[:, :, None] == episode[:, None, :]))
 
 
-def tutor_objective(nll, logits, y, valid, is_first, *, alpha=.8, tau=1., evaluated=True):
+def tutor_objective(nll, logits, y, valid, is_first, *, alpha=.8, tau=1.,
+                    hard_kappa=0., hard_wmax=2., evaluated=True):
     """Return BC mix and diagnostics; logits are final post-mask/unimix logits.
 
     Invalid positions are finite before any pair subtraction. All reductions
@@ -72,7 +73,6 @@ def tutor_objective(nll, logits, y, valid, is_first, *, alpha=.8, tau=1., evalua
     natural = mean(nll, valid)
     both = (np_ > 0) & (nn_ > 0)
     balanced = jnp.where(both, .5 * (mean(nll, pos) + mean(nll, neg)), natural)
-    mix = alpha * natural + (1-alpha) * balanced
     # Even an external -inf sentinel cannot generate 0*inf or inf-inf here.
     safe_logits = jnp.where(valid[..., None], logits, 0.)
     z = safe_logits[..., 1] - safe_logits[..., 0]
@@ -83,6 +83,17 @@ def tutor_objective(nll, logits, y, valid, is_first, *, alpha=.8, tau=1., evalua
     padd = jax.nn.softmax(safe_logits, -1)[..., 1] if evaluated else jnp.zeros_like(nll)
     predicted = padd > .5
     difficulty = jnp.where(y == 1, 1-padd, padd)
+    weights = jnp.ones_like(nll)
+    hard_balanced = balanced
+    if hard_kappa and evaluated:
+        candidate = jnp.clip(1 + hard_kappa * jax.lax.stop_gradient(difficulty), 1., hard_wmax)
+        def weighted_mean(mask):
+            w = jnp.where(mask, candidate, 0.)
+            return (jnp.where(mask, nll, 0.) * w).sum() / jnp.maximum(w.sum(), 1.)
+        hard_balanced = jnp.where(both, .5*(weighted_mean(pos)+weighted_mean(neg)), natural)
+        # A missing class falls back to Natural CE, without hard weighting.
+        weights = jnp.where(both, candidate, weights)
+    mix = alpha * natural + (1-alpha) * hard_balanced
     metrics = {
         'bc/nll': natural, 'bc/valid_count': count.astype(jnp.float32),
         'bc/add_count': np_.astype(jnp.float32), 'bc/wait_count': nn_.astype(jnp.float32),
@@ -93,6 +104,8 @@ def tutor_objective(nll, logits, y, valid, is_first, *, alpha=.8, tau=1., evalua
         'bc/p_add_mean': mean(padd, valid),
         'teacher/valid_fraction': count / valid.size,
         'tutor/natural_ce': natural, 'tutor/balanced_ce': balanced, 'tutor/bc_mix_loss': mix,
+        'tutor/hard_balanced_ce': hard_balanced,
+        'tutor/hard_balanced_active': jnp.float32(bool(hard_kappa) and evaluated) * both,
         'tutor/eligible_pos': np_, 'tutor/eligible_neg': nn_,
         'tutor/pos_fraction_valid': np_ / jnp.maximum(count, 1),
         'tutor/pair_loss': pair, 'tutor/pair_count': n_pairs,
@@ -104,8 +117,8 @@ def tutor_objective(nll, logits, y, valid, is_first, *, alpha=.8, tau=1., evalua
         'tutor/logit_gap_pos_neg': jnp.where(both, mean(z, pos)-mean(z, neg), 0.),
         'tutor/difficulty_mean': mean(difficulty, valid),
         'tutor/difficulty_max': jnp.where(valid, difficulty, 0.).max(),
-        'tutor/difficulty_weight_mean': (count > 0).astype(jnp.float32),
-        'tutor/difficulty_weight_max': (count > 0).astype(jnp.float32),
+        'tutor/difficulty_weight_mean': mean(weights, valid),
+        'tutor/difficulty_weight_max': jnp.where(valid, weights, 0.).max(),
         'tutor/pos_defined': (np_ > 0).astype(jnp.float32),
         'tutor/neg_defined': (nn_ > 0).astype(jnp.float32),
         'tutor/pair_defined': (n_pairs > 0).astype(jnp.float32),
