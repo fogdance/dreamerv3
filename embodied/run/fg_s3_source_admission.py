@@ -633,12 +633,21 @@ def prepare_transfer(spec, target_schema=None):
         if spec['kind'] == 'warm_start' and extension is not None:
             prefixes = ('b2_event/', 'b2_early/', 'b2_adapter/', 'b2_schedule/')
             extras = set(target_schema) - set(actual)
+            import ninjax as nj
+            # nj.Tree stores optax leaves using nj.flatten's canonical names,
+            # which remove underscores (b2_event -> b2event). Derive exact
+            # permitted suffixes from real target NN keys, not a loose regex.
+            encoded = set(nj.flatten({k:0 for k in target_schema if k.startswith(prefixes[:3])})[0])
             allowed = lambda k: k.startswith(prefixes) or (
-                k.startswith('opt/state/') and any('/'+p in k for p in prefixes))
+                k.startswith('opt/state/') and any(k.endswith('/'+name) for name in encoded))
             if (set(actual) - set(target_schema) or any(actual[k] != target_schema[k] for k in actual)
                     or any(not allowed(k) for k in extras)
                     or not all(any(k.startswith(p) for k in extras) for p in prefixes)):
-                raise ValueError('B2 extension changed original parameter schema or added foreign state')
+                detail = dict(missing=sorted(set(actual)-set(target_schema)),
+                    changed={k:[actual[k],target_schema[k]] for k in actual if k in target_schema and actual[k]!=target_schema[k]},
+                    unexpected=sorted(k for k in extras if not allowed(k)),
+                    missing_extensions=[p for p in prefixes if not any(k.startswith(p) for k in extras)])
+                raise ValueError('B2 extension changed original parameter schema or added foreign state: '+json.dumps(detail))
         elif actual != target_schema:
             raise ValueError('Source parameter keys/dtypes/shapes differ from target')
     if spec.get('gate_transfer', {}).get('reset_required'):

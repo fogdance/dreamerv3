@@ -54,7 +54,8 @@ def frozen(k):
 
 
 def parameter_group(k, prefix):
-    return k.startswith(prefix) or (k.startswith('opt/state/') and '/'+prefix in k)
+    # Match the actual Ninjax Tree encoding used by persisted optimizer state.
+    return k.startswith(prefix) or (k.startswith('opt/state/') and '/'+prefix.replace('_','') in k)
 
 
 def model(folder, bc=1., **settings):
@@ -208,3 +209,34 @@ def test_lambda_zero_teacher_independence_and_frozen_actor(raw_batch,tmp_path):
     changed['teacher_action'][:]=1-changed['teacher_action'];changed['teacher_valid'][:]=False
     a.train(a.init_train(1),gpu_batch(a,changed,51))
     assert after == parameter_digests(a.params)
+
+
+def test_warm_extension_uses_real_ninjax_optimizer_names(tmp_path):
+    """Serialized schema contract fixture, not real source-model acceptance."""
+    import json
+    from embodied.run.fg_s3_source_admission import prepare_transfer, PROTOCOL
+    from embodied.run.fg_checkpoint import file_hash
+    from gym_trading_env.research.fg_replay import signed
+    node = tmp_path/'step_000000000002';node.mkdir()
+    params = {'pol/kernel':np.zeros((2,2),np.float32),'opt/step/value':np.array(2,np.int32)}
+    state = dict(params=params,counters=dict(updates=2,batches=2,actions=0),policy_params=None,
+                 pending_sync=None,pending_outs=None,pending_mets=None)
+    (node/'agent.pkl').write_bytes(pickle.dumps(state))
+    (node/'manifest.json').write_text(json.dumps(dict(schema=1,protocol='FG_FULL_V1',step=2,identity={},
+        files={'agent.pkl':file_hash(node/'agent.pkl')})))
+    (node/'done').touch()
+    spec = signed(dict(protocol=PROTOCOL,kind='warm_start',origin=dict(path=str(node),
+        manifest_sha256=file_hash(node/'manifest.json'),step=2),agent_extension=b2_extensions({})))
+    schema = {k:(v.shape,str(v.dtype)) for k,v in params.items()}
+    nn = {'b2_event/kernel':np.zeros((2,6),np.float32),'b2_early/kernel':np.zeros((2,1),np.float32),
+          'b2_adapter/raw_weights':np.zeros(6,np.float32)}
+    schema.update({k:(v.shape,str(v.dtype)) for k,v in nn.items()})
+    schema['b2_schedule/updates/value'] = ((), 'int32')
+    mapping,_ = nj.flatten(nn)
+    schema.update({'opt/state/1/1/'+k:(v.shape,str(v.dtype)) for k,v in mapping.items()})
+    assert any('b2event/' in k for k in schema)
+    assert prepare_transfer(spec,schema)['counters']['updates'] == 2
+    with pytest.raises(ValueError,match='foreign state'):
+        prepare_transfer(spec,{**schema,'opt/state/1/1/foreign/kernel':((2,6),'float32')})
+    with pytest.raises(ValueError,match='original parameter schema'):
+        prepare_transfer(spec,{**schema,'pol/kernel':((3,2),'float32')})
