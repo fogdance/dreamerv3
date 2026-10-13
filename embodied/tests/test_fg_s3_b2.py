@@ -222,8 +222,9 @@ def test_warm_extension_uses_real_ninjax_optimizer_names(tmp_path):
     state = dict(params=params,counters=dict(updates=2,batches=2,actions=0),policy_params=None,
                  pending_sync=None,pending_outs=None,pending_mets=None)
     (node/'agent.pkl').write_bytes(pickle.dumps(state))
+    (node/'step.pkl').write_bytes(pickle.dumps(2))
     (node/'manifest.json').write_text(json.dumps(dict(schema=1,protocol='FG_FULL_V1',step=2,identity={},
-        files={'agent.pkl':file_hash(node/'agent.pkl')})))
+        files={'agent.pkl':file_hash(node/'agent.pkl'),'step.pkl':file_hash(node/'step.pkl')})))
     (node/'done').touch()
     spec = signed(dict(protocol=PROTOCOL,kind='warm_start',origin=dict(path=str(node),
         manifest_sha256=file_hash(node/'manifest.json'),step=2),agent_extension=b2_extensions({})))
