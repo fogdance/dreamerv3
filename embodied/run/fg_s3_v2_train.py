@@ -112,7 +112,7 @@ class LiveRun:
             query, env = load_pool(s, self.prepared)
         if query.identity_hash != preparation['oracle_identity']:
             raise ValueError('Prepared Oracle identity changed')
-        self.offset = int(spec['origin']['step'])
+        self.offset = int(spec.get('target_update_offset', spec['origin']['step']))
         frozen_model = read_manifest(self.prepared/'model_config.json')
         cfg = self.config = elements.Config(frozen_model['config'])
         extensions = agent_extensions(s)

@@ -197,12 +197,29 @@ def _verify_code(name, expected, actual):
     raise ValueError('Source producer bytes unavailable: '+name)
 
 
-def verify_producer_code(mapping):
+def verify_producer_code(mapping, *, warm_start=False):
     root = Path(__file__).resolve().parents[2]
     result = {}
+    semantic_files = {'dreamerv3/agent.py', 'gym_trading_env/envs/entry_env.py',
+        'gym_trading_env/rewards/single3_reward.py',
+        'gym_trading_env/research/fg_reward_candidates.py'}
     for name, expected in mapping.items():
         path = root.parent/'gym-trading-env'/'src'/name if name.startswith('gym_trading_env/') else root/name
-        result[name] = _verify_code(name, expected, file_hash(path))
+        if warm_start and name in semantic_files and file_hash(path) != expected:
+            # A parameter warm-start deliberately changes reward/discount semantics.
+            # Authenticate the actual producer bytes; apply_and_audit_transfer
+            # separately requires identical NN keys, shapes, dtypes and values.
+            repo = root.parent/'gym-trading-env' if name.startswith('gym_trading_env/') else root
+            rel = 'src/'+name if name.startswith('gym_trading_env/') else name
+            revisions = subprocess.check_output(['git','rev-list','--all','--',rel], cwd=repo, text=True).split()
+            found = next((rev for rev in revisions if hashlib.sha256(
+                subprocess.check_output(['git','show',rev+':'+rel],cwd=repo)).hexdigest() == expected), None)
+            if found is None:
+                raise ValueError('Warm-start producer bytes unavailable: '+name)
+            result[name] = dict(source_sha256=expected, target_sha256=file_hash(path),
+                source_git=found, disposition='AUTHENTICATED_PARAMETER_WARM_START_ONLY')
+        else:
+            result[name] = _verify_code(name, expected, file_hash(path))
     return result
 
 
@@ -231,7 +248,7 @@ def _online_code(config, expected):
     raise ValueError('Online producer code map unavailable for checkpoint code_hash')
 
 
-def _online_full(path, meta, catalog):
+def _online_full(path, meta, catalog, *, warm_start=False):
     """Admit a frozen online node; environment and model counters are distinct."""
     from gym_trading_env.research.fg_replay import check_files
     from dreamerv3.configuration import read_config_yaml
@@ -269,7 +286,7 @@ def _online_full(path, meta, catalog):
             or transfer['source_step_unit'] != 'gradient_updates'
             or transfer['target_step_unit'] != 'environment_steps'):
         raise ValueError('Unsupported online phase origin')
-    base = _full(transfer['checkpoint'], catalog)
+    base = _full(transfer['checkpoint'], catalog, warm_start=warm_start)
     if (transfer['source_identity_hash'] != base['identity_hash']
             or transfer['source_steps'] != base['step']
             or config['agent'] != base['config']['agent']
@@ -279,7 +296,7 @@ def _online_full(path, meta, catalog):
     if state_digest(mapping) != runtime['code_hash']:
         raise ValueError('Online producer code provenance mismatch')
     normalized = {n.removeprefix('dreamerv3/'):h for n,h in mapping.items()}
-    code = verify_producer_code(normalized)
+    code = verify_producer_code(normalized, warm_start=warm_start)
     verify_dependency_versions(runtime['versions'])
     counts = read_manifest(root / 'agent_counters.json')['counters']
     if (set(counts) != {'updates','batches','actions'}
@@ -307,11 +324,11 @@ def _online_full(path, meta, catalog):
         {str(root/'source_snapshot.json'):file_hash(root/'source_snapshot.json')})
 
 
-def _full(path, catalog):
+def _full(path, catalog, *, warm_start=False):
     path = Path(path).resolve()
     meta = validate_bundle(path)
     if meta['identity'].get('schema') == 1 and 'code_hash' in meta['identity']:
-        return _online_full(path, meta, catalog)
+        return _online_full(path, meta, catalog, warm_start=warm_start)
     parent = path.parent.parent
     diagnostic = (parent/'s3a_diagnostic_identity.json').exists()
     frozen = False
@@ -335,14 +352,26 @@ def _full(path, catalog):
         raise ValueError('Source identity signature mismatch')
     if meta['identity']['protocol'] not in ('FG_SINGLE3_OFFLINE_V1', 'FG_S3A_DIAGNOSTIC_SOURCE_V1'):
         raise ValueError('Unsupported base source identity protocol')
-    _match_training(identity, catalog)
     from dreamerv3.configuration import read_config_yaml
     config = read_config_yaml(path/'config.yaml')
+    if warm_start:
+        dataset = Path(config['fg_single3_offline']['dataset'])/'manifest.json'
+        old = read_manifest(dataset)
+        from gym_trading_env.envs.entry_contract import read_yaml
+        entry = read_manifest(config['fg_entry']['manifest'])
+        reward = read_yaml(entry['direction_path'])['reward']
+        if (file_hash(dataset) != identity['dataset_sha256'] or old['status'] != 'PASS'
+                or old['identity']['original_training_hash'] != catalog.manifest['source']['training_hash']
+                or fingerprint(reward) != identity['reward_params_hash']
+                or identity['candidate'] != 'C1' or identity['pool'] != 'C1_natural_oracle'):
+            raise ValueError('Warm-start original TRAIN/Reward evidence differs')
+    else:
+        _match_training(identity, catalog)
     if (config['agent'] != identity['agent_config'] or plain(learning_spec(config)) != identity['learning']
             or config['agent']['horizon'] != 333 or not config['agent']['contdisc']):
         raise ValueError('Source model/learning config differs from signed identity')
     verify_dependency_versions(identity['packages'])
-    code = verify_producer_code(identity['code_sha256'])
+    code = verify_producer_code(identity['code_sha256'], warm_start=warm_start)
     return dict(path=str(path), manifest_sha256=file_hash(path/'manifest.json'),
                 identity=identity, identity_hash=tag['identity_hash'], config=config,
                 step=meta['step'], diagnostic=diagnostic, producer_code=code)
@@ -354,7 +383,7 @@ def inspect_source(kind, *, catalog, path=None, seed=None, config=None,
         raise ValueError('diagnostic must be an explicit boolean')
     if kind == 'resume_s3c':
         raise ValueError('Resume must use the same run FullCheckpoint, not source transfer')
-    if kind not in ('direct_init', 'direct_full', 'after_bc_s3a'):
+    if kind not in ('direct_init', 'direct_full', 'after_bc_s3a', 'warm_start'):
         raise ValueError('NOT_SUPPORTED: '+str(kind))
     if kind == 'direct_init':
         if path is not None or seed is None or config is None:
@@ -364,10 +393,10 @@ def inspect_source(kind, *, catalog, path=None, seed=None, config=None,
             raise ValueError('Initialization seed/Reward horizon differs')
         origin = dict(config=cfg, step=0,
                       diagnostic=bool(catalog.manifest['diagnostic'] or diagnostic))
-    elif kind == 'direct_full':
+    elif kind in ('direct_full', 'warm_start'):
         if path is None:
             raise ValueError('direct_full requires a source checkpoint')
-        origin = _full(path, catalog)
+        origin = _full(path, catalog, warm_start=kind == 'warm_start')
     else:
         if path is None:
             raise ValueError('after_bc_s3a requires an atomic S3-A package')
@@ -434,7 +463,12 @@ def inspect_source(kind, *, catalog, path=None, seed=None, config=None,
         source_opening = inherited['gate_policy']['opening']
     source_policy = gate_policy(origin['config'], diagnostic=origin['diagnostic'],
                                 source_opening=source_opening, protocol=gate_protocol)
-    cfg = target_config(origin['config'], plain(config) if config is not None else None)
+    source_config = plain(origin['config'])
+    if kind == 'warm_start':
+        source_config['agent']['s3_clock_protocol'] = 'S3_MARKET_MINUTE'
+    cfg = target_config(source_config, plain(config) if config is not None else None)
+    if cfg['agent'].get('s3_clock_protocol') != 'S3_MARKET_MINUTE':
+        raise ValueError('New S3 admission requires explicit S3_MARKET_MINUTE model semantics')
     policy = gate_policy(cfg, diagnostic=origin['diagnostic'], source_opening=source_opening,
                          protocol=gate_protocol)
     fields = dict(protocol=PROTOCOL, kind=kind, origin=origin,
@@ -443,7 +477,9 @@ def inspect_source(kind, *, catalog, path=None, seed=None, config=None,
         dataset_sha256=catalog.manifest['source']['dataset_sha256'],
         reward_params_hash=catalog.manifest['source']['reward_params_hash'],
         observation_identity=catalog.manifest['observation_identity'],
-        optimizer_transfer_policy='retain_base_joint_opt' if kind == 'after_bc_s3a' else 'original_direct',
+        optimizer_transfer_policy=('reset_for_market_minute' if kind == 'warm_start' else
+            'retain_base_joint_opt' if kind == 'after_bc_s3a' else 'original_direct'),
+        clock_protocol='S3_MARKET_MINUTE', target_update_offset=0 if kind == 'warm_start' else origin['step'],
         code_sha256=file_hash(__file__), packages=runtime_versions())
     initial = signed(fields)
     state = prepare_transfer(initial)
@@ -456,6 +492,9 @@ def inspect_source(kind, *, catalog, path=None, seed=None, config=None,
     if not control['complete'] and not origin['diagnostic']:
         raise ValueError('Formal source lacks Gate controller/window state')
     _, gate_transfer = transfer_policy(source_policy, policy, control, enabled)
+    if kind == 'warm_start':
+        gate_transfer.update(reset_required=True, reset_reason='new_market_minute_run',
+            new_gate_state=dict(actor_enabled=False, gate=None, samples=0), new_window_present=False)
     model_identity = dict(protocol='FG_S3_ADMITTED_MODEL_V1', kind=kind,
         source_manifest_sha256=origin.get('manifest_sha256'),
         source_identity_hash=origin.get('identity_hash'),
@@ -515,7 +554,7 @@ def prepare_transfer(spec, target_schema=None):
     path = Path(origin['path'])
     if file_hash(path/'manifest.json') != origin['manifest_sha256']:
         raise ValueError('Source changed after admission')
-    if spec['kind'] == 'direct_full':
+    if spec['kind'] in ('direct_full', 'warm_start'):
         validate_bundle(path)
         state = pickle.loads((path/'agent.pkl').read_bytes())
     else:
@@ -627,6 +666,9 @@ def transfer_control_state(spec):
     """Apply the admitted new-run policy; exact resume never calls this boundary."""
     from embodied.run.fg_s3_gate import transfer_policy
     state = _source_control_state(spec)
+    if spec['kind'] == 'warm_start':
+        return dict(complete=True, new_experiment=True, gate=None, aggregate={}, samples=0,
+                    opening=spec['gate_policy']['opening'])
     enabled = spec['gate_transfer']['original_gate_state']['actor_enabled']
     control, proof = transfer_policy(spec['source_gate_policy'], spec['gate_policy'], state, enabled)
     if proof != spec['gate_transfer']:

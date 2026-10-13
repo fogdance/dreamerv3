@@ -68,6 +68,11 @@ class Agent(embodied.jax.Agent):
     self.obs_space = obs_space
     self.act_space = act_space
     self.config = config
+    clock = config.get('s3_clock_protocol', '')
+    if clock not in ('', 'S3_MARKET_MINUTE'):
+      raise ValueError('Unknown S3 model time protocol')
+    if clock and (not config.contdisc or config.horizon != 333):
+      raise ValueError('S3 market clock requires continuation-discounted H333')
     validate_availability_threshold(config.avail_threshold)
     mode = config.get('replay_context_mode', 'stored')
     if mode not in ('stored', 'recompute_prefix'):
@@ -149,6 +154,8 @@ class Agent(embodied.jax.Agent):
     spaces = {}
     spaces['consec'] = elements.Space(np.int32)
     spaces['stepid'] = elements.Space(np.uint8, 20)
+    if self.config.get('s3_clock_protocol', ''):
+      spaces['market_advance'] = elements.Space(np.int32)
     if self.config.replay_context and self.config.get('replay_context_mode', 'stored') == 'stored':
       spaces.update(elements.tree.flatdict(dict(
           enc=self.enc.entry_space,
@@ -242,7 +249,7 @@ class Agent(embodied.jax.Agent):
     losses['rew'] = self.rew(inp, 2).loss(obs['reward'])
     con = f32(~obs['is_terminal'])
     if self.config.contdisc:
-      con *= 1 - 1 / self.config.horizon
+      con *= self._feedback_discount(obs)
     losses['con'] = self.con(self.feat2tensor(repfeat), 2).loss(con)
     avail_target = obs['action_mask'] > 0.5
     postinp = sg(
@@ -335,6 +342,7 @@ class Agent(embodied.jax.Agent):
           self.valnorm,
           update=training,
           horizon=self.config.horizon,
+          discount=self._feedback_discount(obs)[:, -K:] if self.config.get('s3_clock_protocol', '') else None,
           **self.config.repl_loss)
       los['repval'] *= sg(avail_ready)
       losses.update(los)
@@ -476,6 +484,8 @@ class Agent(embodied.jax.Agent):
     carry = (enc_carry, dyn_carry, dec_carry)
     stepid = data['stepid']
     obs = {k: data[k] for k in self.obs_space}
+    if self.config.get('s3_clock_protocol', ''):
+      obs['market_advance'] = data['market_advance']
     prepend = lambda x, y: jnp.concatenate([x[:, None], y[:, :-1]], 1)
     prevact = {k: prepend(prevact[k], data[k]) for k in self.act_space}
     if not self.config.replay_context:
@@ -511,6 +521,8 @@ class Agent(embodied.jax.Agent):
         self.dyn.truncate(lhs(entries[1]), dyn_carry),
         self.dec.truncate(lhs(entries[2]), dec_carry))
     rep_obs = {k: rhs(data[k]) for k in self.obs_space}
+    if self.config.get('s3_clock_protocol', ''):
+      rep_obs['market_advance'] = rhs(data['market_advance'])
     rep_prevact = {k: data[k][:, K - 1: -1] for k in self.act_space}
     rep_stepid = rhs(stepid)
 
@@ -520,6 +532,15 @@ class Agent(embodied.jax.Agent):
         (carry, rhs(obs), rhs(prevact), rhs(stepid)),
         (rep_carry, rep_obs, rep_prevact, rep_stepid))
     return carry, obs, prevact, stepid
+
+  def _feedback_discount(self, obs):
+    gamma = 1 - 1 / self.config.horizon
+    if self.config.get('s3_clock_protocol', ''):
+      delta = obs['market_advance']
+      if delta.shape != obs['reward'].shape or delta.dtype != jnp.int32:
+        raise ValueError('S3 market advance must align with Replay reward')
+      return jnp.float32(gamma) ** delta
+    return gamma
 
   def _make_opt(
       self,
@@ -636,6 +657,7 @@ def repl_loss(
     slowtar=True,
     horizon=333,
     lam=0.95,
+    discount=None,
 ):
   losses = {}
 
@@ -643,7 +665,7 @@ def repl_loss(
   val = value.pred() * vscale + voffset
   slowval = slowvalue.pred() * vscale + voffset
   tarval = slowval if slowtar else val
-  disc = 1 - 1 / horizon
+  disc = 1 - 1 / horizon if discount is None else discount
   weight = f32(~last)
   ret = lambda_return(last, term, rew, tarval, boot, disc, lam)
 
@@ -664,6 +686,9 @@ def repl_loss(
 def lambda_return(last, term, rew, val, boot, disc, lam):
   chex.assert_equal_shape((last, term, rew, val, boot))
   rets = [boot[:, -1]]
+  if hasattr(disc, 'shape') and disc.ndim:
+    chex.assert_equal_shape((disc, rew))
+    disc = disc[:, 1:]
   live = (1 - f32(term))[:, 1:] * disc
   cont = (1 - f32(last))[:, 1:] * lam
   interm = rew[:, 1:] + (1 - cont) * live * boot[:, 1:]

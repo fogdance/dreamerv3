@@ -52,6 +52,7 @@ def attach_teacher(batch, catalog, *, mode, sampling_flags=False):
                 continue
             # Check every P4 row, even excluded rows, before applying sentinel.
             pairs = [('action', 'replay_action'), ('action_mask', 'mask'),
+                     ('market_advance', 'market_advance'),
                      ('position_state', 'position_state'), ('is_first', 'is_first'),
                      ('is_last', 'is_last'), ('is_terminal', 'is_terminal')]
             for name, field in pairs:

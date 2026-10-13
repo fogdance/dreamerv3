@@ -45,6 +45,8 @@ def apply_and_audit_transfer(agent, spec):
         raise ValueError('Target model threshold differs from SourceAdmission')
     schema = {k:(v.shape,str(v.dtype)) for k,v in agent.params.items()}
     state = prepare_transfer(spec, schema)
+    if spec['kind'] == 'warm_start':
+        return _apply_parameter_warm_start(agent, spec, state)
     if state is None:
         if int(agent.n_updates) or int(agent.n_batches) or int(agent.n_actions):
             raise ValueError('direct_init target is not fresh')
@@ -115,3 +117,43 @@ def apply_and_audit_transfer(agent, spec):
         discarded_pending_mets=state['pending_mets'] is not None,
         policy_initialized_from_train=initialized_policy,
         policy_synchronized=True, independent_bc_optimizer_imported=False))
+
+
+def _apply_parameter_warm_start(agent, spec, source):
+    """New economic semantics: copy only authenticated NN weights into fresh state."""
+    groups = ('enc/', 'dyn/', 'dec/', 'rew/', 'con/', 'avail/', 'pol/', 'val/')
+    fresh = agent.save_exact()
+    if any(fresh['counters'].values()):
+        raise ValueError('Parameter warm-start requires a fresh target Agent')
+    initialized = parameter_digests(fresh['params'])
+    keys = {k for k in fresh['params'] if k.startswith(groups)}
+    if keys != {k for k in source['params'] if k.startswith(groups)} or any(
+            not any(k.startswith(prefix) for k in keys) for prefix in groups):
+        raise ValueError('Warm-start network parameter groups differ')
+    fresh['params'].update({k: source['params'][k] for k in keys})
+    # The new target tracks its copied Critic from its first update.
+    slow = {k for k in fresh['params'] if k.startswith('slowval/')}
+    fresh['params'].update({k: fresh['params']['val/'+k[len('slowval/'):]] for k in slow})
+    fresh['policy_params'] = {k:fresh['params'][k] for k in agent.policy_keys}
+    fresh.update(pending_sync=None, pending_outs=None, pending_mets=None)
+    agent.load_exact(fresh, transfer=True)
+    agent.sync_policy_from_train()
+    after = parameter_digests(agent.params)
+    copied = parameter_digests({k:source['params'][k] for k in keys})
+    if any(after[k] != v for k,v in copied.items()):
+        raise RuntimeError('Warm-start altered inherited NN parameter bytes')
+    if any(after[k] != initialized[k] for k in after if k not in keys | slow):
+        raise RuntimeError('Warm-start changed fresh optimizer/Normalizer/Gate state')
+    saved = agent.save_exact()
+    if any(saved['counters'].values()) or agent.get_avail_actor_enabled():
+        raise RuntimeError('Warm-start inherited counters or Gate activation')
+    return signed(dict(status='PASS_REAL_PARAMETER_WARM_START', kind='warm_start',
+        devices=[str(d) for d in jax.devices()], source_admission_sha256=spec['content_hash'],
+        clock_protocol=spec['clock_protocol'], optimizer_transfer_policy=spec['optimizer_transfer_policy'],
+        source_model_updates=spec['origin']['step'],
+        source_environment_steps=spec['origin'].get('environment_steps'), source_update_offset=0,
+        network_parameter_keys=sorted(keys), inherited_nn_digests=copied,
+        fresh_state_digests={k:after[k] for k in after if k not in keys | slow},
+        params_before=initialized, params_after=after, counters=saved['counters'],
+        slow_critic_initialized_from_critic=True, policy_synchronized=True,
+        independent_bc_optimizer_imported=False))

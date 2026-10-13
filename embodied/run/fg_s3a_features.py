@@ -9,7 +9,7 @@ from embodied.run.fg_checkpoint import file_hash
 from embodied.run.fg_s3a_checkpoint import code_identity,package_versions
 from dreamerv3.fg_s3a_actor import parameter_digests
 from gym_trading_env.envs.entry_contract import fingerprint
-from gym_trading_env.research.fg_replay import (FIELDS, check_files, iter_replay_rows,
+from gym_trading_env.research.fg_replay import (FIELDS, S3_FIELDS, check_files, iter_replay_rows,
                                                read_manifest, signed, write_json)
 from gym_trading_env.research.fg_s3a_labels import INDEX_DTYPE, load_labels
 
@@ -17,7 +17,7 @@ PROTOCOL='FG_S3A_FEATURES_V1'
 
 
 def teacher_step(agent,carry,step):
-    if set(step)!=set(FIELDS)|{'stepid'} or set(agent.obs_space)!=set(FIELDS)-{'action'}:
+    if set(step)!=set(S3_FIELDS)|{'stepid'} or set(agent.obs_space)!=set(FIELDS)-{'action'}:
         raise ValueError('Only the original causal Replay observation schema may enter Encoder')
     obs={k:np.asarray(step[k])[None] for k in agent.obs_space}
     carry,_,out=agent.policy(carry,obs,mode='eval')
