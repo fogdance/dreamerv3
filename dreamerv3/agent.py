@@ -187,13 +187,11 @@ class Agent(embodied.jax.Agent):
     dec_entry = {}
     if dec_carry:
       dec_carry, dec_entry, recons = self.dec(dec_carry, feat, reset, **kw)
-    policy = self._masked_policy(
-        self.pol(self.feat2tensor(feat), bdims=1), obs['action_mask'],
-        allow_fallback=False)
+    policy, diagnostics = self.policy_distribution(feat, obs['action_mask'], bdims=1)
     act = (
         jax.tree.map(lambda x: x.pred(), policy)
         if mode == 'eval' else sample(policy))
-    out = {}
+    out = dict(diagnostics)
     if self.config.get('update_diagnostics', False):
       out['p_add'] = policy[self.action_key].prob(jnp.ones(reset.shape, i32))
     out['finite'] = elements.tree.flatdict(jax.tree.map(
@@ -413,6 +411,10 @@ class Agent(embodied.jax.Agent):
         dist.logits, mask > 0.5, unimix=self.config.policy.unimix,
         allow_fallback=allow_fallback)
     return {self.action_key: masked}
+
+  def policy_distribution(self, repfeat, mask, bdims):
+    return self._masked_policy(
+        self.pol(self.feat2tensor(repfeat), bdims), mask, allow_fallback=False), {}
 
   def report(self, carry, data):
     if not self.config.report:

@@ -48,6 +48,9 @@ class Counters:
         if mode == 'tutor':
             self.state.update(tutor_valid_update_count=0, pair_update_count=0,
                               pairable_batches=0, pair_count=0)
+        if mode == 'b2':
+            self.state.update(outcome_event_updates=0, outcome_early_updates=0,
+                              outcome_head_updates=0, adapter_updates=0)
 
     def save(self):
         return copy.deepcopy(self.state)
@@ -106,7 +109,8 @@ class LiveRun:
         else:
             root.mkdir(parents=True, exist_ok=False)
         if s['contracts'] is None:
-            query, env, _, _, _ = load_train_query(s['env_receipt'], s['oracle_receipt'], s['contract'])
+            query, env, _, _, candidates = load_train_query(s['env_receipt'], s['oracle_receipt'], s['contract'],
+                receipt_scope=s.get('oracle_receipt_scope', 'aggregate'))
         else:
             from gym_trading_env.research.fg_s3_v2_train_pool import load_pool
             query, env = load_pool(s, self.prepared)
@@ -116,8 +120,8 @@ class LiveRun:
         frozen_model = read_manifest(self.prepared/'model_config.json')
         cfg = self.config = elements.Config(frozen_model['config'])
         extensions = agent_extensions(s)
-        if s['mode'] == 'tutor' and frozen_model['agent_extension'] != extensions:
-            raise ValueError('Frozen Tutor model configuration differs from settings')
+        if s['mode'] in ('tutor', 'b2') and frozen_model['agent_extension'] != extensions:
+            raise ValueError('Frozen extended model configuration differs from settings')
         self.agent = agent = make_agent(plain(cfg), root/'model', device='gpu',
             agent_cls=S3V2Agent, bc_lambda=s['bc_lambda'], extra_agent_config=extensions)
         if not all(d.platform == 'gpu' for d in jax.devices()):
@@ -128,11 +132,17 @@ class LiveRun:
             control = transfer_control_state(spec)
         else:
             control = dict(gate=None, aggregate=None, samples=0)
+        outcome_catalog = None
+        if s['mode'] == 'b2':
+            from gym_trading_env.research.fg_s3_b2_outcome_catalog import OutcomeCatalog
+            outcome_catalog = OutcomeCatalog(query, env, candidates)
+            if read_manifest(self.prepared/'outcome_catalog.json')['identity_hash'] != outcome_catalog.identity_hash:
+                raise ValueError('Prepared OutcomeCatalog identity changed')
         self.collector = collector = V2Collector(env, query, root/'rollout', s['dreamer_root'],
             seed=s['replay_seed'], beta=s['beta'], actor=lambda c, o: agent.policy(c, o, mode='train'),
             agent=agent, source_checkpoint_identity=spec['target_model_identity_hash'], existing=resume,
             replay_capacity=s['replay_capacity'], max_env_steps=s['env_steps'],
-            beta_schedule=s['beta_schedule'])
+            beta_schedule=s['beta_schedule'], outcome_catalog=outcome_catalog)
         self.gate = make_gate_controller(plain(cfg), spec['gate_policy'], control,
                                         agent.get_avail_actor_enabled())
         source = embodied.streams.Consec(embodied.streams.Stateless(partial(collector.sample, cfg.batch_size)),
@@ -168,8 +178,10 @@ class LiveRun:
                 seed=cfg.seed, mix_replay_seed=s['replay_seed'], beta=s['beta'],
                 beta_schedule=s['beta_schedule'], bc_lambda=s['bc_lambda'],
                 versions=preparation['versions'], diagnostic=s['scope'] == 'diagnostic')
-            if s['mode'] == 'tutor':
+            if s['mode'] in ('tutor', 'b2'):
                 identity['agent_extension'] = extensions
+            if s['mode'] == 'b2':
+                identity['outcome_identity'] = outcome_catalog.identity
             write_json(root/'run_identity.json', signed(dict(identity=identity)))
         else:
             identity = saved
@@ -192,6 +204,8 @@ class LiveRun:
                     or int(self.step) != collector.counts['env_steps']
                     or agent.get_avail_actor_enabled() != self.gate.actor_enabled):
                 raise ValueError('Restored environment/update/Gate counters differ')
+            if s['mode'] == 'b2' and int(host(agent.params['b2_schedule/updates/value'])) != self.counters.state['all_updates']:
+                raise ValueError('Restored B2 mix update counter differs')
             reconcile_update_log(root, self.counters.state['all_updates'], self.offset)
             reconcile_cycles(root, self.counters.state['cycles'], int(self.step), int(agent.n_updates))
         else:
@@ -229,6 +243,13 @@ class LiveRun:
             c['pair_update_count'] += int(bool(mets['tutor/pair_active']))
             c['pairable_batches'] += int(bool(mets['tutor/pairable_batch']))
             c['pair_count'] += int(mets['tutor/pair_count'])
+        if self.settings['mode'] == 'b2':
+            c['outcome_event_updates'] += int(bool(mets['b2/event_valid_count']) and self.settings['b2_event_lambda'] > 0)
+            c['outcome_early_updates'] += int(bool(mets['b2/early_valid_count']) and self.settings['b2_early_lambda'] > 0)
+            c['outcome_head_updates'] += int(bool(mets['opt/outcome_head_changed']))
+            c['adapter_updates'] += int(bool(mets['opt/adapter_changed']))
+            if int(host(self.agent.params['b2_schedule/updates/value'])) != c['all_updates']:
+                raise ValueError('B2 schedule is not aligned with completed joint updates')
         if int(self.agent.n_updates) != self.offset + c['all_updates']:
             raise ValueError('V2 source/local update counter drift')
         agg = self.aggregates['gate']
@@ -251,6 +272,11 @@ class LiveRun:
                      if np.asarray(v).size == 1 and np.isfinite(v).all()})
         positives = float(mets.get('bc/tp', 0)) + float(mets.get('bc/fn', 0))
         row['oracle_add_recall'] = float(mets['bc/tp'])/positives if positives else None
+        if self.settings['mode'] == 'b2':
+            from dreamerv3.fg_s3_b2_outcome import EVENTS
+            for name in EVENTS:
+                if not bool(mets['b2/count_'+name]):
+                    row['metrics']['b2/recall_'+name] = None
         if self.settings['mode'] == 'tutor':
             measured = bool(mets['tutor/scores_evaluated'])
             if not measured:
@@ -380,6 +406,13 @@ class LiveRun:
                 tutor_valid_update_count=c['tutor_valid_update_count'],
                 pair_count=c['pair_count'], critic_rl_frozen=True,
                 classification_tp_meaning='Oracle label true positive; not a TP5 trade')
+            result = signed({k: v for k, v in result.items() if k != 'content_hash'})
+        if s['mode'] == 'b2':
+            result['b2'] = dict(agent_extension=agent_extensions(s),
+                outcome_identity=self.collector.outcome_catalog.identity_hash,
+                mix_updates=int(host(self.agent.params['b2_schedule/updates/value'])),
+                mix_event_updates=int(host(self.agent.params['b2_schedule/event_updates/value'])),
+                critic_rl_frozen=True, calibration_scope='sampled TRAIN supervision; not held-out quality')
             result = signed({k: v for k, v in result.items() if k != 'content_hash'})
         write_json(self.root/'training_receipt.json', result)
         return result

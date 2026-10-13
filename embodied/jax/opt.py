@@ -84,9 +84,13 @@ class Optimizer(nj.Module):
           jnp.isfinite(x).all() for x in jax.tree.leaves(xs)]).all()
       metrics['finite'] = (jnp.isfinite(loss) & finite(grads)
           & finite(updates) & finite(new_params) & finite(new_state))
-      for label, prefixes in (
+      groups = [
           ('actor', ('pol/',)), ('critic', ('val/',)),
-          ('reward', ('rew/',)), ('wm', ('enc/', 'dyn/', 'dec/'))):
+          ('reward', ('rew/',)), ('wm', ('enc/', 'dyn/', 'dec/'))]
+      if any(k.startswith('b2_event/') for k in params):
+        groups += [('outcome_head', ('b2_event/', 'b2_early/')),
+                   ('adapter', ('b2_adapter/',)), ('rssm', ('dyn/',)), ('encoder', ('enc/',))]
+      for label, prefixes in groups:
         keys = [k for k in params if k.startswith(prefixes)]
         if not keys:
           raise ValueError(f'No parameters found for diagnostic group {label}')

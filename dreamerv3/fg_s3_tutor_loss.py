@@ -12,8 +12,11 @@ DEFAULTS = dict(tutor_alpha=.8, tutor_pair_lambda=.1, tutor_pair_tau=1.,
 def agent_extensions(settings):
     """Shared frozen configuration for training, exact restore and evaluation."""
     mode = settings['mode']
-    if mode not in ('a2', 'c2', 'tutor'):
+    if mode not in ('a2', 'c2', 'tutor', 'b2'):
         raise ValueError('Unknown S3-V2 mode')
+    if mode == 'b2':
+        from .fg_s3_b2_outcome import b2_extensions
+        return b2_extensions(settings)
     result = {'s3_v2_mode': mode}
     if mode != 'tutor':
         return result
