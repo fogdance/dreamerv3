@@ -200,7 +200,7 @@ def _verify_code(name, expected, actual):
 def verify_producer_code(mapping, *, warm_start=False):
     root = Path(__file__).resolve().parents[2]
     result = {}
-    semantic_files = {'dreamerv3/agent.py', 'gym_trading_env/envs/entry_env.py',
+    semantic_files = {'dreamerv3/agent.py', 'embodied/jax/opt.py', 'gym_trading_env/envs/entry_env.py',
         'gym_trading_env/rewards/single3_reward.py',
         'gym_trading_env/research/fg_reward_candidates.py'}
     for name, expected in mapping.items():
@@ -377,8 +377,49 @@ def _full(path, catalog, *, warm_start=False):
                 step=meta['step'], diagnostic=diagnostic, producer_code=code)
 
 
-def inspect_source(kind, *, catalog, path=None, seed=None, config=None,
-                   base_checkpoint=None, features=None, diagnostic=False, gate_protocol=None):
+class LiveOracleTraining:
+    """Shared authenticated TRAIN binding without an offline Replay catalog.
+
+    Constructed from the common checked loader, not a replacement Oracle or
+    an invented historical dataset identity. Supported only for diagnostic
+    parameter warm-start; exact resume stays with the original FullCheckpoint.
+    """
+    def __init__(self, query, env):
+        from gym_trading_env.research.fg_s3_oracle_state_query import OracleStateQuery, rules_identity
+        from gym_trading_env.research.fg_replay import check_files
+        if (not isinstance(query, OracleStateQuery) or query.identity['fold'] != 'TRAIN'
+                or query.identity['clock_protocol'] != 'S3_MARKET_MINUTE'
+                or query.rules != rules_identity(env)):
+            raise ValueError('Live source requires the authenticated market-minute TRAIN query')
+        source = query.identity['source']
+        check_files(source['receipt_files'])
+        check_files(source['candidate_files'])
+        self.binding = signed(dict(protocol='FG_S3_LIVE_ORACLE_TRAIN_BINDING_V1',
+            query_identity=query.identity, query_identity_hash=query.identity_hash,
+            clock_protocol='S3_MARKET_MINUTE', diagnostic=True,
+            source=dict(training_hash=source['training_hash'], dataset_sha256=None,
+                        reward_params_hash=env.reward_config.hash),
+            observation_identity=env.observation_identity))
+        self.manifest = dict(self.binding)
+        self.manifest_sha256 = None  # No historical catalog is being claimed.
+
+
+def inspect_source(kind, *, catalog=None, live_oracle=None, path=None, seed=None, config=None,
+                   base_checkpoint=None, features=None, diagnostic=False, gate_protocol=None,
+                   agent_extension=None):
+    if (catalog is None) == (live_oracle is None):
+        raise ValueError('Source requires exactly one catalog or authenticated live TRAIN binding')
+    if live_oracle is not None:
+        if not isinstance(live_oracle, LiveOracleTraining) or kind != 'warm_start' or not diagnostic:
+            raise ValueError('Live TRAIN binding supports only explicit diagnostic parameter warm-start')
+        from gym_trading_env.research.fg_replay import check_files
+        check_files(live_oracle.binding['query_identity']['source']['receipt_files'])
+        check_files(live_oracle.binding['query_identity']['source']['candidate_files'])
+        catalog = live_oracle
+    if agent_extension is not None:
+        from dreamerv3.fg_s3_b2_outcome import b2_extensions
+        if kind != 'warm_start' or agent_extension != b2_extensions(agent_extension):
+            raise ValueError('Architecture extension requires the frozen B2 parameter warm-start contract')
     if type(diagnostic) is not bool:
         raise ValueError('diagnostic must be an explicit boolean')
     if kind == 'resume_s3c':
@@ -481,6 +522,10 @@ def inspect_source(kind, *, catalog, path=None, seed=None, config=None,
             'retain_base_joint_opt' if kind == 'after_bc_s3a' else 'original_direct'),
         clock_protocol='S3_MARKET_MINUTE', target_update_offset=0 if kind == 'warm_start' else origin['step'],
         code_sha256=file_hash(__file__), packages=runtime_versions())
+    if live_oracle is not None:
+        fields.update(teacher_source_kind='live_oracle', live_training_binding=live_oracle.binding)
+    if agent_extension is not None:
+        fields['agent_extension'] = agent_extension
     initial = signed(fields)
     state = prepare_transfer(initial)
     if state is not None:
@@ -502,6 +547,14 @@ def inspect_source(kind, *, catalog, path=None, seed=None, config=None,
         agent_config=cfg['agent'],gate_policy=policy,gate_transfer=gate_transfer,
         admission_code_sha256=file_hash(__file__),
         gate_code_sha256=file_hash(Path(__file__).with_name('fg_s3_gate.py')))
+    if agent_extension is not None:
+        model_identity['agent_extension'] = agent_extension
+    if kind == 'warm_start':
+        model_identity['target_training'] = dict(
+            reward_params_hash=fields['reward_params_hash'], observation_identity=fields['observation_identity'],
+            training_hash=catalog.manifest['source']['training_hash'], clock_protocol=fields['clock_protocol'])
+        if live_oracle is not None:
+            model_identity['target_training']['live_binding_hash'] = live_oracle.binding['content_hash']
     return signed(dict(fields, gate_transfer=gate_transfer,target_model_identity=model_identity,
                        target_model_identity_hash=fingerprint(model_identity)))
 
@@ -576,7 +629,17 @@ def prepare_transfer(spec, target_schema=None):
             raise ValueError('Source parameter evidence changed after admission')
     if target_schema is not None:
         actual = {k:(v.shape,str(v.dtype)) for k,v in state['params'].items()}
-        if actual != target_schema:
+        extension = spec.get('agent_extension')
+        if spec['kind'] == 'warm_start' and extension is not None:
+            prefixes = ('b2_event/', 'b2_early/', 'b2_adapter/', 'b2_schedule/')
+            extras = set(target_schema) - set(actual)
+            allowed = lambda k: k.startswith(prefixes) or (
+                k.startswith('opt/state/') and any('/'+p in k for p in prefixes))
+            if (set(actual) - set(target_schema) or any(actual[k] != target_schema[k] for k in actual)
+                    or any(not allowed(k) for k in extras)
+                    or not all(any(k.startswith(p) for k in extras) for p in prefixes)):
+                raise ValueError('B2 extension changed original parameter schema or added foreign state')
+        elif actual != target_schema:
             raise ValueError('Source parameter keys/dtypes/shapes differ from target')
     if spec.get('gate_transfer', {}).get('reset_required'):
         state = dict(state, params=dict(state['params']))

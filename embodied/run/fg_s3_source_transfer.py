@@ -43,6 +43,9 @@ def apply_and_audit_transfer(agent, spec):
         raise ValueError('Target model network/optimizer/loss config differs from SourceAdmission')
     if agent.config.avail_threshold != spec['gate_policy']['classification_threshold']:
         raise ValueError('Target model threshold differs from SourceAdmission')
+    if spec.get('agent_extension') is not None and any(
+            plain(agent.config[k]) != v for k, v in spec['agent_extension'].items()):
+        raise ValueError('Target B2 extension differs from SourceAdmission')
     schema = {k:(v.shape,str(v.dtype)) for k,v in agent.params.items()}
     state = prepare_transfer(spec, schema)
     if spec['kind'] == 'warm_start':
@@ -155,5 +158,7 @@ def _apply_parameter_warm_start(agent, spec, source):
         network_parameter_keys=sorted(keys), inherited_nn_digests=copied,
         fresh_state_digests={k:after[k] for k in after if k not in keys | slow},
         params_before=initialized, params_after=after, counters=saved['counters'],
+        agent_extension=spec.get('agent_extension'),
+        fresh_extension_keys=sorted(k for k in after if k.startswith('b2_')),
         slow_critic_initialized_from_critic=True, policy_synchronized=True,
         independent_bc_optimizer_imported=False))
