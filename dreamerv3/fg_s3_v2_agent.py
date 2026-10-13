@@ -10,6 +10,7 @@ import optax
 
 from .agent import Agent
 from .fg_s3c_agent import S3CAgent
+from .fg_s3_tutor_loss import agent_extensions, eligible_teacher, pair_mask, tutor_objective
 
 
 @contextmanager
@@ -48,8 +49,12 @@ class S3V2Agent(S3CAgent):
     def __init__(self, obs_space, act_space, config):
         super().__init__(obs_space, act_space, config)
         self.mode = config.s3_v2_mode
-        if self.mode not in ('a2', 'c2'):
-            raise ValueError('S3-V2 supports A2 or C2')
+        if self.mode not in ('a2', 'c2', 'tutor'):
+            raise ValueError('S3-V2 supports A2, C2 or Tutor')
+        if self.mode == 'tutor':
+            self.tutor = agent_extensions({'mode': 'tutor', **{
+                k: config[k] for k in ('tutor_alpha', 'tutor_pair_lambda', 'tutor_pair_tau',
+                                      'tutor_hard_kappa', 'tutor_hard_wmax')}})
         if config.replay_context != 1 or config.replay_context_mode != 'recompute_prefix':
             raise ValueError('S3-V2 requires one causal recomputed prefix')
         if not np.isfinite(config.bc_lambda) or config.bc_lambda < 0:
@@ -104,11 +109,15 @@ class S3V2Agent(S3CAgent):
             base, (carry, entries, feat, metrics) = self._components(
                 carry, obs, prevact, training, rl=False)
         # Lambda zero uses the same WM/RL route without BC forward/RNG calls.
-        if self.config.bc_lambda:
+        if self.mode == 'tutor':
+            bc, extra = self.tutor_loss(feat, obs, teacher_y, teacher_valid)
+        elif self.config.bc_lambda:
             bc, extra = self.bc_loss(feat, obs['action_mask'], teacher_y, teacher_valid)
         else:
             bc, extra = jnp.float32(0), {'bc/valid_count': teacher_valid.sum()}
         total = base + jnp.float32(self.config.bc_lambda) * bc
+        if self.mode == 'tutor':
+            total += jnp.float32(self.tutor['tutor_pair_lambda']) * extra['tutor/pair_loss']
         # Ninjax requires every joint optimizer parameter to be accessed by
         # its loss. Read weights only, with an exact zero derivative; never
         # evaluate the Critic or run its normalizers/slow target for A2.
@@ -117,11 +126,30 @@ class S3V2Agent(S3CAgent):
         _ = self.pol.values, self.val.values
         active = (self.config.bc_lambda > 0) & (extra['bc/valid_count'] > 0)
         metrics.update(extra)
-        metrics.update({'bc/nll': bc, 'bc/active': jnp.float32(active),
+        metrics.update({'bc/nll': extra.get('bc/nll', bc), 'bc/active': jnp.float32(active),
             'bc/lambda': jnp.float32(self.config.bc_lambda), 'bc/total_loss': total,
             'avail/ready': jnp.float32(ready),
             'v2/rl_active': jnp.float32(ready & (self.mode == 'c2'))})
         return total, (carry, entries, {}, metrics)
+
+    def tutor_loss(self, repfeat, obs, y, valid):
+        valid = eligible_teacher(obs['action_mask'], y, valid)
+        evaluated = bool(self.config.bc_lambda or self.tutor['tutor_pair_lambda'])
+        if evaluated:
+            safe_mask = jnp.where(valid[..., None], obs['action_mask'] > .5,
+                                 jnp.array([True, False]))
+            feat = jax.lax.stop_gradient(self.feat2tensor(repfeat))
+            dist = self._masked_policy(self.pol(feat, bdims=2), safe_mask, False)[self.action_key]
+            nll, logits = -dist.logp(jnp.where(valid, y, 0)), dist.logits
+        else:
+            nll, logits = jnp.zeros_like(y, dtype=jnp.float32), jnp.zeros((*y.shape, 2))
+        bc, metrics = tutor_objective(nll, logits, y, valid, obs['is_first'],
+            alpha=self.tutor['tutor_alpha'], tau=self.tutor['tutor_pair_tau'], evaluated=evaluated)
+        metrics['tutor/pair_active'] = jnp.float32(
+            (self.tutor['tutor_pair_lambda'] > 0) & (metrics['tutor/pair_count'] > 0))
+        metrics['tutor/actor_active'] = jnp.float32(
+            ((self.config.bc_lambda > 0) & jnp.any(valid)) | (metrics['tutor/pair_active'] > 0))
+        return bc, metrics
 
     def train(self, carry, data):
         if nj.creating():
@@ -129,6 +157,11 @@ class S3V2Agent(S3CAgent):
         carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
         rl = (self.mode == 'c2') & (self.avail_actor_gate.read() > 0)
         bc = (self.config.bc_lambda > 0) & jnp.any(data['teacher_valid'][:, 1:])
+        if self.mode == 'tutor':
+            y = data['teacher_action'][:, 1:]
+            valid = eligible_teacher(obs['action_mask'], y, data['teacher_valid'][:, 1:])
+            bc = ((self.config.bc_lambda > 0) & jnp.any(valid)) | (
+                (self.tutor['tutor_pair_lambda'] > 0) & jnp.any(pair_mask(y, valid, obs['is_first'])))
         frozen_params = {k: v for k, v in nj.context().items() if k.startswith(('pol/', 'val/'))}
         with masked_joint_optimizer(self.opt, bc | rl, rl):
             metrics, (carry, _, _, extra) = self.opt(

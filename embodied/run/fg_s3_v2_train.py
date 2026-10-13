@@ -22,6 +22,7 @@ from embodied.run.fg_s3_source_admission import transfer_control_state, runtime_
 from embodied.run.fg_s3_source_transfer import make_agent, apply_and_audit_transfer
 from embodied.run.fg_s3c_train import code_identity, reconcile_update_log
 from dreamerv3.fg_s3_v2_agent import S3V2Agent
+from dreamerv3.fg_s3_tutor_loss import agent_extensions
 from dreamerv3.fg_s3a_actor import parameter_digests
 from gym_trading_env.envs.entry_contract import fingerprint
 from gym_trading_env.research.fg_replay import read_manifest, signed, write_json, check_files
@@ -40,10 +41,13 @@ def execution_code():
 
 
 class Counters:
-    def __init__(self):
+    def __init__(self, mode='a2'):
         self.state = dict(all_updates=0, wm_updates=0, bc_valid_updates=0,
             bc_add_updates=0, rl_actor_updates=0, rl_critic_updates=0,
             gate_closed_updates=0, cycles=0, sampled_transitions=0)
+        if mode == 'tutor':
+            self.state.update(tutor_valid_update_count=0, pair_update_count=0,
+                              pairable_batches=0, pair_count=0)
 
     def save(self):
         return copy.deepcopy(self.state)
@@ -109,9 +113,13 @@ class LiveRun:
         if query.identity_hash != preparation['oracle_identity']:
             raise ValueError('Prepared Oracle identity changed')
         self.offset = int(spec['origin']['step'])
-        cfg = self.config = elements.Config(read_manifest(self.prepared/'model_config.json')['config'])
+        frozen_model = read_manifest(self.prepared/'model_config.json')
+        cfg = self.config = elements.Config(frozen_model['config'])
+        extensions = agent_extensions(s)
+        if s['mode'] == 'tutor' and frozen_model['agent_extension'] != extensions:
+            raise ValueError('Frozen Tutor model configuration differs from settings')
         self.agent = agent = make_agent(plain(cfg), root/'model', device='gpu',
-            agent_cls=S3V2Agent, bc_lambda=s['bc_lambda'], extra_agent_config={'s3_v2_mode': s['mode']})
+            agent_cls=S3V2Agent, bc_lambda=s['bc_lambda'], extra_agent_config=extensions)
         if not all(d.platform == 'gpu' for d in jax.devices()):
             raise RuntimeError('V2 model did not initialize on CUDA')
         if not resume:
@@ -132,7 +140,7 @@ class LiveRun:
         self.stream = agent.stream(source)
         self.carry = dict(train=agent.init_train(cfg.batch_size), report=agent.init_report(cfg.batch_size))
         self.step = elements.Counter()
-        self.counters = Counters()
+        self.counters = Counters(s['mode'])
         self.samples = [0 if resume else control['samples']]
         self.aggregates = {'gate': elements.Agg()}
         if not resume and control.get('aggregate'):
@@ -160,6 +168,8 @@ class LiveRun:
                 seed=cfg.seed, mix_replay_seed=s['replay_seed'], beta=s['beta'],
                 beta_schedule=s['beta_schedule'], bc_lambda=s['bc_lambda'],
                 versions=preparation['versions'], diagnostic=s['scope'] == 'diagnostic')
+            if s['mode'] == 'tutor':
+                identity['agent_extension'] = extensions
             write_json(root/'run_identity.json', signed(dict(identity=identity)))
         else:
             identity = saved
@@ -214,6 +224,11 @@ class LiveRun:
         c['rl_critic_updates'] += int(bool(mets['v2/rl_active']))
         c['gate_closed_updates'] += int(not bool(mets['avail/ready']))
         c['sampled_transitions'] += int(valid.size)
+        if self.settings['mode'] == 'tutor':
+            c['tutor_valid_update_count'] += int(bool(mets['tutor/actor_active']))
+            c['pair_update_count'] += int(bool(mets['tutor/pair_active']))
+            c['pairable_batches'] += int(bool(mets['tutor/pairable_batch']))
+            c['pair_count'] += int(mets['tutor/pair_count'])
         if int(self.agent.n_updates) != self.offset + c['all_updates']:
             raise ValueError('V2 source/local update counter drift')
         agg = self.aggregates['gate']
@@ -236,12 +251,32 @@ class LiveRun:
                      if np.asarray(v).size == 1 and np.isfinite(v).all()})
         positives = float(mets.get('bc/tp', 0)) + float(mets.get('bc/fn', 0))
         row['oracle_add_recall'] = float(mets['bc/tp'])/positives if positives else None
+        if self.settings['mode'] == 'tutor':
+            measured = bool(mets['tutor/scores_evaluated'])
+            if not measured:
+                row['oracle_add_recall'] = None
+            # Missing groups are undefined, not a measured zero-quality score.
+            for flag, keys in {
+                    'pos': ('p_add_pos_mean', 'fn_rate'),
+                    'neg': ('p_add_neg_mean', 'fp_rate'),
+                    'pair': ('pair_accuracy',),
+                }.items():
+                if not measured or not bool(mets[f'tutor/{flag}_defined']):
+                    for key in keys:
+                        row['metrics'][f'tutor/{key}'] = None
+            if not measured or not (bool(mets['tutor/pos_defined']) and bool(mets['tutor/neg_defined'])):
+                row['metrics']['tutor/logit_gap_pos_neg'] = None
+            row['tutor_pairable_batch_rate'] = c['pairable_batches']/c['all_updates']
+            row['tutor_pair_update_count'] = c['pair_update_count']
+            row['tutor_valid_update_count'] = c['tutor_valid_update_count']
         with (self.root/'updates.jsonl').open('a') as f:
             f.write(json.dumps(row, allow_nan=False)+'\n')
-        print(f"A2/C2 env={int(self.step)} update={c['all_updates']} BC={float(mets['bc/nll']):.6f} "
+        tutor_note = (f" pair={int(mets['tutor/pair_count'])} pair_loss={float(mets['tutor/pair_loss']):.6f}"
+                      if self.settings['mode'] == 'tutor' else '')
+        print(f"{self.settings['mode'].upper()} env={int(self.step)} update={c['all_updates']} BC={float(mets['bc/nll']):.6f} "
               f"valid={int(valid.sum())} ADD={int((valid & (y == 1)).sum())} "
               f"beta={self.collector.policy.beta:.6f} "
-              f"actor_grad={float(mets.get('opt/actor_grad_norm', 0)):.6f}", flush=True)
+              f"actor_grad={float(mets.get('opt/actor_grad_norm', 0)):.6f}{tutor_note}", flush=True)
         return row
 
     def report_gate(self):
@@ -287,10 +322,10 @@ class LiveRun:
             self.report_gate()
             after = parameter_digests(self.agent.params) if audit else None
             changed = [k for k in before if before[k] != after[k]] if audit else None
-            if audit and (s['mode'] == 'a2' or not cycle_rl_ready) and any(k.startswith(
+            if audit and (s['mode'] != 'c2' or not cycle_rl_ready) and any(k.startswith(
                                        ('val/', 'slowval/', 'slowval_count/', 'retnorm/', 'valnorm/', 'advnorm/'))
                                        or (k.startswith('opt/state/') and '/val/' in k) for k in changed):
-                raise RuntimeError('Gate-closed/A2 update changed a frozen Critic/RL state')
+                raise RuntimeError('Non-RL update changed a frozen Critic/RL state')
             cycle = dict(env_steps=int(self.step), agent_updates=int(self.agent.n_updates), changed_keys=changed,
                          parameter_audited=audit,
                          actor_changed=any(r['metrics']['opt/actor_changed'] for r in updated),
@@ -337,6 +372,15 @@ class LiveRun:
             label_ratio=self.collector.counts['certified_labels']/max(int(self.step), 1),
             formal_1m='RUN' if s['scope'] == 'formal' else 'NOT_RUN',
             test='NOT_RUN', independent_actor_success='NOT_ESTABLISHED'))
+        if s['mode'] == 'tutor':
+            c = self.counters.state
+            result['tutor'] = dict(agent_extension=agent_extensions(s),
+                pairable_batch_rate=c['pairable_batches']/max(c['all_updates'], 1),
+                pair_update_count=c['pair_update_count'],
+                tutor_valid_update_count=c['tutor_valid_update_count'],
+                pair_count=c['pair_count'], critic_rl_frozen=True,
+                classification_tp_meaning='Oracle label true positive; not a TP5 trade')
+            result = signed({k: v for k, v in result.items() if k != 'content_hash'})
         write_json(self.root/'training_receipt.json', result)
         return result
 
