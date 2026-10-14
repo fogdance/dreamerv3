@@ -23,6 +23,7 @@ from embodied.run.fg_s3_source_transfer import make_agent, apply_and_audit_trans
 from embodied.run.fg_s3c_train import code_identity, reconcile_update_log
 from dreamerv3.fg_s3_v2_agent import S3V2Agent
 from dreamerv3.fg_s3_tutor_loss import agent_extensions
+from dreamerv3.fg_s3_composition import identity_fields, settings_composition, validate_records
 from dreamerv3.fg_s3a_actor import parameter_digests
 from gym_trading_env.envs.entry_contract import fingerprint
 from gym_trading_env.research.fg_replay import read_manifest, signed, write_json, check_files
@@ -86,13 +87,19 @@ class LiveRun:
     def __init__(self, prepared, run_dir, *, resume=False, authorize_training=False):
         self.prepared = Path(prepared).resolve()
         preparation = read_manifest(self.prepared/'manifest.json')
+        self.settings = s = read_manifest(self.prepared/'settings.json')['settings']
+        settings_composition(s)
         check_files({str(self.prepared/n): h for n, h in preparation['files'].items()})
         if preparation['code'] != execution_code():
             raise ValueError('Prepared V2 code changed; create a new preparation')
-        self.settings = s = read_manifest(self.prepared/'settings.json')['settings']
+        frozen_model = read_manifest(self.prepared/'model_config.json')
+        self.spec = spec = read_manifest(self.prepared/'source_admission.json')
+        documents = [preparation, frozen_model, spec]
+        if 'resolved_composition' in s:
+            documents.append(spec['target_model_identity'])
+        composition = validate_records(s, *documents)
         from gym_trading_env.research.fg_s3_v2_experiment import require_training_authorization
         require_training_authorization(s, authorize_training)
-        self.spec = spec = read_manifest(self.prepared/'source_admission.json')
         if s['device'] != 'gpu':
             raise ValueError('V2 model work is GPU-only')
         self.root = root = Path(run_dir).resolve()
@@ -102,6 +109,7 @@ class LiveRun:
             raise ValueError('V2 diagnostic output escaped its development run directory')
         if resume:
             saved = read_manifest(root/'run_identity.json')['identity']
+            validate_records(s, saved)
             if (saved['preparation_sha256'] != file_hash(self.prepared/'manifest.json')
                     or saved['code'] != execution_code() or saved['packages'] != runtime_versions()):
                 raise ValueError('Resume preparation/code/dependencies differ')
@@ -117,13 +125,13 @@ class LiveRun:
         if query.identity_hash != preparation['oracle_identity']:
             raise ValueError('Prepared Oracle identity changed')
         self.offset = int(spec.get('target_update_offset', spec['origin']['step']))
-        frozen_model = read_manifest(self.prepared/'model_config.json')
         cfg = self.config = elements.Config(frozen_model['config'])
         extensions = agent_extensions(s)
         if s['mode'] in ('tutor', 'b2') and frozen_model['agent_extension'] != extensions:
             raise ValueError('Frozen extended model configuration differs from settings')
         self.agent = agent = make_agent(plain(cfg), root/'model', device='gpu',
-            agent_cls=S3V2Agent, bc_lambda=s['bc_lambda'], extra_agent_config=extensions)
+            agent_cls=S3V2Agent, bc_lambda=s['bc_lambda'], extra_agent_config=extensions,
+            composition=composition)
         if not all(d.platform == 'gpu' for d in jax.devices()):
             raise RuntimeError('V2 model did not initialize on CUDA')
         if not resume:
@@ -166,6 +174,7 @@ class LiveRun:
             (root/'config.yaml').write_text(yaml.safe_dump(plain(cfg)))
             write_json(root/'source_admission.json', spec)
             identity = dict(protocol=PROTOCOL, run_id=uuid.uuid4().hex, mode=s['mode'],
+                **identity_fields(s),
                 budget_unit='environment_advances', env_steps=s['env_steps'],
                 source_update_offset=self.offset, oracle_identity=query.identity_hash,
                 preparation_sha256=file_hash(self.prepared/'manifest.json'),

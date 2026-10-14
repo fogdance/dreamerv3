@@ -14,13 +14,14 @@ from embodied.run.fg_checkpoint import file_hash, plain, validate_bundle, learni
 from embodied.run.fg_s3a_checkpoint import audit_bc, package_versions
 from gym_trading_env.envs.entry_contract import fingerprint
 from gym_trading_env.research.fg_replay import read_manifest, signed
+from dreamerv3.fg_s3_composition import KEY, require_ready, validate_encoder
+from gym_trading_env.research.fg_s3_reader_compat import PRODUCERS, reviewed_reader_transition
 
 PROTOCOL = 'FG_S3_SOURCE_ADMISSION_V2'
 GATE_HELPER_AST = {
     'validate_availability_threshold': 'ae187898bdf0dff46f14d0c20fc1252d11728c4c37c8fb6a354208b05308b11f',
     'availability_prediction': '3ebc25f59e6b70ec09142e935d499cdd3b6155813fdf6e4639911426e0bd9a4e',
 }
-
 
 def verify_dependency_versions(declared):
     """Check every producer-declared package, not only A/B's short inventory."""
@@ -205,7 +206,11 @@ def verify_producer_code(mapping, *, warm_start=False):
         'gym_trading_env/research/fg_reward_candidates.py'}
     for name, expected in mapping.items():
         path = root.parent/'gym-trading-env'/'src'/name if name.startswith('gym_trading_env/') else root/name
-        if warm_start and name in semantic_files and file_hash(path) != expected:
+        reviewed_reader = warm_start and name in PRODUCERS and name not in semantic_files and file_hash(path) != expected
+        if reviewed_reader:
+            result[name] = reviewed_reader_transition(root.parent/'gym-trading-env', name, expected, file_hash)
+            result[name]['disposition'] = 'AUTHENTICATED_REVIEWED_READER_PARAMETER_WARM_START'
+        elif warm_start and name in semantic_files and file_hash(path) != expected:
             # A parameter warm-start deliberately changes reward/discount semantics.
             # Authenticate the actual producer bytes; apply_and_audit_transfer
             # separately requires identical NN keys, shapes, dtypes and values.
@@ -406,7 +411,11 @@ class LiveOracleTraining:
 
 def inspect_source(kind, *, catalog=None, live_oracle=None, path=None, seed=None, config=None,
                    base_checkpoint=None, features=None, diagnostic=False, gate_protocol=None,
-                   agent_extension=None):
+                   agent_extension=None, composition=None):
+    if composition is not None:
+        composition = require_ready(composition)
+        if composition['use_b2'] != (agent_extension is not None):
+            raise ValueError('Composition and B2 admission extension differ')
     if (catalog is None) == (live_oracle is None):
         raise ValueError('Source requires exactly one catalog or authenticated live TRAIN binding')
     if live_oracle is not None:
@@ -510,6 +519,8 @@ def inspect_source(kind, *, catalog=None, live_oracle=None, path=None, seed=None
     cfg = target_config(source_config, plain(config) if config is not None else None)
     if cfg['agent'].get('s3_clock_protocol') != 'S3_MARKET_MINUTE':
         raise ValueError('New S3 admission requires explicit S3_MARKET_MINUTE model semantics')
+    if composition is not None:
+        validate_encoder(composition, cfg['agent']['enc']['typ'])
     policy = gate_policy(cfg, diagnostic=origin['diagnostic'], source_opening=source_opening,
                          protocol=gate_protocol)
     fields = dict(protocol=PROTOCOL, kind=kind, origin=origin,
@@ -526,6 +537,8 @@ def inspect_source(kind, *, catalog=None, live_oracle=None, path=None, seed=None
         fields.update(teacher_source_kind='live_oracle', live_training_binding=live_oracle.binding)
     if agent_extension is not None:
         fields['agent_extension'] = agent_extension
+    if composition is not None:
+        fields[KEY] = composition
     initial = signed(fields)
     state = prepare_transfer(initial)
     if state is not None:
@@ -549,6 +562,8 @@ def inspect_source(kind, *, catalog=None, live_oracle=None, path=None, seed=None
         gate_code_sha256=file_hash(Path(__file__).with_name('fg_s3_gate.py')))
     if agent_extension is not None:
         model_identity['agent_extension'] = agent_extension
+    if composition is not None:
+        model_identity[KEY] = composition
     if kind == 'warm_start':
         model_identity['target_training'] = dict(
             reward_params_hash=fields['reward_params_hash'], observation_identity=fields['observation_identity'],
@@ -599,6 +614,10 @@ def _managed_bc_admission(path, identity, catalog):
 
 
 def prepare_transfer(spec, target_schema=None):
+    if KEY in spec:
+        composition = require_ready(spec[KEY])
+        if 'target_model_identity' in spec and require_ready(spec['target_model_identity'].get(KEY)) != composition:
+            raise ValueError('S3_COMPOSITION_IDENTITY_MISMATCH')
     if spec['protocol'] != PROTOCOL or fingerprint({k:v for k,v in spec.items() if k!='content_hash'}) != spec['content_hash']:
         raise ValueError('Source admission receipt corrupt')
     origin = spec['origin']
