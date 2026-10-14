@@ -31,6 +31,11 @@ def agent_extensions(settings):
         raise ValueError('Tutor requires positive tau and hard weight maximum >= 1')
     if result['tutor_hard_kappa'] < 0:
         raise ValueError('Tutor difficulty kappa must be nonnegative')
+    if 'tutor_gradient_every_updates' in settings:
+        interval = settings['tutor_gradient_every_updates']
+        if type(interval) is not int or interval < 0:
+            raise ValueError('Tutor gradient interval must be a nonnegative integer')
+        result['tutor_gradient_every_updates'] = interval
     return result
 
 
@@ -122,6 +127,16 @@ def tutor_objective(nll, logits, y, valid, is_first, *, alpha=.8, tau=1.,
         'tutor/difficulty_max': jnp.where(valid, difficulty, 0.).max(),
         'tutor/difficulty_weight_mean': mean(weights, valid),
         'tutor/difficulty_weight_max': jnp.where(valid, weights, 0.).max(),
+        'tutor/difficulty_weight_min': jnp.where(count > 0,
+            jnp.where(valid,weights,jnp.inf).min(),jnp.float32(0)),
+        'tutor/difficulty_weight_pos_mean': mean(weights,pos),
+        'tutor/difficulty_weight_neg_mean': mean(weights,neg),
+        'tutor/difficulty_weight_pos_max': jnp.where(pos,weights,0.).max(),
+        'tutor/difficulty_weight_neg_max': jnp.where(neg,weights,0.).max(),
+        'tutor/difficulty_weight_pos_min': jnp.where(np_ > 0,jnp.where(pos,weights,jnp.inf).min(),0.),
+        'tutor/difficulty_weight_neg_min': jnp.where(nn_ > 0,jnp.where(neg,weights,jnp.inf).min(),0.),
+        'tutor/difficulty_boosted_fraction': mean((weights > 1).astype(jnp.float32),valid),
+        'tutor/hard_minus_balanced_ce': hard_balanced-balanced,
         'tutor/pos_defined': (np_ > 0).astype(jnp.float32),
         'tutor/neg_defined': (nn_ > 0).astype(jnp.float32),
         'tutor/pair_defined': (n_pairs > 0).astype(jnp.float32),
