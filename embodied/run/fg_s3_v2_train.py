@@ -279,12 +279,18 @@ class LiveRun:
                     row['metrics']['b2/recall_'+name] = None
         if self.settings['mode'] == 'tutor':
             measured = bool(mets['tutor/scores_evaluated'])
+            if not bool(mets.get('tutor/gradient_sampled',False)):
+                for k in row['metrics']:
+                    if k.startswith('tutor/grad/'):
+                        row['metrics'][k] = None
             if not measured:
                 row['oracle_add_recall'] = None
             # Missing groups are undefined, not a measured zero-quality score.
             for flag, keys in {
-                    'pos': ('p_add_pos_mean', 'fn_rate'),
-                    'neg': ('p_add_neg_mean', 'fp_rate'),
+                    'pos': ('p_add_pos_mean', 'fn_rate','difficulty_weight_pos_mean',
+                            'difficulty_weight_pos_min','difficulty_weight_pos_max'),
+                    'neg': ('p_add_neg_mean', 'fp_rate','difficulty_weight_neg_mean',
+                            'difficulty_weight_neg_min','difficulty_weight_neg_max'),
                     'pair': ('pair_accuracy',),
                 }.items():
                 if not measured or not bool(mets[f'tutor/{flag}_defined']):
@@ -292,6 +298,10 @@ class LiveRun:
                         row['metrics'][f'tutor/{key}'] = None
             if not measured or not (bool(mets['tutor/pos_defined']) and bool(mets['tutor/neg_defined'])):
                 row['metrics']['tutor/logit_gap_pos_neg'] = None
+            if not measured or not bool(mets['bc/valid_count']):
+                for key in ('difficulty_weight_mean','difficulty_weight_min','difficulty_weight_max',
+                            'difficulty_boosted_fraction'):
+                    row['metrics']['tutor/'+key] = None
             row['tutor_pairable_batch_rate'] = c['pairable_batches']/c['all_updates']
             row['tutor_pair_update_count'] = c['pair_update_count']
             row['tutor_valid_update_count'] = c['tutor_valid_update_count']

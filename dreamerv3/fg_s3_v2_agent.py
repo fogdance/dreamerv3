@@ -75,6 +75,7 @@ class S3V2Agent(S3CAgent):
             self.tutor = agent_extensions({'mode': 'tutor', **{
                 k: config[k] for k in ('tutor_alpha', 'tutor_pair_lambda', 'tutor_pair_tau',
                                       'tutor_hard_kappa', 'tutor_hard_wmax')}})
+            self.tutor_gradient_every = config.get('tutor_gradient_every_updates',0)
         if config.replay_context != 1 or config.replay_context_mode != 'recompute_prefix':
             raise ValueError('S3-V2 requires one causal recomputed prefix')
         if not np.isfinite(config.bc_lambda) or config.bc_lambda < 0:
@@ -125,6 +126,14 @@ class S3V2Agent(S3CAgent):
         return self.b2_event(inp, bdims), self.b2_early(inp, bdims)
 
     def policy_distribution(self, repfeat, mask, bdims):
+        if self.mode == 'tutor':
+            policy = self.pol(self.feat2tensor(repfeat),bdims)
+            dist = self._masked_policy(policy,mask,False)
+            raw,final = policy[self.action_key].logits,dist[self.action_key].logits
+            defined = jnp.all(mask > .5,axis=-1)
+            return dist,{'tutor/base_logit_add_minus_wait':raw[...,1]-raw[...,0],
+                         'tutor/final_logit_add_minus_wait':jnp.where(defined,final[...,1]-final[...,0],0.),
+                         'tutor/logit_margin_defined':defined}
         if self.mode != 'b2':
             return super().policy_distribution(repfeat, mask, bdims)
         policy = self.pol(self.feat2tensor(repfeat), bdims)
@@ -239,7 +248,10 @@ class S3V2Agent(S3CAgent):
             'bc/lambda': jnp.float32(self.config.bc_lambda), 'bc/total_loss': total,
             'avail/ready': jnp.float32(ready),
             'v2/rl_active': jnp.float32(ready & (self.mode == 'c2'))})
-        return total, (carry, entries, {}, metrics)
+        diagnostic = {}
+        if self.mode == 'tutor' and self.tutor_gradient_every:
+            diagnostic['tutor_features'] = jax.lax.stop_gradient(self.feat2tensor(feat))
+        return total, (carry, entries, diagnostic, metrics)
 
     def tutor_loss(self, repfeat, obs, y, valid):
         valid = eligible_teacher(obs['action_mask'], y, valid)
@@ -260,7 +272,40 @@ class S3V2Agent(S3CAgent):
             (self.tutor['tutor_pair_lambda'] > 0) & (metrics['tutor/pair_count'] > 0))
         metrics['tutor/actor_active'] = jnp.float32(
             ((self.config.bc_lambda > 0) & jnp.any(valid)) | (metrics['tutor/pair_active'] > 0))
+        metrics.update({'tutor/effective_natural_coefficient':self.config.bc_lambda*self.tutor['tutor_alpha'],
+            'tutor/effective_hard_balanced_coefficient':self.config.bc_lambda*(1-self.tutor['tutor_alpha']),
+            'tutor/effective_pair_coefficient':self.tutor['tutor_pair_lambda']})
         return bc, metrics
+
+    def tutor_term_gradient_diagnostics(self, params, features, obs, y, valid):
+        """Pre-update Actor-only gradients on the SAME detached WM features.
+
+        A nested read-only context with a private fixed seed cannot modify the
+        optimizer, model, outer RNG, or training counters. No second WM pass.
+        These norms are before optimizer clipping/momentum, not update attribution.
+        """
+        valid = eligible_teacher(obs['action_mask'],y,valid)
+        safe_mask = jnp.where(valid[...,None],obs['action_mask'] > .5,jnp.array([True,False]))
+        def terms():
+            dist = self._masked_policy(self.pol(features,bdims=2),safe_mask,False)[self.action_key]
+            _,m = tutor_objective(-dist.logp(jnp.where(valid,y,0)),dist.logits,y,valid,obs['is_first'],
+                alpha=self.tutor['tutor_alpha'],tau=self.tutor['tutor_pair_tau'],
+                hard_kappa=self.tutor['tutor_hard_kappa'],hard_wmax=self.tutor['tutor_hard_wmax'])
+            return jnp.stack([m['tutor/natural_ce'],m['tutor/balanced_ce'],
+                              m['tutor/hard_balanced_ce'],m['tutor/pair_loss']])
+        pure = nj.pure(terms,nested=True)
+        derivative = jax.jacrev(lambda p:pure(p,seed=0,create=False,modify=False)[1])(params)
+        names = ('natural','balanced_reference','hard_balanced','pair')
+        norms = {name:optax.global_norm({k:v[i] for k,v in derivative.items()}) for i,name in enumerate(names)}
+        alpha,weight,pair = self.tutor['tutor_alpha'],self.config.bc_lambda,self.tutor['tutor_pair_lambda']
+        out = {'tutor/grad/'+name+'_norm':norm for name,norm in norms.items()}
+        out.update({'tutor/grad/weighted_natural_norm':weight*alpha*norms['natural'],
+                    'tutor/grad/weighted_hard_balanced_norm':weight*(1-alpha)*norms['hard_balanced'],
+                    'tutor/grad/weighted_pair_norm':pair*norms['pair'],
+                    'tutor/grad/hard_minus_balanced_norm':optax.global_norm({k:v[2]-v[1] for k,v in derivative.items()}),
+                    'tutor/grad/total_actor_norm':optax.global_norm({k:weight*(alpha*v[0]+(1-alpha)*v[2])+pair*v[3]
+                                                                  for k,v in derivative.items()})})
+        return out
 
     def train(self, carry, data):
         if nj.creating():
@@ -281,8 +326,10 @@ class S3V2Agent(S3CAgent):
                 'b2_adapter/': bc & (self.b2_schedule.read() > 0)}
         rules = {'pol/': bc | rl, 'val/': rl, **extra_active}
         frozen_params = {k: v for k, v in nj.context().items() if k.startswith(tuple(rules))}
+        actor_snapshot = {k:v for k,v in frozen_params.items() if k.startswith('pol/')}
+        step_before = self.opt.step.read()
         with masked_joint_optimizer(self.opt, bc | rl, rl, extra_active):
-            metrics, (carry, _, _, extra) = self.opt(
+            metrics, (carry, _, diagnostic, extra) = self.opt(
                 self.training_loss_fn(data, stepid), carry, obs, prevact,
                 training=True, has_aux=True)
         # optax.apply_updates still adds a zero update to inactive parameters;
@@ -291,6 +338,17 @@ class S3V2Agent(S3CAgent):
         nj.context().update({k: jnp.where(next(value for prefix, value in rules.items()
             if k.startswith(prefix)), nj.context()[k], old) for k, old in frozen_params.items()})
         metrics.update(extra)
+        if self.mode == 'tutor' and self.tutor_gradient_every:
+            def measure(_):
+                return self.tutor_term_gradient_diagnostics(actor_snapshot,diagnostic['tutor_features'],
+                    obs,data['teacher_action'][:,1:],data['teacher_valid'][:,1:])
+            sampled = (step_before+1) % self.tutor_gradient_every == 0
+            keys = ('natural_norm','balanced_reference_norm','hard_balanced_norm','pair_norm',
+                    'weighted_natural_norm','weighted_hard_balanced_norm','weighted_pair_norm',
+                    'hard_minus_balanced_norm','total_actor_norm')
+            metrics.update(jax.lax.cond(sampled,measure,
+                lambda _:{'tutor/grad/'+k:jnp.float32(0) for k in keys},None))
+            metrics['tutor/gradient_sampled'] = sampled.astype(jnp.float32)
         if self.mode == 'b2':
             self.b2_schedule.advance(extra_active['b2_event/'])
         if self.mode == 'c2':
