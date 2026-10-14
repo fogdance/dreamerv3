@@ -32,12 +32,12 @@
 1. Data 逻辑代码、测试与报告并入 Gym Model 基线，无源文件冲突，原 `e_data_v1` 数学文件字节不改。
 2. 新增 `e_data_v1/provider.py` 和 Gym `fg_s3_e_provider.py`：读取认证的原 TRAIN pool，校验来源和 collection，并使用预建的每合约 `MarketData` 在真实当前 Env cutoff 计算每一步 E 数组；外部原18维必须完全相等，缺少/错位的行情直接拒收；Source identity 绑定全部市场身份；未实现或开启生产训练。
 3. 模型 `make_binding` 增加接受已验证的 `S3_E_DATA_V1` collection index，强制完整 collection 检验与源码hash；`scope=CPU_REAL_TRAIN_M4_NOT_FORMAL_RELEASED` 明确不代表训练授权。
-4. 条件接入 `e_data_source_pool`，要求 pool SHA 与模型准入一致；`LiveRun` 能按 E 模式构造 provider 并传给 V2Collector。**注意公开 `require_ready` 仍会提前阻断 E，此项是后续 M4 联调的接线，不是一次经过现场端到端的生产PASS。**
+4. 条件接入 `e_data_source_pool`，要求原完整pool SHA与模型准入一致，并逐合约比对经准备的DAgger TRAIN数据文件/Env/合约配置哈希；`LiveRun` 能按 E 模式构造 provider 并传给 V2Collector。**注意公开 `require_ready` 仍会提前阻断 E，此项是后续 M4 联调的接线，不是一次经过现场端到端的生产PASS。**
 5. `e_data_v1` 新 Provider 合成因果测试验证0/14/15/40/359/600等真实时间切点、观察相等、跨合约拒绝、篡改拒绝。
 
 ## 3. 实际复验结果（本隔离环境）
 
-- `PYTHONPATH=src:. PYTHONDONTWRITEBYTECODE=1 pytest -ra -q -p no:cacheprovider tests/e_data_v1`：**27 PASS、2 SKIP**。两项跳过的是依赖原 Gym Env CPU interpreter 的 F02/F04 集成核对，当前环境没有 `gymnasium`。原 Data 上传报告里的 22 PASS/6 PASS、18合约真实 TRAIN 是用户机器先前的证据，**本隔离环境未复跑真实1.3GB TRAIN 产物**。
+- `PYTHONPATH=src:. PYTHONDONTWRITEBYTECODE=1 pytest -ra -q -p no:cacheprovider tests/e_data_v1`：**28 PASS、2 SKIP**。两项跳过的是依赖原 Gym Env CPU interpreter 的 F02/F04 集成核对，当前环境没有 `gymnasium`。原 Data 上传报告里的 22 PASS/6 PASS、18合约真实 TRAIN 是用户机器先前的证据，**本隔离环境未复跑真实1.3GB TRAIN 产物**。
 - `(cd docs/e_data_v1 && sha256sum -c SHA256SUMS)`：报告和已上传验收证据 hash 校验 PASS。合并的旧 Task Spec Markdown 原有行尾两个空格；`git diff --check` 会提示这些老 Markdown 格式，不是本次新增的 Python 代码问题。
 - `python -m py_compile`：新旧接线文件语法通过。
 - Gym/Data、Dreamer/Model补丁在各自精确原始 base 上的 `git apply --check` 回归：待补丁生成后复核并记录在交付收据。
