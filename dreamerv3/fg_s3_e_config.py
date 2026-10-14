@@ -37,5 +37,6 @@ def resolve_model_init(value):
     cfg = cfg.update({'seed': seed, 'dreamer.seed': seed,
         'agent.avail_threshold': .30, 'agent.avail_actor_enabled': False,
         'agent.avail_always_available_index': 0,
+        'agent.update_diagnostics': True,
         'action_mask_warmup.enabled': True, 'action_mask_warmup.add_recall_enabled': True})
     return e_target_config(dict(cfg))

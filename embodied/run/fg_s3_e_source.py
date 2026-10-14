@@ -15,7 +15,7 @@ from dreamerv3.fg_s3_composition import validate_model_composition
 PROTOCOL = 'FG_S3_E_SOURCE_BINDING_V1'
 SYNTHETIC = 'FG_S3_E_MODEL_SYNTHETIC_V1'
 REAL = 'S3_E_DATA_V1'
-REAL_SCOPE = 'CPU_REAL_TRAIN_M4_NOT_FORMAL_RELEASED'
+REAL_SCOPE = 'REAL_TRAIN_ACCEPTANCE_ONLY_NOT_FORMAL_RELEASED'
 
 
 def source_code():
@@ -36,10 +36,14 @@ def make_binding(config, composition, data_manifest):
     if data.get('schema') == REAL and data.get('kind') == 'collection':
         if path.name != 'index_manifest.json':
             raise ValueError('E real data requires its canonical collection index')
-        from e_data_v1.io import verify_collection
-        review = verify_collection(path.parent)
+        from e_data_v1.provider import verified_collection
+        review = verified_collection(path.parent)
         if review['status'] != 'PASS':
             raise ValueError('E real TRAIN collection verification failed')
+        from e_data_v1.schema import EDataConfig
+        from e_data_v1.reference import load_legacy
+        if data['schema_sha256'] != EDataConfig().schema(load_legacy()[1])['schema_sha256']:
+            raise ValueError('E real TRAIN collection mathematical code/schema changed; rebuild required')
         scope, data_id = REAL_SCOPE, data['index_sha256']
         schema_hash, pool_hash = data['schema_sha256'], data['source_pool_sha256']
     elif data.get('schema') == SYNTHETIC:
@@ -50,10 +54,10 @@ def make_binding(config, composition, data_manifest):
         raise ValueError('Unknown or unsigned E data source manifest')
     dreamer = Path(__file__).resolve().parents[2]
     gym = dreamer.parent/'gym-trading-env'
-    data_code = {str(p.relative_to(gym)): file_hash(p) for p in (
-        gym/'e_data_v1/core.py', gym/'e_data_v1/provider.py',
-        gym/'e_data_v1/schema.py', gym/'e_data_v1/reference.py') if p.is_file()}
-    if len(data_code) != 4:
+    data_code = {str(p.relative_to(gym)): file_hash(p)
+                 for p in sorted((gym/'e_data_v1').glob('*.py'))}
+    if any('e_data_v1/'+name not in data_code for name in
+           ('core.py', 'provider.py', 'schema.py', 'reference.py', 'sources.py', 'io.py')):
         raise ValueError('E data runtime implementation is incomplete')
     versions = {str(r): subprocess.check_output(['git','rev-parse','HEAD'],cwd=r,text=True).strip()
                 for r in (dreamer.parent/'gym-trading-env', dreamer)}

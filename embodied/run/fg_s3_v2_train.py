@@ -38,6 +38,8 @@ def execution_code():
     code = code_identity()
     cli = Path(__file__).resolve().parents[3]/'gym-trading-env/tools/fg_s3_v2_experiment.py'
     code[str(cli)] = file_hash(cli)
+    data_root = cli.parent.parent/'e_data_v1'
+    code.update({str(p): file_hash(p) for p in sorted(data_root.glob('*.py'))})
     return code
 
 
@@ -84,11 +86,26 @@ def reconcile_cycles(root, count, env_steps, agent_updates):
 
 
 class LiveRun:
+    protocol = PROTOCOL
+    composition = staticmethod(settings_composition)
+    records = staticmethod(validate_records)
+    identities = staticmethod(identity_fields)
+    create_agent = staticmethod(make_agent)
+    transfer_agent = staticmethod(apply_and_audit_transfer)
+    agent_class = S3V2Agent
+
+    def validate_execution(self, settings, preparation):
+        if preparation['protocol'] != 'FG_S3_V2_PREPARED_V1' or 'e_admission' in settings:
+            raise ValueError('E acceptance snapshots cannot enter the production lifecycle')
+        if settings['device'] != 'gpu':
+            raise ValueError('V2 model work is GPU-only')
+
     def __init__(self, prepared, run_dir, *, resume=False, authorize_training=False):
         self.prepared = Path(prepared).resolve()
         preparation = read_manifest(self.prepared/'manifest.json')
         self.settings = s = read_manifest(self.prepared/'settings.json')['settings']
-        settings_composition(s)
+        self.composition(s)
+        self.validate_execution(s, preparation)
         check_files({str(self.prepared/n): h for n, h in preparation['files'].items()})
         if preparation['code'] != execution_code():
             raise ValueError('Prepared V2 code changed; create a new preparation')
@@ -97,14 +114,12 @@ class LiveRun:
         documents = [preparation, frozen_model, spec]
         if 'resolved_composition' in s:
             documents.append(spec['target_model_identity'])
-        composition = validate_records(s, *documents)
+        composition = self.records(s, *documents)
         if composition is not None and composition['use_e']:
             from embodied.run.fg_s3_e_source import validate_e_records
             validate_e_records(*documents)
         from gym_trading_env.research.fg_s3_v2_experiment import require_training_authorization
         require_training_authorization(s, authorize_training)
-        if s['device'] != 'gpu':
-            raise ValueError('V2 model work is GPU-only')
         self.root = root = Path(run_dir).resolve()
         allowed = (Path('/data/logdir/fg_single3/s3_v2') if s['scope'] == 'formal' else
                    Path(__file__).resolve().parents[3]/'gym-trading-env/artifacts/fg_s3_v2/runs')
@@ -112,7 +127,7 @@ class LiveRun:
             raise ValueError('V2 diagnostic output escaped its development run directory')
         if resume:
             saved = read_manifest(root/'run_identity.json')['identity']
-            validate_records(s, saved)
+            self.records(s, saved)
             if composition is not None and composition['use_e']:
                 validate_e_records(preparation, saved)
             if (saved['preparation_sha256'] != file_hash(self.prepared/'manifest.json')
@@ -134,13 +149,13 @@ class LiveRun:
         extensions = agent_extensions(s)
         if s['mode'] in ('tutor', 'b2') and frozen_model['agent_extension'] != extensions:
             raise ValueError('Frozen extended model configuration differs from settings')
-        self.agent = agent = make_agent(plain(cfg), root/'model', device='gpu',
-            agent_cls=S3V2Agent, bc_lambda=s['bc_lambda'], extra_agent_config=extensions,
+        self.agent = agent = self.create_agent(plain(cfg), root/'model', device=s['device'],
+            agent_cls=self.agent_class, bc_lambda=s['bc_lambda'], extra_agent_config=extensions,
             composition=composition)
-        if not all(d.platform == 'gpu' for d in jax.devices()):
-            raise RuntimeError('V2 model did not initialize on CUDA')
+        if not all(d.platform == s['device'] for d in jax.devices()):
+            raise RuntimeError('V2 model initialized on the wrong device')
         if not resume:
-            transfer = apply_and_audit_transfer(agent, spec)
+            transfer = self.transfer_agent(agent, spec)
             write_json(root/'source_transfer.json', transfer)
             control = transfer_control_state(spec)
         else:
@@ -189,12 +204,12 @@ class LiveRun:
             import yaml
             (root/'config.yaml').write_text(yaml.safe_dump(plain(cfg)))
             write_json(root/'source_admission.json', spec)
-            identity = dict(protocol=PROTOCOL, run_id=uuid.uuid4().hex, mode=s['mode'],
-                **identity_fields(s),
+            identity = dict(protocol=self.protocol, run_id=uuid.uuid4().hex, mode=s['mode'],
+                **self.identities(s),
                 budget_unit='environment_advances', env_steps=s['env_steps'],
                 source_update_offset=self.offset, oracle_identity=query.identity_hash,
                 preparation_sha256=file_hash(self.prepared/'manifest.json'),
-                code=execution_code(), packages=runtime_versions(), device='gpu',
+                code=execution_code(), packages=runtime_versions(), device=s['device'],
                 source_kind=spec['kind'], source_model_identity=spec['target_model_identity_hash'],
                 training_identity=preparation['training_identity'], scope=s['scope'],
                 gate_policy=spec['gate_policy'], model_config_sha256=fingerprint(plain(cfg)),
@@ -416,7 +431,7 @@ class LiveRun:
         collect_seconds = sum(r['collect_seconds'] for r in cycles)
         update_seconds = sum(r['update_seconds'] for r in cycles)
         tp, fn = (self.collector.counts[k] for k in ('actor_oracle_ADD_tp', 'actor_oracle_ADD_fn'))
-        result = signed(dict(protocol=PROTOCOL,
+        result = signed(dict(protocol=self.protocol,
             status=(('FORMAL' if s['scope'] == 'formal' else 'DIAGNOSTIC') +
                     ('_COMPLETE' if target == s['env_steps'] else '_STOPPED')),
             run_dir=str(self.root), identity=self.identity, env_steps=int(self.step),

@@ -161,7 +161,7 @@ def _apply_and_audit_transfer(agent, spec):
         baseline_equality = 'PASS'
     return signed(dict(status='PASS_REAL_MODEL_TRANSFER', devices=[str(x) for x in jax.devices()],
         **({KEY: validate_model_composition(agent.config.s3_composition, agent.config.enc.typ)} if KEY in spec else {}),
-        **({'e_binding': spec['e_binding'], 'scope': 'CPU_SYNTHETIC_CONTRACT_ONLY'} if 'e_binding' in spec else {}),
+        **({'e_binding': spec['e_binding'], 'scope': spec['e_binding']['scope']} if 'e_binding' in spec else {}),
         diagnostic=spec['origin']['diagnostic'],
         transfer_code_sha256=file_hash(__file__),
         source_admission_sha256=spec['content_hash'], kind=spec['kind'],
