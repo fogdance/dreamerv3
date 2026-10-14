@@ -108,25 +108,28 @@ def test_full_schedule_checkpoint_and_joint_optimizer_continue(raw_batch,tmp_pat
         mix_value=float(m['b2/mix_value']),mix_next=float(m['b2/mix_next']),gpu='NOT_RUN')))
 
 
-def model(folder, bc=1., **settings):
+def model(folder, bc=1., composition=None, **settings):
     return make_agent(small_config(),folder,agent_cls=S3V2Agent,device='cpu',bc_lambda=bc,
-        extra_agent_config=b2_extensions(settings))
+        extra_agent_config=b2_extensions(settings),composition=composition)
 
 
-def test_full_checkpoint_restores_model_replay_sidecar_and_driver_together(tmp_path):
+@pytest.mark.parametrize('composition_enabled',[False,True])
+def test_full_checkpoint_restores_model_replay_sidecar_and_driver_together(tmp_path,composition_enabled):
     import elements
     from types import SimpleNamespace
     from embodied.run.fg_checkpoint import FullCheckpoint,RuntimeState,StepSchedule,validate_bundle
     from embodied.run.fg_s3_v2_train import Counters
     from gym_trading_env.envs.entry_env import FixedDirectionEntryEnv
+    from dreamerv3.fg_s3_composition import KEY,resolve_composition
+    composition=resolve_composition({'mode':'b2'}) if composition_enabled else None
     folder = tmp_path/'market';folder.mkdir()
     env = single_env(folder,[(1000,1000,1000,1000),(1000,1007,1000,1007),
         (1000,1000,1000,1000)]*30,candidate='C1',fees=3,chunk=90,
         times=pd.date_range('2026-01-05 13:31',periods=90,freq='min'),
         calendar=[dict(start='2026-01-05 13:30',end='2026-01-05 15:30')],liquidation='2026-01-05 15:30')
     catalog,query = fixture_catalog(env,folder)
-    a,b = model(tmp_path/'a',b2_mix_warmup=2,b2_mix_ramp=2,b2_min_event_updates=2),\
-          model(tmp_path/'b',b2_mix_warmup=2,b2_mix_ramp=2,b2_min_event_updates=2)
+    a,b = model(tmp_path/'a',composition=composition,b2_mix_warmup=2,b2_mix_ramp=2,b2_min_event_updates=2),\
+          model(tmp_path/'b',composition=composition,b2_mix_warmup=2,b2_mix_ramp=2,b2_min_event_updates=2)
     ca = V2Collector(env,query,tmp_path/'ca',GYM.parent/'dreamerv3',beta=1.,agent=a,
         actor=lambda c,o:a.policy(c,o,mode='train'),outcome_catalog=catalog)
     cb = None
@@ -139,8 +142,10 @@ def test_full_checkpoint_restores_model_replay_sidecar_and_driver_together(tmp_p
             runtime = RuntimeState(StepSchedule(100,100),SimpleNamespace(),[stream],
                 lambda:box[0],lambda c:box.__setitem__(0,agent.restore_carry(c)),{},[0])
             counters = Counters('b2')
+            identity=dict(protocol='CONTROLLED_CPU_B2_FULL_STACK',mode='b2')
+            if composition is not None:identity[KEY]=composition
             cp = FullCheckpoint(tmp_path/'full_ckpt',elements.Counter(70),
-                dict(protocol='CONTROLLED_CPU_B2_FULL_STACK',mode='b2'),[stream],reserve_gib=0,keep_all=True)
+                identity,[stream],reserve_gib=0,keep_all=True)
             cp.agent,cp.replay,cp.driver,cp.collector = agent,collector.replay,collector.driver,collector
             cp.step,cp.runtime,cp.v2_counters = cp._step,runtime,counters
             return cp,stream,box,counters
@@ -151,6 +156,10 @@ def test_full_checkpoint_restores_model_replay_sidecar_and_driver_together(tmp_p
         a.sync_policy_from_train()
         cp.save()
         node = cp.latest();validate_bundle(node,cp._identity)
+        if composition is not None:
+            assert validate_bundle(node)['identity'][KEY]==composition
+            with pytest.raises(ValueError,match='identity mismatch'):
+                validate_bundle(node,{**cp._identity,KEY:resolve_composition({'mode':'tutor'})})
         expected = parameter_digests(a.params)
         other = FixedDirectionEntryEnv(df=env._raw.copy(),config_path=str(folder/'env.yaml'))
         cb = V2Collector(other,query,tmp_path/'cb',GYM.parent/'dreamerv3',beta=1.,agent=b,

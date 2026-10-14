@@ -13,6 +13,7 @@ import embodied
 from .agent import Agent
 from .fg_s3c_agent import S3CAgent
 from .fg_s3_tutor_loss import agent_extensions, eligible_teacher, pair_mask, tutor_objective
+from .fg_s3_composition import require_ready, validate_encoder
 
 
 @contextmanager
@@ -49,6 +50,12 @@ def masked_joint_optimizer(optimizer, actor_active, critic_active, extra_active=
 
 class S3V2Agent(S3CAgent):
     def __init__(self, obs_space, act_space, config):
+        composition = config.get('s3_composition')
+        if composition is not None:
+            composition = require_ready(composition)
+            if config.s3_v2_mode != composition['legacy_mode']:
+                raise ValueError('S3_COMPOSITION_MODE_MISMATCH')
+            validate_encoder(composition, config.enc.typ)
         super().__init__(obs_space, act_space, config)
         self.mode = config.s3_v2_mode
         if self.mode not in ('a2', 'c2', 'tutor', 'b2'):

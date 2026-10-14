@@ -11,10 +11,16 @@ from embodied.run.fg_s3_source_admission import prepare_transfer
 from dreamerv3.fg_s3a_actor import parameter_digests
 from gym_trading_env.research.fg_replay import signed
 from gym_trading_env.envs.entry_contract import fingerprint
+from dreamerv3.fg_s3_composition import KEY, require_ready, validate_encoder
 
 
 def make_agent(config, output, *, agent_cls=None, device='cpu', bc_lambda=None,
-               extra_agent_config=None):
+               extra_agent_config=None, composition=None):
+    if composition is not None:
+        composition = require_ready(composition)
+        if (extra_agent_config or {}).get('s3_v2_mode') != composition['legacy_mode']:
+            raise ValueError('S3_COMPOSITION_MODE_MISMATCH')
+        validate_encoder(composition, config['agent']['enc']['typ'])
     from dreamerv3.agent import Agent
     from gym_trading_env.research.fg_replay import FIELDS
     obs = {k:elements.Space(dtype, shape) for k,(shape,dtype) in FIELDS.items() if k!='action'}
@@ -29,6 +35,8 @@ def make_agent(config, output, *, agent_cls=None, device='cpu', bc_lambda=None,
                 sync_train_metrics=True)
     extra = {} if bc_lambda is None else dict(bc_lambda=bc_lambda)
     extra.update(extra_agent_config or {})
+    if composition is not None:
+        extra['s3_composition'] = composition
     if set(extra).intersection(cfg.agent):
         raise ValueError('Training extension must not overwrite admitted Agent config')
     return (agent_cls or Agent)(obs, act, elements.Config(**dict(cfg.agent), **extra,
@@ -38,6 +46,11 @@ def make_agent(config, output, *, agent_cls=None, device='cpu', bc_lambda=None,
 
 
 def apply_and_audit_transfer(agent, spec):
+    composition = agent.config.get('s3_composition')
+    if KEY in spec or composition is not None:
+        admitted = require_ready(spec.get(KEY))
+        if require_ready(composition) != admitted or spec['target_model_identity'].get(KEY) != admitted:
+            raise ValueError('S3_COMPOSITION_IDENTITY_MISMATCH')
     expected = spec['target_config']['agent']
     if {k:plain(agent.config[k]) for k in expected} != expected:
         raise ValueError('Target model network/optimizer/loss config differs from SourceAdmission')
@@ -101,6 +114,7 @@ def apply_and_audit_transfer(agent, spec):
             raise RuntimeError('BC non-Actor/base joint optimizer equality failed')
         baseline_equality = 'PASS'
     return signed(dict(status='PASS_REAL_MODEL_TRANSFER', devices=[str(x) for x in jax.devices()],
+        **({KEY: require_ready(agent.config.s3_composition)} if KEY in spec else {}),
         diagnostic=spec['origin']['diagnostic'],
         transfer_code_sha256=file_hash(__file__),
         source_admission_sha256=spec['content_hash'], kind=spec['kind'],
@@ -151,6 +165,7 @@ def _apply_parameter_warm_start(agent, spec, source):
     if any(saved['counters'].values()) or agent.get_avail_actor_enabled():
         raise RuntimeError('Warm-start inherited counters or Gate activation')
     return signed(dict(status='PASS_REAL_PARAMETER_WARM_START', kind='warm_start',
+        **({KEY: require_ready(agent.config.s3_composition)} if KEY in spec else {}),
         devices=[str(d) for d in jax.devices()], source_admission_sha256=spec['content_hash'],
         clock_protocol=spec['clock_protocol'], optimizer_transfer_policy=spec['optimizer_transfer_policy'],
         source_model_updates=spec['origin']['step'],
