@@ -98,6 +98,9 @@ class LiveRun:
         if 'resolved_composition' in s:
             documents.append(spec['target_model_identity'])
         composition = validate_records(s, *documents)
+        if composition is not None and composition['use_e']:
+            from embodied.run.fg_s3_e_source import validate_e_records
+            validate_e_records(*documents)
         from gym_trading_env.research.fg_s3_v2_experiment import require_training_authorization
         require_training_authorization(s, authorize_training)
         if s['device'] != 'gpu':
@@ -110,6 +113,8 @@ class LiveRun:
         if resume:
             saved = read_manifest(root/'run_identity.json')['identity']
             validate_records(s, saved)
+            if composition is not None and composition['use_e']:
+                validate_e_records(preparation, saved)
             if (saved['preparation_sha256'] != file_hash(self.prepared/'manifest.json')
                     or saved['code'] != execution_code() or saved['packages'] != runtime_versions()):
                 raise ValueError('Resume preparation/code/dependencies differ')
@@ -190,6 +195,8 @@ class LiveRun:
                 versions=preparation['versions'], diagnostic=s['scope'] == 'diagnostic')
             if s['mode'] in ('tutor', 'b2'):
                 identity['agent_extension'] = extensions
+            if 'e_binding' in preparation:
+                identity['e_binding'] = preparation['e_binding']
             if s['mode'] == 'b2':
                 identity['outcome_identity'] = outcome_catalog.identity
             write_json(root/'run_identity.json', signed(dict(identity=identity)))

@@ -46,11 +46,15 @@ class MixedExecutionPolicy:
     context() and query() are TRAIN host callbacks. Their results never enter
     actor obs, actor carry, or the returned policy outs / native Replay fields.
     """
-    def __init__(self, actor, query, context, *, beta, seed, dreamer_carry=False):
+    def __init__(self, actor, query, context, *, beta, seed, dreamer_carry=False,
+                 observation_schema=None):
         if not np.isfinite(beta) or not 0 <= beta <= 1:
             raise ValueError('Oracle mixing probability must be in [0, 1]')
         self.actor, self.query, self.context = actor, query, context
         self.beta, self.dreamer_carry = beta, dreamer_carry
+        from gym_trading_env.research.fg_s3_e_observation import fields_for
+        self.observation_schema = observation_schema
+        self.observation_keys = set(fields_for(observation_schema)) - {'action'}
         self.rng = np.random.default_rng(np.random.SeedSequence([seed, 1]))
         self.decision = None
 
@@ -59,9 +63,11 @@ class MixedExecutionPolicy:
             raise ValueError('Teacher fields leaked into policy observation')
         if len(obs['is_first']) != 1:
             raise ValueError('D0 supports one actual Env')
-        if set(obs) != {'market_seq', 'position_state', 'action_mask', 'reward',
-                        'is_first', 'is_last', 'is_terminal'}:
+        if set(obs) != self.observation_keys:
             raise ValueError('Unknown fields in the original policy observation contract')
+        if self.observation_schema is not None:
+            from gym_trading_env.research.fg_s3_e_observation import validate_e_observation
+            validate_e_observation(obs, batched=True)
         previous = None
         if carry is not None:
             previous = int(np.asarray(carry[-1]['action'] if self.dreamer_carry

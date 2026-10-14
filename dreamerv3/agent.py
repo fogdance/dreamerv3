@@ -93,8 +93,17 @@ class Agent(embodied.jax.Agent):
     dec_space = {
         k: v for k, v in obs_space.items()
         if k not in (*exclude, 'action_mask')}
+    from .fg_s3_e_encoder import S3EMultiscaleEncoder
+    if config.enc.typ == 'e_multiscale_1m15m':
+      from gym_trading_env.research.fg_s3_e_observation import (
+          E_FIELDS_V1, ENCODER_KEYS, DECODER_KEYS)
+      if set(obs_space) != set(E_FIELDS_V1) - {'action'}:
+        raise ValueError('E Agent requires the complete versioned E ObsSpace')
+      enc_space = {k: obs_space[k] for k in ENCODER_KEYS}
+      dec_space = {k: obs_space[k] for k in DECODER_KEYS}
     self.enc = {
         'simple': rssm.Encoder,
+        'e_multiscale_1m15m': S3EMultiscaleEncoder,
     }[config.enc.typ](enc_space, **config.enc[config.enc.typ], name='enc')
     self.dyn = {
         'rssm': rssm.RSSM,
