@@ -135,7 +135,8 @@ class LiveRun:
         outcome_catalog = None
         if s['mode'] == 'b2':
             from gym_trading_env.research.fg_s3_b2_outcome_catalog import OutcomeCatalog
-            outcome_catalog = OutcomeCatalog(query, env, candidates)
+            outcome_catalog = (OutcomeCatalog(query, env, candidates) if s['contracts'] is None
+                               else query.outcome_catalog)
             if read_manifest(self.prepared/'outcome_catalog.json')['identity_hash'] != outcome_catalog.identity_hash:
                 raise ValueError('Prepared OutcomeCatalog identity changed')
         self.collector = collector = V2Collector(env, query, root/'rollout', s['dreamer_root'],
