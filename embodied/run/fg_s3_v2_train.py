@@ -152,11 +152,22 @@ class LiveRun:
                                else query.outcome_catalog)
             if read_manifest(self.prepared/'outcome_catalog.json')['identity_hash'] != outcome_catalog.identity_hash:
                 raise ValueError('Prepared OutcomeCatalog identity changed')
+        e_collector = {}
+        if composition is not None and composition['use_e']:
+            from gym_trading_env.research.fg_s3_e_observation import OBS_SCHEMA
+            from gym_trading_env.research.fg_s3_e_provider import ETrainProvider
+            provider = ETrainProvider.from_train_pool(s['e_data_source_pool'],
+                Path(s['e_data_manifest']).parent,
+                contracts=None if s['contracts'] == 'ALL_TRAIN' else s['contracts'])
+            if provider.source_receipt['collection_identity'] != spec['e_binding']['data_identity']:
+                raise ValueError('E runtime provider/source admission identity mismatch')
+            e_collector = dict(observation_schema=OBS_SCHEMA, e_provider=provider)
         self.collector = collector = V2Collector(env, query, root/'rollout', s['dreamer_root'],
             seed=s['replay_seed'], beta=s['beta'], actor=lambda c, o: agent.policy(c, o, mode='train'),
             agent=agent, source_checkpoint_identity=spec['target_model_identity_hash'], existing=resume,
             replay_capacity=s['replay_capacity'], max_env_steps=s['env_steps'],
-            beta_schedule=s['beta_schedule'], outcome_catalog=outcome_catalog)
+            beta_schedule=s['beta_schedule'], outcome_catalog=outcome_catalog,
+            **e_collector)
         self.gate = make_gate_controller(plain(cfg), spec['gate_policy'], control,
                                         agent.get_avail_actor_enabled())
         source = embodied.streams.Consec(embodied.streams.Stateless(partial(collector.sample, cfg.batch_size)),
