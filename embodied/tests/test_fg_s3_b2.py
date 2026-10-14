@@ -113,6 +113,71 @@ def model(folder, bc=1., **settings):
         extra_agent_config=b2_extensions(settings))
 
 
+def test_full_checkpoint_restores_model_replay_sidecar_and_driver_together(tmp_path):
+    import elements
+    from types import SimpleNamespace
+    from embodied.run.fg_checkpoint import FullCheckpoint,RuntimeState,StepSchedule,validate_bundle
+    from embodied.run.fg_s3_v2_train import Counters
+    from gym_trading_env.envs.entry_env import FixedDirectionEntryEnv
+    folder = tmp_path/'market';folder.mkdir()
+    env = single_env(folder,[(1000,1000,1000,1000),(1000,1007,1000,1007),
+        (1000,1000,1000,1000)]*30,candidate='C1',fees=3,chunk=90,
+        times=pd.date_range('2026-01-05 13:31',periods=90,freq='min'),
+        calendar=[dict(start='2026-01-05 13:30',end='2026-01-05 15:30')],liquidation='2026-01-05 15:30')
+    catalog,query = fixture_catalog(env,folder)
+    a,b = model(tmp_path/'a',b2_mix_warmup=2,b2_mix_ramp=2,b2_min_event_updates=2),\
+          model(tmp_path/'b',b2_mix_warmup=2,b2_mix_ramp=2,b2_min_event_updates=2)
+    ca = V2Collector(env,query,tmp_path/'ca',GYM.parent/'dreamerv3',beta=1.,agent=a,
+        actor=lambda c,o:a.policy(c,o,mode='train'),outcome_catalog=catalog)
+    cb = None
+    try:
+        ca.advance(70)
+        def wire(agent,collector,carry):
+            stream = embodied.streams.Consec(embodied.streams.Stateless(lambda:collector.sample(1)),
+                length=64,consec=1,prefix=1,strict=True)
+            box = [carry]
+            runtime = RuntimeState(StepSchedule(100,100),SimpleNamespace(),[stream],
+                lambda:box[0],lambda c:box.__setitem__(0,agent.restore_carry(c)),{},[0])
+            counters = Counters('b2')
+            cp = FullCheckpoint(tmp_path/'full_ckpt',elements.Counter(70),
+                dict(protocol='CONTROLLED_CPU_B2_FULL_STACK',mode='b2'),[stream],reserve_gib=0,keep_all=True)
+            cp.agent,cp.replay,cp.driver,cp.collector = agent,collector.replay,collector.driver,collector
+            cp.step,cp.runtime,cp.v2_counters = cp._step,runtime,counters
+            return cp,stream,box,counters
+        cp,stream,box,counters = wire(a,ca,a.init_train(1))
+        for seed in (1000,1001):
+            box[0],_,_ = a.train(box[0],gpu_batch(a,next(iter(stream)),seed))
+            counters.state['all_updates'] += 1
+        a.sync_policy_from_train()
+        cp.save()
+        node = cp.latest();validate_bundle(node,cp._identity)
+        expected = parameter_digests(a.params)
+        other = FixedDirectionEntryEnv(df=env._raw.copy(),config_path=str(folder/'env.yaml'))
+        cb = V2Collector(other,query,tmp_path/'cb',GYM.parent/'dreamerv3',beta=1.,agent=b,
+            actor=lambda c,o:b.policy(c,o,mode='train'),outcome_catalog=catalog)
+        cb.journal.write_bytes(ca.journal.read_bytes())
+        restored,bs,bb,bcounters = wire(b,cb,b.init_train(1))
+        restored.load(node)
+        assert expected == parameter_digests(b.params) and counters.save() == bcounters.save()
+        assert ca.records == cb.records and ca.pending == cb.pending
+        ca.advance(75);cb.advance(75)
+        assert ca.records == cb.records and ca.pending == cb.pending
+        x,y = next(iter(stream)),next(iter(bs))
+        for k in x:np.testing.assert_array_equal(x[k],y[k])
+        box[0],_,m = a.train(box[0],gpu_batch(a,x,1002))
+        bb[0],_,_ = b.train(bb[0],gpu_batch(b,y,1002))
+        assert parameter_digests(a.params) == parameter_digests(b.params)
+        assert m['b2/mix_next'] > 0 and m['opt/actor_grad_norm'] > 0 and m['opt/rssm_grad_norm'] > 0
+        write_json(GYM/'artifacts/fg_s3_v2/full_checks/b2_full_checkpoint_cpu.json',signed(dict(
+            status='PASS_CPU_FULL_CHECKPOINT_MODEL_REPLAY_SIDECAR_DRIVER',
+            scope='small controlled original-Env model; not new Full GPU acceptance',
+            fixture_warmup=2,formal_research_config_warmup=100,collector_advances_after_restore=5,
+            next_update_parameters_exact=True,partial_labels_used=False,gpu='NOT_RUN')))
+    finally:
+        ca.close()
+        if cb:cb.close()
+
+
 def test_outcome_masked_numerics_and_signed_bounded_adapter():
     labels = dict(outcome_event=jnp.array([[0,3,-1]]), outcome_event_valid=jnp.array([[1,1,0]],bool),
         outcome_early10=jnp.array([[0,1,-1]]), outcome_early_valid=jnp.array([[1,1,0]],bool))
