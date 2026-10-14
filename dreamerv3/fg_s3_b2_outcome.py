@@ -58,6 +58,13 @@ class MixSchedule(nj.Module):
         value = jnp.clip((self.updates.read() - self.warmup) / self.ramp, 0., 1.)
         return jnp.where(self.event_updates.read() >= self.minimum, value, jnp.float32(0))
 
+    def diagnostics(self):
+        mix = self.read()
+        return {'b2/schedule_updates_before': self.updates.read(),
+                'b2/schedule_event_updates_before': self.event_updates.read(),
+                'b2/mix_stage': jnp.where(mix <= 0, 0, jnp.where(mix < 1, 1, 2)),
+                'b2/event_preheat_ready': self.event_updates.read() >= self.minimum}
+
     def advance(self, event_active):
         self.updates.write(self.updates.read() + 1)
         self.event_updates.write(self.event_updates.read() + event_active.astype(jnp.int32))

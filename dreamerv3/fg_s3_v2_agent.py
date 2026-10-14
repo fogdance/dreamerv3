@@ -135,13 +135,20 @@ class S3V2Agent(S3CAgent):
         mix = self.b2_schedule.read()
         raw = policy[self.action_key].logits
         final = raw.at[..., 1].add(mix * delta)
+        unclipped = parts.sum(-1) + early_part
         # Raw Actor categorical has no unimix. Mask/unimix is applied once to
         # each separate distribution, never reapplied to transformed logits.
         dist = self._masked_policy({self.action_key: embodied.jax.outs.Categorical(final)}, mask, False)
         base = self._masked_policy(policy, mask, False)[self.action_key]
         diagnostics = {'b2/p_add_base': base.prob(jnp.ones(raw.shape[:-1], jnp.int32)),
             'b2/p_add_final': dist[self.action_key].prob(jnp.ones(raw.shape[:-1], jnp.int32)),
-            'b2/delta_logit': mix * delta, 'b2/raw_delta_logit': delta,
+            'b2/delta_logit': mix * delta,
+            'b2/raw_delta_logit': delta,  # Legacy name: historically the CLIPPED adapter value.
+            'b2/adapter_unclipped_delta_logit': unclipped,
+            'b2/adapter_clipped_delta_logit': delta,
+            'b2/clip_saturation': jnp.abs(unclipped) >= self.config.b2_delta_max,
+            'b2/base_logit_add_minus_wait': raw[..., 1] - raw[..., 0],
+            'b2/final_logit_add_minus_wait': final[..., 1] - final[..., 0],
             'b2/mix_value': jnp.broadcast_to(mix, raw.shape[:-1]),
             'b2/outcome_probs': probs, 'b2/early_prob': early_prob,
             'b2/adapter_parts': parts, 'b2/adapter_early': early_part,
@@ -173,7 +180,9 @@ class S3V2Agent(S3CAgent):
             'bc/fp': (valid & predicted & ~actual).sum(), 'bc/tn': (valid & ~predicted & ~actual).sum(),
             'bc/p_add_mean': masked_mean(diagnostics['b2/p_add_final'], valid),
             'bc/accuracy': masked_mean((predicted == actual).astype(jnp.float32), valid)}
-        for key in ('p_add_base', 'p_add_final', 'delta_logit', 'mix_value', 'argmax_changed'):
+        for key in ('p_add_base', 'p_add_final', 'delta_logit', 'mix_value', 'argmax_changed',
+                    'adapter_unclipped_delta_logit', 'adapter_clipped_delta_logit', 'clip_saturation',
+                    'base_logit_add_minus_wait', 'final_logit_add_minus_wait'):
             extra['b2/'+key+'_mean'] = masked_mean(diagnostics['b2/'+key], valid)
         return bc, extra
 
@@ -224,6 +233,7 @@ class S3V2Agent(S3CAgent):
             total += self.config.b2_event_lambda * el + self.config.b2_early_lambda * al
             metrics.update(outcome_metrics)
             metrics['b2/mix_value'] = self.b2_schedule.read()
+            metrics.update(self.b2_schedule.diagnostics())
             _ = self.b2_adapter.values
         if self.mode == 'tutor':
             total += jnp.float32(self.tutor['tutor_pair_lambda']) * extra['tutor/pair_loss']
@@ -293,6 +303,7 @@ class S3V2Agent(S3CAgent):
         metrics.update(extra)
         if self.mode == 'b2':
             self.b2_schedule.advance(extra_active['b2_event/'])
+            metrics['b2/mix_next'] = self.b2_schedule.read()
         if self.mode == 'c2':
             def update_slow():
                 self.slowval.update()

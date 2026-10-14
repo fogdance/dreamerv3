@@ -15,10 +15,11 @@ import embodied
 from embodied.jax.outs import Categorical, Binary
 from embodied.run.fg_s3_source_transfer import make_agent
 from dreamerv3.fg_s3_v2_agent import S3V2Agent
-from dreamerv3.fg_s3_b2_outcome import b2_extensions, DecisionAdapter, outcome_objective
+from dreamerv3.fg_s3_b2_outcome import b2_extensions, DecisionAdapter, MixSchedule, outcome_objective
 from dreamerv3.fg_s3a_actor import parameter_digests
 from gym_trading_env.research.fg_s3_v2_gpu_check import small_config, gpu_batch
 from gym_trading_env.research.fg_s3_v2_collector import V2Collector
+from gym_trading_env.research.fg_replay import signed,write_json
 
 GYM = Path(__file__).resolve().parents[3]/'gym-trading-env'
 sys.path.insert(0,str(GYM/'tests/entry_v1'))
@@ -56,6 +57,55 @@ def frozen(k):
 def parameter_group(k, prefix):
     # Match the actual Ninjax Tree encoding used by persisted optimizer state.
     return k.startswith(prefix) or (k.startswith('opt/state/') and '/'+prefix.replace('_','') in k)
+
+
+def test_full_warmup_boundary_and_insufficient_certified_events():
+    schedule = MixSchedule(100,100,100,name='full_schedule')
+    fn = nj.pure(lambda:schedule.read())
+    state,_ = fn({},seed=1,create=True,modify=True)
+    for updates,events,expected in [(99,99,0),(100,100,0),(101,100,.01),
+                                    (199,199,.99),(200,200,1),(400,99,0)]:
+        state['full_schedule/updates/value'] = jnp.int32(updates)
+        state['full_schedule/event_updates/value'] = jnp.int32(events)
+        _, value = fn(state,seed=1)
+        np.testing.assert_allclose(value,expected,atol=1e-7)
+
+
+def test_full_schedule_checkpoint_and_joint_optimizer_continue(raw_batch,tmp_path):
+    settings = dict(b2_mix_warmup=100,b2_mix_ramp=100,b2_min_event_updates=100)
+    a = model(tmp_path/'full',**settings)
+    for key in ('updates','event_updates'):
+        a.params['b2_schedule/'+key+'/value'] = jnp.int32(99)
+    carry = a.init_train(1)
+    for i in range(2):
+        before = parameter_digests(a.params)
+        carry,_,m = a.train(carry,gpu_batch(a,raw_batch,800+i))
+        after = parameter_digests(a.params)
+        assert m['b2/mix_value'] == 0 and m['opt/critic_grad_norm'] == 0
+        assert all(before[k] == after[k] for k in before if frozen(k) or parameter_group(k,'b2_adapter/'))
+    saved = pickle.loads(pickle.dumps(a.save_exact()))
+    b = model(tmp_path/'restored_full',**settings)
+    b.load_exact(saved)
+    assert parameter_digests(a.params) == parameter_digests(b.params)
+    before = parameter_digests(a.params)
+    restored_carry = jax.tree.map(lambda x:x.copy(),carry)
+    carry,_,m = a.train(carry,gpu_batch(a,raw_batch,802))
+    after = parameter_digests(a.params)
+    assert m['b2/mix_stage'] == 1 and m['b2/mix_value'] > 0
+    assert m['opt/actor_grad_norm'] > 0 and m['opt/rssm_grad_norm'] > 0 and m['opt/outcome_head_grad_norm'] > 0
+    assert int(np.asarray(a.params['opt/step/value'])) == int(np.asarray(saved['params']['opt/step/value'])) + 1
+    assert any(before[k] != after[k] for k in before if parameter_group(k,'b2_adapter/'))
+    b.train(restored_carry,gpu_batch(b,raw_batch,802))
+    assert int(np.asarray(b.params['b2_schedule/updates/value'])) == 102
+    assert parameter_digests(a.params) == parameter_digests(b.params)
+    write_json(GYM/'artifacts/fg_s3_v2/full_checks/b2_cpu_joint_restore.json',signed(dict(
+        status='PASS_CPU_SMALL_MODEL_FULL_SCHEDULE_AND_JOINT_RESTORE',
+        scope='controlled original-Env/native-Replay fixture; not production GPU training',
+        schedule_boundary_counts_injected=True,warmup=100,ramp=100,minimum_event_updates=100,
+        real_gradient_updates_per_model=3,exact_restored_next_update_parameters=True,
+        actor_grad=float(m['opt/actor_grad_norm']),rssm_grad=float(m['opt/rssm_grad_norm']),
+        outcome_head_grad=float(m['opt/outcome_head_grad_norm']),critic_grad=float(m['opt/critic_grad_norm']),
+        mix_value=float(m['b2/mix_value']),mix_next=float(m['b2/mix_next']),gpu='NOT_RUN')))
 
 
 def model(folder, bc=1., **settings):
@@ -187,6 +237,11 @@ def test_real_policy_mix_zero_equivalence_sync_and_mask(raw_batch,tmp_path):
     _,_,out = a.policy(a.init_policy(1),obs,mode='eval')
     assert out['b2/mix_value'][0]==1 and abs(out['b2/delta_logit'][0])>0
     assert out['b2/p_add_final'][0]!=out['b2/p_add_base'][0]
+    np.testing.assert_allclose(out['b2/final_logit_add_minus_wait'],
+        out['b2/base_logit_add_minus_wait']+out['b2/delta_logit'],rtol=1e-6,atol=1e-6)
+    np.testing.assert_allclose(out['b2/adapter_unclipped_delta_logit'],
+        np.asarray(out['b2/adapter_parts']).sum(-1)+out['b2/adapter_early'],rtol=1e-6,atol=1e-6)
+    np.testing.assert_array_equal(out['b2/raw_delta_logit'],out['b2/adapter_clipped_delta_logit'])
     obs['action_mask'] = np.array([[1,0]],np.float32)
     _,act,out = a.policy(a.init_policy(1),obs,mode='train')
     assert act['action'][0]==out['p_add'][0]==0
