@@ -136,12 +136,20 @@ class LiveRun:
             check_files(saved['immutable_files'])
         else:
             root.mkdir(parents=True, exist_ok=False)
+        e_profile = None
+        if composition is not None and composition['use_e']:
+            from e_data_v1.provider import ETrainAdmission
+            e_profile = ETrainAdmission.from_train_pool(
+                s['e_data_source_pool'], Path(s['e_data_manifest']).parent,
+                self.prepared/'train_pool.json', contracts=s['contracts'])
+            if e_profile.source_receipt['collection_identity'] != spec['e_binding']['data_identity']:
+                raise ValueError('Native E Env/source admission identity mismatch')
         if s['contracts'] is None:
             query, env, _, _, candidates = load_train_query(s['env_receipt'], s['oracle_receipt'], s['contract'],
                 receipt_scope=s.get('oracle_receipt_scope', 'aggregate'))
         else:
             from gym_trading_env.research.fg_s3_v2_train_pool import load_pool
-            query, env = load_pool(s, self.prepared)
+            query, env = load_pool(s, self.prepared, e_profile=e_profile)
         if query.identity_hash != preparation['oracle_identity']:
             raise ValueError('Prepared Oracle identity changed')
         self.offset = int(spec.get('target_update_offset', spec['origin']['step']))
@@ -168,15 +176,9 @@ class LiveRun:
             if read_manifest(self.prepared/'outcome_catalog.json')['identity_hash'] != outcome_catalog.identity_hash:
                 raise ValueError('Prepared OutcomeCatalog identity changed')
         e_collector = {}
-        if composition is not None and composition['use_e']:
+        if e_profile is not None:
             from gym_trading_env.research.fg_s3_e_observation import OBS_SCHEMA
-            from gym_trading_env.research.fg_s3_e_provider import ETrainProvider
-            provider = ETrainProvider.from_train_pool(s['e_data_source_pool'],
-                Path(s['e_data_manifest']).parent,
-                contracts=None if s['contracts'] == 'ALL_TRAIN' else s['contracts'])
-            if provider.source_receipt['collection_identity'] != spec['e_binding']['data_identity']:
-                raise ValueError('E runtime provider/source admission identity mismatch')
-            e_collector = dict(observation_schema=OBS_SCHEMA, e_provider=provider)
+            e_collector = dict(observation_schema=OBS_SCHEMA, e_profile=e_profile)
         self.collector = collector = V2Collector(env, query, root/'rollout', s['dreamer_root'],
             seed=s['replay_seed'], beta=s['beta'], actor=lambda c, o: agent.policy(c, o, mode='train'),
             agent=agent, source_checkpoint_identity=spec['target_model_identity_hash'], existing=resume,
