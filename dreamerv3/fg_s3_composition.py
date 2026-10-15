@@ -5,8 +5,8 @@ LEGACY_SCHEMA = 'FG_S3_V2_DIAGNOSTIC_CONFIG_V1'
 CONFIG_SCHEMA = 'FG_S3_V2_COMPOSITION_CONFIG_V1'
 KEY = 'resolved_composition'
 ENCODERS = ('legacy_1m', 'e_multiscale_1m15m')
-TEACHING = ('a2', 'tutor_cd', 'b2', 'tutor_cd_b2')
-MODES = {'a2': 'a2', 'tutor_cd': 'tutor', 'b2': 'b2', 'tutor_cd_b2': None}
+TEACHING = ('a2', 'tutor_cd', 'b2', 'tutor_cd_b2', 'quality_v2')
+MODES = {'a2': 'a2', 'tutor_cd': 'tutor', 'b2': 'b2', 'tutor_cd_b2': None, 'quality_v2':'quality_v2'}
 
 
 def resolve_composition(config):
@@ -26,16 +26,18 @@ def resolve_composition(config):
         mode = config.get('mode')
         if mode == 'c2':
             return None
-        if not isinstance(mode, str) or mode not in ('a2', 'tutor', 'b2'):
+        if not isinstance(mode, str) or mode not in ('a2', 'tutor', 'b2', 'quality_v2'):
             raise ValueError('Select composition or legacy mode: a2/tutor/b2/c2')
-        encoder, teaching = 'legacy_1m', {'a2': 'a2', 'tutor': 'tutor_cd', 'b2': 'b2'}[mode]
+        encoder, teaching = 'legacy_1m', {'a2': 'a2', 'tutor': 'tutor_cd', 'b2': 'b2', 'quality_v2':'quality_v2'}[mode]
     if not isinstance(encoder, str) or encoder not in ENCODERS:
         raise ValueError('Unknown encoder; select '+', '.join(ENCODERS))
     if not isinstance(teaching, str) or teaching not in TEACHING:
         raise ValueError('Unknown teaching; select '+', '.join(TEACHING))
     # E+A2 and E+B2 passed real TRAIN CPU, size50m GPU 1K and cold resume.
-    # Tutor-CD retains its prior release; joint Tutor+B2 is still unimplemented.
-    state = 'waiting_tutor_b2' if teaching == 'tutor_cd_b2' else 'ready'
+    # Tutor-CD retains its prior release. Quality uses the admitted legacy
+    # encoder only; E+Quality and joint Tutor+B2 need separate implementation.
+    state = ('waiting_tutor_b2' if teaching == 'tutor_cd_b2' else
+             'waiting_quality_e' if encoder == 'e_multiscale_1m15m' and teaching == 'quality_v2' else 'ready')
     return dict(encoder=encoder, teaching=teaching, base_oracle_bc=True,
         use_e=encoder != 'legacy_1m', use_tutor=teaching in ('tutor_cd', 'tutor_cd_b2'),
         use_b2=teaching in ('b2', 'tutor_cd_b2'), legacy_mode=MODES[teaching],
@@ -60,6 +62,8 @@ def require_ready(value):
         raise ValueError('S3_TUTOR_B2_NOT_IMPLEMENTED')
     if value['support_state'] == 'waiting_e':
         raise ValueError('S3_E_ENCODER_NOT_IMPLEMENTED')
+    if value['support_state'] == 'waiting_quality_e':
+        raise ValueError('S3_QUALITY_E_NOT_IMPLEMENTED')
     return value
 
 

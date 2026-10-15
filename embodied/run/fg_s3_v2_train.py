@@ -54,6 +54,9 @@ class Counters:
         if mode == 'b2':
             self.state.update(outcome_event_updates=0, outcome_early_updates=0,
                               outcome_head_updates=0, adapter_updates=0)
+        if mode=='quality_v2':
+            self.state.update({name+'_updates':0 for name in ('quality_actor','quality_event','quality_touch',
+                'quality_adverse','quality_score','quality_q_c1','quality_q_v2')})
 
     def save(self):
         return copy.deepcopy(self.state)
@@ -97,7 +100,8 @@ class LiveRun:
     def validate_execution(self, settings, preparation):
         if preparation['protocol'] != 'FG_S3_V2_PREPARED_V1' or 'e_admission' in settings:
             raise ValueError('E acceptance snapshots cannot enter the production lifecycle')
-        if settings['device'] != 'gpu':
+        if settings['device'] != 'gpu' and not (
+                settings['mode']=='quality_v2' and settings['device']=='cpu' and settings['scope']=='diagnostic'):
             raise ValueError('V2 model work is GPU-only')
 
     def __init__(self, prepared, run_dir, *, resume=False, authorize_training=False):
@@ -144,7 +148,10 @@ class LiveRun:
                 self.prepared/'train_pool.json', contracts=s['contracts'])
             if e_profile.source_receipt['collection_identity'] != spec['e_binding']['data_identity']:
                 raise ValueError('Native E Env/source admission identity mismatch')
-        if s['contracts'] is None:
+        if s['mode']=='quality_v2':
+            from gym_trading_env.research.fg_s3_quality_experiment_v2 import load_quality_pool
+            query,env=load_quality_pool(s,self.prepared)
+        elif s['contracts'] is None:
             query, env, _, _, candidates = load_train_query(s['env_receipt'], s['oracle_receipt'], s['contract'],
                 receipt_scope=s.get('oracle_receipt_scope', 'aggregate'))
         else:
@@ -155,7 +162,7 @@ class LiveRun:
         self.offset = int(spec.get('target_update_offset', spec['origin']['step']))
         cfg = self.config = elements.Config(frozen_model['config'])
         extensions = agent_extensions(s)
-        if s['mode'] in ('tutor', 'b2') and frozen_model['agent_extension'] != extensions:
+        if s['mode'] in ('tutor', 'b2','quality_v2') and frozen_model['agent_extension'] != extensions:
             raise ValueError('Frozen extended model configuration differs from settings')
         self.agent = agent = self.create_agent(plain(cfg), root/'model', device=s['device'],
             agent_cls=self.agent_class, bc_lambda=s['bc_lambda'], extra_agent_config=extensions,
@@ -184,6 +191,7 @@ class LiveRun:
             agent=agent, source_checkpoint_identity=spec['target_model_identity_hash'], existing=resume,
             replay_capacity=s['replay_capacity'], max_env_steps=s['env_steps'],
             beta_schedule=s['beta_schedule'], outcome_catalog=outcome_catalog,
+            quality_catalog=query if s['mode']=='quality_v2' else None,
             **e_collector)
         self.gate = make_gate_controller(plain(cfg), spec['gate_policy'], control,
                                         agent.get_avail_actor_enabled())
@@ -221,10 +229,20 @@ class LiveRun:
                 seed=cfg.seed, mix_replay_seed=s['replay_seed'], beta=s['beta'],
                 beta_schedule=s['beta_schedule'], bc_lambda=s['bc_lambda'],
                 versions=preparation['versions'], diagnostic=s['scope'] == 'diagnostic')
-            if s['mode'] in ('tutor', 'b2'):
+            if s['mode'] in ('tutor', 'b2','quality_v2'):
                 identity['agent_extension'] = extensions
             if 'e_binding' in preparation:
                 identity['e_binding'] = preparation['e_binding']
+            if s['mode']=='quality_v2':
+                identity.update(quality_training_contracts=sorted(query.queries),
+                    quality_score_policy='FG_S3_QUALITY_TP_MARKET_DAY_V1',
+                    quality_catalog_protocol='FG_S3_QUALITY_CATALOG_V1')
+                if s.get('quality_admission_policy'):
+                    source=self.prepared/'quality_admission_policy.json'
+                    target=root/'quality_admission_policy.json'
+                    target.write_bytes(source.read_bytes())
+                    identity['quality_admission_policy']=dict(path=str(target),sha256=file_hash(target))
+                    identity['immutable_files'][str(target)]=file_hash(target)
             if s['mode'] == 'b2':
                 identity['outcome_identity'] = outcome_catalog.identity
             write_json(root/'run_identity.json', signed(dict(identity=identity)))
@@ -276,7 +294,8 @@ class LiveRun:
             raise RuntimeError('Inactive RL changed the Critic during a joint update')
         c = self.counters.state
         c['all_updates'] += 1
-        c['wm_updates'] += 1
+        c['wm_updates'] += int(not (self.settings['mode']=='quality_v2' and
+                                    self.settings['quality_stage']=='HEADS_ONLY'))
         c['bc_valid_updates'] += int(bool(mets['bc/active']))
         c['bc_add_updates'] += int(bool(mets['bc/active']) and (valid & (y == 1)).any())
         c['rl_actor_updates'] += int(bool(mets['v2/rl_active']))
@@ -295,6 +314,9 @@ class LiveRun:
             c['adapter_updates'] += int(bool(mets['opt/adapter_changed']))
             if int(host(self.agent.params['b2_schedule/updates/value'])) != c['all_updates']:
                 raise ValueError('B2 schedule is not aligned with completed joint updates')
+        if self.settings['mode']=='quality_v2':
+            for name in ('quality_actor','quality_event','quality_touch','quality_adverse','quality_score','quality_q_c1','quality_q_v2'):
+                c[name+'_updates']+=int(bool(mets['opt/'+name+'_changed']))
         if int(self.agent.n_updates) != self.offset + c['all_updates']:
             raise ValueError('V2 source/local update counter drift')
         agg = self.aggregates['gate']
@@ -316,6 +338,9 @@ class LiveRun:
             metrics={k: float(np.asarray(v)) for k, v in mets.items()
                      if np.asarray(v).size == 1 and np.isfinite(v).all()})
         positives = float(mets.get('bc/tp', 0)) + float(mets.get('bc/fn', 0))
+        if self.settings['mode']=='quality_v2' and not bool(mets.get('quality/gradient_sampled',False)):
+            for key in row['metrics']:
+                if key.startswith('quality/grad/'): row['metrics'][key]=None
         row['oracle_add_recall'] = float(mets['bc/tp'])/positives if positives else None
         if self.settings['mode'] == 'b2':
             from dreamerv3.fg_s3_b2_outcome import EVENTS
@@ -361,6 +386,8 @@ class LiveRun:
         return row
 
     def report_gate(self):
+        if self.settings['mode']=='quality_v2':
+            return  # No imagination/RL Gate activation in the initial quality protocol.
         if self.last_batch is None:
             return
         _, metrics = self.agent.report(self.carry['report'], dict(self.last_batch))
@@ -407,9 +434,11 @@ class LiveRun:
                                        ('val/', 'slowval/', 'slowval_count/', 'retnorm/', 'valnorm/', 'advnorm/'))
                                        or (k.startswith('opt/state/') and '/val/' in k) for k in changed):
                 raise RuntimeError('Non-RL update changed a frozen Critic/RL state')
+            if audit and s['mode']=='quality_v2' and any(k.startswith('pol/') for k in changed):
+                raise RuntimeError('Quality update changed the frozen reference Actor')
             cycle = dict(env_steps=int(self.step), agent_updates=int(self.agent.n_updates), changed_keys=changed,
                          parameter_audited=audit,
-                         actor_changed=any(r['metrics']['opt/actor_changed'] for r in updated),
+                         actor_changed=any(r['metrics']['opt/quality_actor_changed' if s['mode']=='quality_v2' else 'opt/actor_changed'] for r in updated),
                          wm_changed=any(r['metrics']['opt/wm_changed'] for r in updated),
                          counts=dict(self.collector.counts), gate=self.gate.metrics(),
                          beta_schedule=self.collector.beta_schedule.save(),
@@ -469,6 +498,34 @@ class LiveRun:
                 mix_event_updates=int(host(self.agent.params['b2_schedule/event_updates/value'])),
                 critic_rl_frozen=True, calibration_scope='sampled TRAIN supervision; not held-out quality')
             result = signed({k: v for k, v in result.items() if k != 'content_hash'})
+        if s['mode']=='quality_v2':
+            from gym_trading_env.research.fg_s3_quality_catalog_v2 import coverage,train_priors,write_catalog_receipt
+            records=[json.loads(line) for line in self.collector.journal.read_text().splitlines()]
+            catalog_path=self.root/f'quality_catalog_step_{int(self.step):012}.json'
+            write_catalog_receipt(catalog_path,dict(fold='TRAIN',
+                score_policy='FG_S3_QUALITY_TP_MARKET_DAY_V1',
+                prepared_dir=str(self.prepared),prepared_manifest_sha256=file_hash(self.prepared/'manifest.json'),
+                journal=str(self.collector.journal),journal_prefix_bytes=self.collector.journal.stat().st_size,
+                journal_prefix_sha256=file_hash(self.collector.journal),
+                teacher_identities=sorted(self.collector.quality_catalog.teacher_identities),
+                source_git=self.identity['versions'],source_code=self.identity['code'],
+                checkpoint=str(node),
+                checkpoint_manifest_sha256=file_hash(node/'manifest.json')),records)
+            prior=train_priors(records)
+            write_json(self.root/'train_prediction_prior.json',signed({
+                **{k:v for k,v in prior.items() if k!='content_hash'},
+                'checkpoint_manifest_sha256':file_hash(node/'manifest.json'),'source_run_id':self.identity['run_id']}))
+            result={k:v for k,v in result.items() if k!='content_hash'}
+            result['quality']=dict(agent_extension=agent_extensions(s),
+                catalog=str(catalog_path),catalog_sha256=file_hash(catalog_path),
+                stage=s['quality_stage'],actor_influence=s['quality_stage']=='CONTROLLED_FULL',
+                base_model_frozen=s['quality_stage']=='HEADS_ONLY',
+                prediction_admission_status='PREDICTION_GATE_PENDING' if s['quality_stage']=='HEADS_ONLY' else 'ADMITTED',
+                head_update_counts={k:v for k,v in self.counters.state.items() if k.startswith('quality_')},
+                coverage=coverage(records),q_fusion_status='ADMITTED' if s['quality_q_admitted'] else 'FULL_Q_PENDING',
+                calibration_status='NOT_CALIBRATED',critic_rl_frozen=True,reference_actor_frozen=True,
+                evidence_scope='CPU_DIAGNOSTIC' if s['device']=='cpu' else 'GPU_RESEARCH')
+            result=signed(result)
         write_json(self.root/'training_receipt.json', result)
         return result
 

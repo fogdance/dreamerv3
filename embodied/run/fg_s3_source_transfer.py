@@ -183,6 +183,18 @@ def _apply_and_audit_transfer(agent, spec):
         policy_synchronized=True, independent_bc_optimizer_imported=False))
 
 
+def admitted_auxiliary_parameters(target, source, expected, *,prefixes=('quality_event/','quality_touch/','quality_adverse/','quality_score/')):
+    """Copy only the explicitly evaluated auxiliary groups; retain fresh optimizer state."""
+    keys={k for k in source if k.startswith(prefixes)}
+    if (keys!=set(expected) or not all(any(k.startswith(p) for k in keys) for p in prefixes) or
+            parameter_digests({k:source[k] for k in keys})!=expected):
+        raise ValueError('Admitted prediction parameter evidence differs')
+    if any(k not in target or target[k].shape!=source[k].shape or
+           target[k].dtype!=source[k].dtype or not np.isfinite(source[k]).all() for k in keys):
+        raise ValueError('Admitted prediction parameter schema/finite mismatch')
+    return {k:source[k].copy() for k in keys}
+
+
 def _apply_parameter_warm_start(agent, spec, source):
     """New economic semantics: copy only authenticated NN weights into fresh state."""
     groups = ('enc/', 'dyn/', 'dec/', 'rew/', 'con/', 'avail/', 'pol/', 'val/')
@@ -198,6 +210,47 @@ def _apply_parameter_warm_start(agent, spec, source):
     # The new target tracks its copied Critic from its first update.
     slow = {k for k in fresh['params'] if k.startswith('slowval/')}
     fresh['params'].update({k: fresh['params']['val/'+k[len('slowval/'):]] for k in slow})
+    quality = spec.get('agent_extension',{}).get('s3_v2_mode') == 'quality_v2'
+    extra_copied = set()
+    actor_copied = set()
+    prediction_copied = {}
+    if quality:
+        for key in keys:
+            if key.startswith('pol/'):
+                target = 'quality_actor/'+key[len('pol/'):]
+                if target not in fresh['params'] or fresh['params'][target].shape != source['params'][key].shape:
+                    raise ValueError('QualityActor cannot inherit source Actor shape')
+                fresh['params'][target] = source['params'][key].copy()
+                extra_copied.add(target)
+                actor_copied.add(target)
+        for key in slow:
+            if key in source['params']: fresh['params'][key]=source['params'][key]
+        if spec['agent_extension']['quality_stage']=='CONTROLLED_FULL':
+            from embodied.run.fg_checkpoint import validate_bundle
+            proof=spec.get('prediction_source')
+            if not proof: raise ValueError('Controlled quality lacks admitted prediction weights')
+            node=Path(proof['checkpoint'])
+            validate_bundle(node)
+            if (file_hash(node/'manifest.json')!=proof['checkpoint_manifest_sha256'] or
+                    file_hash(proof['admission_receipt'])!=proof['admission_sha256']):
+                raise ValueError('Admitted prediction Checkpoint changed after prepare')
+            predicted=pickle.loads((node/'agent.pkl').read_bytes())['params']
+            copied_heads=admitted_auxiliary_parameters(fresh['params'],predicted,proof['head_param_digests'])
+            fresh['params'].update(copied_heads)
+            prediction_copied=parameter_digests(copied_heads)
+            extra_copied.update(copied_heads)
+        if spec['agent_extension']['quality_q_admitted']:
+            proof=spec.get('q_source')
+            if not proof:raise ValueError('Full Q lacks its trained numerical Q source')
+            node=Path(proof['checkpoint']);validate_bundle(node)
+            if (file_hash(node/'manifest.json')!=proof['checkpoint_manifest_sha256'] or
+                    file_hash(proof['admission_receipt'])!=proof['admission_sha256']):
+                raise ValueError('Trained Q source changed after prepare')
+            params=pickle.loads((node/'agent.pkl').read_bytes())['params']
+            copied_q=admitted_auxiliary_parameters(fresh['params'],params,proof['head_param_digests'],
+                prefixes=('quality_q_c1/','quality_q_v2/'))
+            fresh['params'].update(copied_q);extra_copied.update(copied_q)
+            prediction_copied.update(parameter_digests(copied_q))
     fresh['policy_params'] = {k:fresh['params'][k] for k in agent.policy_keys}
     fresh.update(pending_sync=None, pending_outs=None, pending_mets=None)
     agent.load_exact(fresh, transfer=True)
@@ -206,7 +259,9 @@ def _apply_parameter_warm_start(agent, spec, source):
     copied = parameter_digests({k:source['params'][k] for k in keys})
     if any(after[k] != v for k,v in copied.items()):
         raise RuntimeError('Warm-start altered inherited NN parameter bytes')
-    if any(after[k] != initialized[k] for k in after if k not in keys | slow):
+    if any(after[k]!=v for k,v in prediction_copied.items()):
+        raise RuntimeError('Warm-start altered admitted prediction parameter bytes')
+    if any(after[k] != initialized[k] for k in after if k not in keys | slow | extra_copied):
         raise RuntimeError('Warm-start changed fresh optimizer/Normalizer/Gate state')
     saved = agent.save_exact()
     if any(saved['counters'].values()) or agent.get_avail_actor_enabled():
@@ -218,9 +273,12 @@ def _apply_parameter_warm_start(agent, spec, source):
         source_model_updates=spec['origin']['step'],
         source_environment_steps=spec['origin'].get('environment_steps'), source_update_offset=0,
         network_parameter_keys=sorted(keys), inherited_nn_digests=copied,
-        fresh_state_digests={k:after[k] for k in after if k not in keys | slow},
+        fresh_state_digests={k:after[k] for k in after if k not in keys | slow | extra_copied},
         params_before=initialized, params_after=after, counters=saved['counters'],
         agent_extension=spec.get('agent_extension'),
-        fresh_extension_keys=sorted(k for k in after if k.startswith('b2_')),
-        slow_critic_initialized_from_critic=True, policy_synchronized=True,
+        fresh_extension_keys=sorted(k for k in after if k.startswith(('b2_','quality_')) and k not in extra_copied),
+        quality_actor_copied_keys=sorted(actor_copied),
+        admitted_auxiliary_param_digests=prediction_copied,
+        slow_critic_initialized_from_critic=not quality,slow_critic_inherited_from_source=quality,
+        policy_synchronized=True,
         independent_bc_optimizer_imported=False))
