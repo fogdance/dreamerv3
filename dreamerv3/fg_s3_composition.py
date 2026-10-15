@@ -5,8 +5,8 @@ LEGACY_SCHEMA = 'FG_S3_V2_DIAGNOSTIC_CONFIG_V1'
 CONFIG_SCHEMA = 'FG_S3_V2_COMPOSITION_CONFIG_V1'
 KEY = 'resolved_composition'
 ENCODERS = ('legacy_1m', 'e_multiscale_1m15m')
-TEACHING = ('a2', 'tutor_cd', 'b2', 'tutor_cd_b2')
-MODES = {'a2': 'a2', 'tutor_cd': 'tutor', 'b2': 'b2', 'tutor_cd_b2': None}
+TEACHING = ('a2', 'tutor_cd', 'b2', 'tutor_cd_b2', 'quality_v2')
+MODES = {'a2': 'a2', 'tutor_cd': 'tutor', 'b2': 'b2', 'tutor_cd_b2': None, 'quality_v2':'quality_v2'}
 
 
 def resolve_composition(config):
@@ -26,9 +26,9 @@ def resolve_composition(config):
         mode = config.get('mode')
         if mode == 'c2':
             return None
-        if not isinstance(mode, str) or mode not in ('a2', 'tutor', 'b2'):
+        if not isinstance(mode, str) or mode not in ('a2', 'tutor', 'b2', 'quality_v2'):
             raise ValueError('Select composition or legacy mode: a2/tutor/b2/c2')
-        encoder, teaching = 'legacy_1m', {'a2': 'a2', 'tutor': 'tutor_cd', 'b2': 'b2'}[mode]
+        encoder, teaching = 'legacy_1m', {'a2': 'a2', 'tutor': 'tutor_cd', 'b2': 'b2', 'quality_v2':'quality_v2'}[mode]
     if not isinstance(encoder, str) or encoder not in ENCODERS:
         raise ValueError('Unknown encoder; select '+', '.join(ENCODERS))
     if not isinstance(teaching, str) or teaching not in TEACHING:

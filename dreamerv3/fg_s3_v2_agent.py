@@ -58,7 +58,7 @@ class S3V2Agent(S3CAgent):
             validate_encoder(composition, config.enc.typ)
         super().__init__(obs_space, act_space, config)
         self.mode = config.s3_v2_mode
-        if self.mode not in ('a2', 'c2', 'tutor', 'b2'):
+        if self.mode not in ('a2', 'c2', 'tutor', 'b2', 'quality_v2'):
             raise ValueError('S3-V2 supports A2, C2, Tutor or B2')
         if self.mode == 'b2':
             from .fg_s3_b2_outcome import b2_extensions, DecisionAdapter, MixSchedule
@@ -83,6 +83,10 @@ class S3V2Agent(S3CAgent):
                 k: config[k] for k in ('tutor_alpha', 'tutor_pair_lambda', 'tutor_pair_tau',
                                       'tutor_hard_kappa', 'tutor_hard_wmax')}})
             self.tutor_gradient_every = config.get('tutor_gradient_every_updates',0)
+        if self.mode == 'quality_v2':
+            from .fg_s3_quality_v2 import quality_extensions, head_modules
+            self.quality = quality_extensions({'mode':self.mode,**{k:v for k,v in dict(config).items() if k.startswith('quality_')}})
+            head_modules(self,config)
         if config.replay_context != 1 or config.replay_context_mode != 'recompute_prefix':
             raise ValueError('S3-V2 requires one causal recomputed prefix')
         if not np.isfinite(config.bc_lambda) or config.bc_lambda < 0:
@@ -92,6 +96,7 @@ class S3V2Agent(S3CAgent):
         # Construct precisely the original complete NN/optimizer schema. This
         # initialization is overwritten by SourceAdmission before interaction.
         if nj.creating():
+            if self.mode == 'quality_v2': return self.quality_init_loss
             return self.b2_init_loss if self.mode == 'b2' else self.loss
         k = self.config.replay_context
         y, valid = data['teacher_action'][:, k:], data['teacher_valid'][:, k:]
@@ -105,6 +110,12 @@ class S3V2Agent(S3CAgent):
         jax.lax.cond(jnp.all(data['stepid'][:, k:] == effective_stepid),
                      lambda _: jnp.int32(0), bad, None)
         extra = {}
+        if self.mode == 'quality_v2':
+            from gym_trading_env.research.fg_s3_quality_catalog_v2 import FIELDS
+            labels = {name:data[name][:,k:] for name in FIELDS}
+            if any(x.shape[:2] != y.shape for x in labels.values()):
+                raise ValueError('Quality effective time axis differs from native Replay')
+            return partial(self.quality_loss,teacher_y=y,teacher_valid=valid,labels=labels)
         if self.mode == 'b2':
             from gym_trading_env.research.fg_s3_b2_outcome_catalog import FIELDS
             labels = {name: data[name][:, k:] for name in FIELDS}
@@ -116,6 +127,9 @@ class S3V2Agent(S3CAgent):
     @property
     def ext_space(self):
         space = super().ext_space
+        if self.mode == 'quality_v2':
+            from gym_trading_env.research.fg_s3_quality_catalog_v2 import FIELDS
+            space.update({name:elements.Space(dtype,shape) for name,(dtype,shape) in FIELDS.items()})
         if self.mode == 'b2':
             space.update(outcome_event=elements.Space(np.int32, (), 0, 6),
                 outcome_event_valid=elements.Space(bool), outcome_early10=elements.Space(np.int32, (), 0, 2),
@@ -124,6 +138,8 @@ class S3V2Agent(S3CAgent):
 
     @property
     def policy_keys(self):
+        if self.mode == 'quality_v2':
+            return '^(enc|dyn|dec|pol|quality_actor|quality_event|quality_touch|quality_adverse|quality_score|quality_q_c1|quality_q_v2)/'
         if self.mode == 'b2':
             return '^(enc|dyn|dec|pol|b2_event|b2_early|b2_adapter|b2_schedule)/'
         return super().policy_keys
@@ -133,6 +149,10 @@ class S3V2Agent(S3CAgent):
         return self.b2_event(inp, bdims), self.b2_early(inp, bdims)
 
     def policy_distribution(self, repfeat, mask, bdims):
+        if self.mode == 'quality_v2':
+            from .fg_s3_quality_v2 import policy_forward
+            dist,diagnostics,_ = policy_forward(self,self.feat2tensor(repfeat),mask,bdims)
+            return dist,diagnostics
         if self.mode == 'tutor':
             policy = self.pol(self.feat2tensor(repfeat),bdims)
             dist = self._masked_policy(policy,mask,False)
@@ -170,6 +190,56 @@ class S3V2Agent(S3CAgent):
             'b2/adapter_parts': parts, 'b2/adapter_early': early_part,
             'b2/argmax_changed': base.pred() != dist[self.action_key].pred()}
         return dist, diagnostics
+
+    def quality_init_loss(self, carry, obs, prevact, training):
+        from .fg_s3_quality_v2 import predict
+        base,aux = self.loss(carry,obs,prevact,training)
+        feat = self.feat2tensor(aux[2]['repfeat'])
+        predictions = predict(self,feat,2)
+        logits = self.quality_actor(feat,2)[self.action_key].logits
+        return base+0*(sum(x.mean() for x in predictions.values())+logits.mean()),aux
+
+    def quality_loss(self, carry, obs, prevact, training, *, teacher_y, teacher_valid, labels):
+        from .fg_s3_quality_v2 import policy_forward, teaching_objective, prediction_objective, mean,scaled_features
+        base,(carry,entries,feat,metrics) = self._components(carry,obs,prevact,training,rl=False)
+        raw = self.feat2tensor(feat)
+        scaled = scaled_features(raw,self.quality['quality_repr_grad_scale'])
+        policy,diagnostics,predictions = policy_forward(self,scaled,obs['action_mask'],2)
+        valid = eligible_teacher(obs['action_mask'],teacher_y,teacher_valid)
+        actor,am = teaching_objective(policy[self.action_key],labels,teacher_y,valid,obs['is_first'],
+                                     self.quality,self.config.bc_lambda)
+        prediction,pm = prediction_objective(predictions,labels,teacher_y,valid,self.quality)
+        if self.quality['quality_stage']=='HEADS_ONLY':
+            base=jax.lax.stop_gradient(base)*0  # Only auxiliary heads update.
+        _ = self.pol.values,self.val.values
+        metrics.update(am); metrics.update(pm)
+        for key in ('base_policy_logit','delta_O','delta_S','delta_Q','z_final','pADD_raw','pADD_after_mask_unimix'):
+            metrics['quality/'+key+'_mean'] = mean(diagnostics['quality/'+key],jnp.all(obs['action_mask']>.5,-1))
+        active = (self.quality['quality_stage']=='CONTROLLED_FULL')&(self.config.bc_lambda>0)&valid.any()
+        metrics.update({'bc/active':active.astype(jnp.float32),'bc/lambda':jnp.float32(self.config.bc_lambda),
+            'bc/total_loss':base+actor+prediction,'quality/actor_loss':actor,'quality/prediction_loss':prediction,
+            'quality/q_admitted':jnp.float32(self.quality['quality_q_admitted']),
+            'quality/base_model_frozen':jnp.float32(self.quality['quality_stage']=='HEADS_ONLY'),
+            'quality/actor_teaching_enabled':jnp.float32(self.quality['quality_stage']=='CONTROLLED_FULL'),
+            'avail/ready':self.avail_actor_gate.read(),'v2/rl_active':jnp.float32(0)})
+        diagnostic={}
+        if self.quality['quality_gradient_every_updates']:
+            diagnostic=dict(quality_features=jax.lax.stop_gradient(raw),
+                quality_predictions=jax.tree.map(jax.lax.stop_gradient,predictions))
+        return base+actor+prediction,(carry,entries,diagnostic,metrics)
+
+    def quality_term_gradient_diagnostics(self,params,features,predictions,obs,labels,y,valid):
+        from .fg_s3_quality_v2 import fuse_logits,teaching_objective
+        def terms():
+            raw=self.quality_actor(features,2)[self.action_key].logits
+            final,_=fuse_logits(raw,predictions,obs['action_mask'],self.quality)
+            dist=self._masked_policy({self.action_key:embodied.jax.outs.Categorical(final)},obs['action_mask'],False)[self.action_key]
+            total,m=teaching_objective(dist,labels,y,valid,obs['is_first'],self.quality,self.config.bc_lambda)
+            return jnp.stack([m['quality/'+k+'_loss'] for k in ('natural','balanced','strict_pair','quality_pair','soft')]+[total])
+        pure=nj.pure(terms,nested=True)
+        derivative=jax.jacrev(lambda p:pure(p,seed=0,create=False,modify=False)[1])(params)
+        return {'quality/grad/'+name+'_norm':optax.global_norm({k:v[i] for k,v in derivative.items()})
+            for i,name in enumerate(('natural','balanced','strict_pair','quality_pair','soft','total_actor'))}
 
     def b2_init_loss(self, carry, obs, prevact, training):
         base, aux = self.loss(carry, obs, prevact, training)
@@ -336,6 +406,17 @@ class S3V2Agent(S3CAgent):
             bc = ((self.config.bc_lambda > 0) & jnp.any(valid)) | (
                 (self.tutor['tutor_pair_lambda'] > 0) & jnp.any(pair_mask(y, valid, obs['is_first'])))
         extra_active = {}
+        if self.mode == 'quality_v2':
+            from .fg_s3_quality_v2 import active_branches
+            from gym_trading_env.research.fg_s3_quality_catalog_v2 import FIELDS
+            labels = {key:data[key][:,1:] for key in FIELDS}
+            valid = eligible_teacher(obs['action_mask'],data['teacher_action'][:,1:],data['teacher_valid'][:,1:])
+            extra_active = active_branches(labels,data['teacher_action'][:,1:],valid,obs['is_first'],
+                                           self.quality,self.config.bc_lambda)
+            if self.quality['quality_stage']=='HEADS_ONLY':
+                extra_active.update({'enc/':jnp.bool_(False),'dyn/':jnp.bool_(False),'dec/':jnp.bool_(False),
+                                     'rew/':jnp.bool_(False),'con/':jnp.bool_(False),'avail/':jnp.bool_(False)})
+            bc = jnp.bool_(False)  # The inherited reference Actor is frozen.
         if self.mode == 'b2':
             extra_active = {
                 'b2_event/': (self.config.b2_event_lambda > 0) & jnp.any(data['outcome_event_valid'][:, 1:]),
@@ -344,6 +425,7 @@ class S3V2Agent(S3CAgent):
         rules = {'pol/': bc | rl, 'val/': rl, **extra_active}
         frozen_params = {k: v for k, v in nj.context().items() if k.startswith(tuple(rules))}
         actor_snapshot = {k:v for k,v in frozen_params.items() if k.startswith('pol/')}
+        quality_snapshot={k:v for k,v in frozen_params.items() if k.startswith('quality_actor/')}
         step_before = self.opt.step.read()
         with masked_joint_optimizer(self.opt, bc | rl, rl, extra_active):
             metrics, (carry, _, diagnostic, extra) = self.opt(
@@ -355,6 +437,15 @@ class S3V2Agent(S3CAgent):
         nj.context().update({k: jnp.where(next(value for prefix, value in rules.items()
             if k.startswith(prefix)), nj.context()[k], old) for k, old in frozen_params.items()})
         metrics.update(extra)
+        if self.mode=='quality_v2' and self.quality['quality_gradient_every_updates']:
+            sampled=(step_before+1)%self.quality['quality_gradient_every_updates']==0
+            def quality_measure(_):
+                return self.quality_term_gradient_diagnostics(quality_snapshot,diagnostic['quality_features'],
+                    diagnostic['quality_predictions'],obs,labels,data['teacher_action'][:,1:],valid)
+            names=('natural','balanced','strict_pair','quality_pair','soft','total_actor')
+            metrics.update(jax.lax.cond(sampled,quality_measure,
+                lambda _:{'quality/grad/'+k+'_norm':jnp.float32(0) for k in names},None))
+            metrics['quality/gradient_sampled']=sampled.astype(jnp.float32)
         if self.mode == 'tutor' and self.tutor_gradient_every:
             def measure(_):
                 return self.tutor_term_gradient_diagnostics(actor_snapshot,diagnostic['tutor_features'],

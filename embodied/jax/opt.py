@@ -90,6 +90,10 @@ class Optimizer(nj.Module):
       if any(k.startswith('b2_event/') for k in params):
         groups += [('outcome_head', ('b2_event/', 'b2_early/')),
                    ('adapter', ('b2_adapter/',)), ('rssm', ('dyn/',)), ('encoder', ('enc/',))]
+      if any(k.startswith('quality_actor/') for k in params):
+        groups += [(name,(name+'/',)) for name in ('quality_actor','quality_event','quality_touch',
+                    'quality_adverse','quality_score','quality_q_c1','quality_q_v2')]
+        groups += [('rssm',('dyn/',)),('encoder',('enc/',))]
       for label, prefixes in groups:
         keys = [k for k in params if k.startswith(prefixes)]
         if not keys:

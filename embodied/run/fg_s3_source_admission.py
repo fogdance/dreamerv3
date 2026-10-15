@@ -412,6 +412,9 @@ class LiveOracleTraining:
 def inspect_source(kind, *, catalog=None, live_oracle=None, path=None, seed=None, config=None,
                    base_checkpoint=None, features=None, diagnostic=False, gate_protocol=None,
                    agent_extension=None, composition=None):
+    if agent_extension is not None and agent_extension.get('s3_v2_mode') == 'quality_v2':
+        return _inspect_quality_source(kind,catalog=catalog,path=path,config=config,seed=seed,
+            diagnostic=diagnostic,agent_extension=agent_extension,composition=composition)
     if composition is not None:
         composition = require_ready(composition)
         if composition['use_b2'] != (agent_extension is not None):
@@ -650,13 +653,16 @@ def prepare_transfer(spec, target_schema=None):
         actual = {k:(v.shape,str(v.dtype)) for k,v in state['params'].items()}
         extension = spec.get('agent_extension')
         if spec['kind'] == 'warm_start' and extension is not None:
-            prefixes = ('b2_event/', 'b2_early/', 'b2_adapter/', 'b2_schedule/')
+            quality = extension.get('s3_v2_mode') == 'quality_v2'
+            prefixes = (('quality_actor/','quality_event/','quality_touch/','quality_adverse/',
+                         'quality_score/','quality_q_c1/','quality_q_v2/') if quality else
+                        ('b2_event/', 'b2_early/', 'b2_adapter/', 'b2_schedule/'))
             extras = set(target_schema) - set(actual)
             import ninjax as nj
             # nj.Tree stores optax leaves using nj.flatten's canonical names,
             # which remove underscores (b2_event -> b2event). Derive exact
             # permitted suffixes from real target NN keys, not a loose regex.
-            encoded = set(nj.flatten({k:0 for k in target_schema if k.startswith(prefixes[:3])})[0])
+            encoded = set(nj.flatten({k:0 for k in target_schema if k.startswith(prefixes if quality else prefixes[:3])})[0])
             allowed = lambda k: k.startswith(prefixes) or (
                 k.startswith('opt/state/') and any(k.endswith('/'+name) for name in encoded))
             if (set(actual) - set(target_schema) or any(actual[k] != target_schema[k] for k in actual)
@@ -765,3 +771,123 @@ def transfer_control_state(spec):
     if proof != spec['gate_transfer']:
         raise ValueError('Source Gate control changed after admission')
     return control
+
+
+def _inspect_quality_source(kind, *, catalog, path, config, seed, diagnostic, agent_extension, composition):
+    """Explicit Quality-first architecture warm-start, never a legacy resume.
+
+    Complete old S3-V2 runs were not accepted by the offline-only `_full`
+    adapter. Authenticate their own FullCheckpoint, completion receipt and
+    frozen producer bytes rather than weakening that existing contract.
+    """
+    import copy
+    from dreamerv3.fg_s3_quality_v2 import quality_extensions
+    from embodied.run.fg_s3_gate import gate_policy,transfer_policy
+    from gym_trading_env.research.fg_replay import check_files
+    from gym_trading_env.rewards.single3_reward import QUALITY_TP_SCHEMA,SCHEMA as LEGACY_REWARD_SCHEMA
+    if (kind not in ('warm_start','direct_init') or catalog is None or
+            catalog.manifest.get('protocol') != 'FG_S3_QUALITY_TRAIN_BINDING_V1' or
+            catalog.manifest.get('fold') != 'TRAIN' or agent_extension != quality_extensions(agent_extension)):
+        raise ValueError('Quality source requires the authenticated TRAIN binding')
+    if (catalog.manifest.get('score_policy')!='FG_S3_QUALITY_TP_MARKET_DAY_V1' or
+            catalog.manifest.get('quality_stage')!=agent_extension['quality_stage']):
+        raise ValueError('Quality source score/stage binding differs')
+    if catalog.manifest['reward_schema'] not in (LEGACY_REWARD_SCHEMA,QUALITY_TP_SCHEMA):
+        raise ValueError('Quality target reward schema mismatch')
+    if (agent_extension['quality_stage']=='HEADS_ONLY' and
+            catalog.manifest['reward_schema']!=LEGACY_REWARD_SCHEMA):
+        raise ValueError('Quality-first auxiliary-only stage preserves the original C1 objective')
+    if composition is not None:
+        composition = require_ready(composition)
+        if composition['encoder'] != 'legacy_1m' or composition['teaching'] != 'quality_v2':
+            raise ValueError('Quality source requires admitted legacy_1m composition')
+    state = None
+    if kind == 'direct_init':
+        if path is not None or config is None or seed is None or not diagnostic:
+            raise ValueError('Quality direct_init is an explicit CPU/diagnostic source only')
+        cfg = plain(config)
+        if cfg['seed'] != seed: raise ValueError('Quality initialization seed differs')
+        origin = dict(config=cfg,step=0,diagnostic=True,identity_hash=fingerprint(cfg))
+    else:
+        node = Path(path).resolve()
+        meta = validate_bundle(node)
+        receipt = read_manifest(node.parent.parent/'training_receipt.json')
+        identity = meta['identity']
+        if (identity.get('protocol') != 'FG_S3_V2_LIVE_LEARNING_V1'
+                or receipt['status'] not in ('FORMAL_COMPLETE','DIAGNOSTIC_COMPLETE')
+                or Path(receipt['checkpoint']).resolve() != node or
+                receipt['checkpoint_manifest_sha256'] != file_hash(node/'manifest.json') or
+                receipt['env_steps'] != meta['step'] or receipt['identity'] != identity):
+            raise ValueError('Quality warm-start requires a completed, matching S3-V2 FullCheckpoint')
+        if identity['training_identity']['training_hash'] != catalog.manifest['source']['training_hash']:
+            raise ValueError('Quality source and target TRAIN whitelist differ')
+        verify_dependency_versions(identity['packages'])
+        check_files(identity['code'])
+        from dreamerv3.configuration import read_config_yaml
+        cfg = read_config_yaml(node/'config.yaml')
+        if fingerprint(cfg) != identity['model_config_sha256']:
+            raise ValueError('Source resolved model configuration differs')
+        state = pickle.loads((node/'agent.pkl').read_bytes())
+        if state['counters']['updates'] != receipt['model_updates']:
+            raise ValueError('Source Agent update counter differs from completion')
+        origin = dict(path=str(node),manifest_sha256=file_hash(node/'manifest.json'),
+            identity=identity,identity_hash=fingerprint(identity),config=cfg,
+            step=receipt['model_updates'],environment_steps=meta['step'],diagnostic=diagnostic,
+            agent_counters=state['counters'],completion_receipt_sha256=file_hash(node.parent.parent/'training_receipt.json'))
+        if config is not None and plain(config)['agent'] != cfg['agent']:
+            raise ValueError('Quality warm-start must preserve authenticated base network presets')
+    prediction_source=None
+    if agent_extension['quality_stage']=='CONTROLLED_FULL':
+        if kind!='warm_start' or not catalog.manifest.get('prediction_source'):
+            raise ValueError('Controlled quality requires the admitted prediction Checkpoint')
+        from gym_trading_env.research.fg_s3_quality_catalog_v2 import require_prediction_admission
+        proof=catalog.manifest['prediction_source']
+        admission=require_prediction_admission(proof['admission_receipt'])
+        node=Path(proof['checkpoint'])
+        if (file_hash(proof['admission_receipt'])!=proof['admission_sha256'] or
+                str(node.resolve())!=str(Path(admission['checkpoint']).resolve()) or
+                file_hash(node/'manifest.json')!=proof['checkpoint_manifest_sha256'] or
+                proof['checkpoint_manifest_sha256']!=admission['checkpoint_manifest_sha256']):
+            raise ValueError('Admitted prediction source binding changed')
+        from dreamerv3.fg_s3a_actor import parameter_digests
+        prediction_state=pickle.loads((node/'agent.pkl').read_bytes())
+        base_prefixes=('enc/','dyn/','dec/','rew/','con/','avail/','pol/','val/')
+        selected=lambda params:parameter_digests({k:v for k,v in params.items() if k.startswith(base_prefixes)})
+        if selected(prediction_state['params'])!=selected(state['params']):
+            raise ValueError('Admitted predictors and controlled base NN differ')
+        heads=('quality_event/','quality_touch/','quality_adverse/','quality_score/')
+        prediction_source={**proof,'head_param_digests':parameter_digests({
+            k:v for k,v in prediction_state['params'].items() if k.startswith(heads)})}
+    cfg = copy.deepcopy(cfg)
+    cfg['agent']['s3_clock_protocol']='S3_MARKET_MINUTE'
+    if cfg['agent']['horizon'] != 333 or not cfg['agent']['contdisc']:
+        raise ValueError('Quality model requires original H333 continuation discount')
+    policy = gate_policy(cfg,diagnostic=diagnostic)
+    control = dict(complete=True,gate=None,aggregate=None,samples=0)
+    _,gate = transfer_policy(policy,policy,control,False)
+    gate.update(reset_required=kind=='warm_start',reset_reason='new_quality_architecture' if kind=='warm_start' else None)
+    model_identity = dict(protocol='FG_S3_QUALITY_ADMITTED_MODEL_V1',kind=kind,
+        source_identity=origin['identity_hash'],agent_config=cfg['agent'],agent_extension=agent_extension,
+        target_training=catalog.manifest,optimizer_transfer_policy='fresh_joint_opt_all_slots; copy_reference_NN; copy_Actor_to_independent_QualityActor',
+        **({KEY:composition} if composition is not None else {}))
+    fields = dict(protocol=PROTOCOL,kind=kind,origin=origin,target_config=cfg,
+        source_gate_policy=policy,gate_policy=policy,gate_transfer=gate,
+        catalog_manifest_sha256=catalog.manifest_sha256,
+        dataset_sha256=catalog.manifest['source']['dataset_sha256'],
+        reward_params_hash=catalog.manifest['source']['reward_params_hash'],
+        observation_identity=catalog.manifest['observation_identity'],
+        optimizer_transfer_policy=model_identity['optimizer_transfer_policy'],clock_protocol='S3_MARKET_MINUTE',
+        target_update_offset=0,code_sha256=file_hash(__file__),packages=runtime_versions(),
+        agent_extension=agent_extension,target_model_identity=model_identity,
+        target_model_identity_hash=fingerprint(model_identity),teacher_source_kind='quality_native_train',
+        **({KEY:composition} if composition is not None else {}))
+    if prediction_source is not None:
+        fields['prediction_source']=prediction_source
+        model_identity['prediction_source']=prediction_source
+        model_identity['optimizer_transfer_policy']+='; copy_evaluated_Outcome_QualityScore_weights'
+        fields['optimizer_transfer_policy']=model_identity['optimizer_transfer_policy']
+        fields['target_model_identity_hash']=fingerprint(model_identity)
+    if state is not None:
+        from dreamerv3.fg_s3a_actor import parameter_digests
+        fields['source_param_digests']=parameter_digests(state['params'])
+    return signed(fields)
