@@ -8,4 +8,5 @@
 - 正式训练由 SHA、不可变 Tag、配置、数据及准备身份锁定；运行中的 detached Worktree 不修改、不合并、不重置。
 - 功能分支和 Worktree 只在实际开发时建立，生命周期结束后先验证提交已包含，再单独申请清理。
 - W&B 位于兄弟 Gym 的独立 Tracker，Dreamer Trainer 不引入网络依赖。
-- 当前集成保留 A2、Tutor、B2 的独立教学语义，不合入 Archive，不实现 E 或 Tutor+B2 联合教学。
+- 当前集成保留 A2、Tutor、B2 的独立教学语义，并包含 Archive V1、已准入 E 和 Legacy+Quality。E+Quality 与 Tutor+B2 尚未实现；Quality 预测、Q、决策门禁独立，Full 研究未放行。
+- 本轮两侧父提交 Review、实际 CPU 测试与限制见 [Quality-first 集成复核](../../gym-trading-env/docs/S3_NEXT_QUALITY_FIRST_INTEGRATION_REVIEW_20261016.md)。
