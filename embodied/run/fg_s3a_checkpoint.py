@@ -205,7 +205,7 @@ def restore_bc(path,bc,sampler,identity):
     return m
 
 
-def diagnostic_source(labels,path,*,compute_dtype='float32'):
+def diagnostic_source(labels,path,*,compute_dtype='float32',clock_protocol=None):
     """Real original Agent with small architecture; never a production result."""
     from dreamerv3.configuration import read_config_yaml
     import yaml
@@ -213,6 +213,10 @@ def diagnostic_source(labels,path,*,compute_dtype='float32'):
     root=Path(__file__).resolve().parents[2]
     defaults=read_config_yaml(root/'dreamerv3/configs.yaml')['defaults']
     defaults['jax']['transfer_guard']=False
+    if clock_protocol is not None:
+        if clock_protocol != 'S3_MARKET_MINUTE':
+            raise ValueError('Unsupported diagnostic clock protocol')
+        defaults['agent']['s3_clock_protocol'] = clock_protocol
     cfg=elements.Config(defaults).update({
         'jax.platform':'cpu','jax.compute_dtype':compute_dtype,'jax.precompile':False,
         'jax.profiler':False,'jax.prealloc':False,'jax.transfer_guard':False,

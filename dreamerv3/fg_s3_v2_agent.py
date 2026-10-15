@@ -13,7 +13,7 @@ import embodied
 from .agent import Agent
 from .fg_s3c_agent import S3CAgent
 from .fg_s3_tutor_loss import agent_extensions, eligible_teacher, pair_mask, tutor_objective
-from .fg_s3_composition import require_ready, validate_encoder
+from .fg_s3_composition import require_ready, validate_encoder, validate_model_composition
 
 
 @contextmanager
@@ -48,14 +48,14 @@ def masked_joint_optimizer(optimizer, actor_active, critic_active, extra_active=
         optimizer.opt = original
 
 
-class S3V2Agent(S3CAgent):
+class _S3V2Model(S3CAgent):
+    """Shared neural implementation; capability checks live at public edges."""
     def __init__(self, obs_space, act_space, config):
         composition = config.get('s3_composition')
         if composition is not None:
-            composition = require_ready(composition)
-            if config.s3_v2_mode != composition['legacy_mode']:
-                raise ValueError('S3_COMPOSITION_MODE_MISMATCH')
-            validate_encoder(composition, config.enc.typ)
+            validate_model_composition(composition, config.enc.typ, config.s3_v2_mode)
+        elif config.enc.typ != 'simple':
+            raise ValueError('E model requires explicit Composition identity')
         super().__init__(obs_space, act_space, config)
         self.mode = config.s3_v2_mode
         if self.mode not in ('a2', 'c2', 'tutor', 'b2'):
@@ -376,3 +376,13 @@ class S3V2Agent(S3CAgent):
             nj.cond(rl, update_slow, lambda: jnp.int32(0))
         carry = (*carry, {k: data[k][:, -1] for k in self.act_space})
         return carry, {}, metrics
+
+
+class S3V2Agent(_S3V2Model):
+    """Public Agent: waiting combinations are rejected before NN construction."""
+    def __init__(self, obs_space, act_space, config):
+        composition = config.get('s3_composition')
+        if composition is not None:
+            composition = require_ready(composition)
+            validate_encoder(composition, config.enc.typ)
+        super().__init__(obs_space, act_space, config)

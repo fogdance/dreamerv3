@@ -14,7 +14,8 @@ from embodied.run.fg_checkpoint import file_hash, plain, validate_bundle, learni
 from embodied.run.fg_s3a_checkpoint import audit_bc, package_versions
 from gym_trading_env.envs.entry_contract import fingerprint
 from gym_trading_env.research.fg_replay import read_manifest, signed
-from dreamerv3.fg_s3_composition import KEY, require_ready, validate_encoder
+from dreamerv3.fg_s3_composition import (
+    KEY, require_ready, validate_model_composition, validate_composition)
 from gym_trading_env.research.fg_s3_reader_compat import PRODUCERS, reviewed_reader_transition
 
 PROTOCOL = 'FG_S3_SOURCE_ADMISSION_V2'
@@ -411,11 +412,33 @@ class LiveOracleTraining:
 
 def inspect_source(kind, *, catalog=None, live_oracle=None, path=None, seed=None, config=None,
                    base_checkpoint=None, features=None, diagnostic=False, gate_protocol=None,
-                   agent_extension=None, composition=None):
+                   agent_extension=None, composition=None, e_binding=None):
     if composition is not None:
         composition = require_ready(composition)
+    return _inspect_source(kind, catalog=catalog, live_oracle=live_oracle, path=path,
+        seed=seed, config=config, base_checkpoint=base_checkpoint, features=features,
+        diagnostic=diagnostic, gate_protocol=gate_protocol, agent_extension=agent_extension,
+        composition=composition, e_binding=e_binding)
+
+
+def _inspect_source(kind, *, catalog=None, live_oracle=None, path=None, seed=None, config=None,
+                    base_checkpoint=None, features=None, diagnostic=False, gate_protocol=None,
+                    agent_extension=None, composition=None, e_binding=None):
+    """Shared admission core. Waiting E is tested only with bound CPU fixtures."""
+    if composition is not None:
+        composition = validate_composition(composition)
         if composition['use_b2'] != (agent_extension is not None):
             raise ValueError('Composition and B2 admission extension differ')
+    is_e = bool(composition is not None and composition['use_e'])
+    if is_e:
+        if kind != 'direct_init' or config is None or path is not None:
+            raise ValueError('E architecture requires direct_init; old Encoder warm-start forbidden')
+        if type(seed) is not int:
+            raise ValueError('E direct_init requires an explicit integer seed')
+        from embodied.run.fg_s3_e_source import validate_binding
+        validate_binding(e_binding, plain(config), composition, diagnostic)
+    elif e_binding is not None or (config is not None and config['agent']['enc']['typ'] != 'simple'):
+        raise ValueError('E fresh-init requires matching Composition identity')
     if (catalog is None) == (live_oracle is None):
         raise ValueError('Source requires exactly one catalog or authenticated live TRAIN binding')
     if live_oracle is not None:
@@ -427,7 +450,7 @@ def inspect_source(kind, *, catalog=None, live_oracle=None, path=None, seed=None
         catalog = live_oracle
     if agent_extension is not None:
         from dreamerv3.fg_s3_b2_outcome import b2_extensions
-        if kind != 'warm_start' or agent_extension != b2_extensions(agent_extension):
+        if (kind != 'warm_start' and not (is_e and kind == 'direct_init')) or agent_extension != b2_extensions(agent_extension):
             raise ValueError('Architecture extension requires the frozen B2 parameter warm-start contract')
     if type(diagnostic) is not bool:
         raise ValueError('diagnostic must be an explicit boolean')
@@ -520,7 +543,7 @@ def inspect_source(kind, *, catalog=None, live_oracle=None, path=None, seed=None
     if cfg['agent'].get('s3_clock_protocol') != 'S3_MARKET_MINUTE':
         raise ValueError('New S3 admission requires explicit S3_MARKET_MINUTE model semantics')
     if composition is not None:
-        validate_encoder(composition, cfg['agent']['enc']['typ'])
+        validate_model_composition(composition, cfg['agent']['enc']['typ'])
     policy = gate_policy(cfg, diagnostic=origin['diagnostic'], source_opening=source_opening,
                          protocol=gate_protocol)
     fields = dict(protocol=PROTOCOL, kind=kind, origin=origin,
@@ -539,8 +562,10 @@ def inspect_source(kind, *, catalog=None, live_oracle=None, path=None, seed=None
         fields['agent_extension'] = agent_extension
     if composition is not None:
         fields[KEY] = composition
+    if is_e:
+        fields['e_binding'] = e_binding
     initial = signed(fields)
-    state = prepare_transfer(initial)
+    state = _prepare_transfer(initial)
     if state is not None:
         from dreamerv3.fg_s3a_actor import parameter_digests
         fields['source_param_digests'] = parameter_digests(state['params'])
@@ -564,6 +589,14 @@ def inspect_source(kind, *, catalog=None, live_oracle=None, path=None, seed=None
         model_identity['agent_extension'] = agent_extension
     if composition is not None:
         model_identity[KEY] = composition
+    if is_e:
+        model_identity['e_binding'] = e_binding
+        model_identity['target_training'] = dict(
+            reward_params_hash=fields['reward_params_hash'],
+            teacher_observation_identity=fields['observation_identity'],
+            observation_contract_hash=e_binding['observation']['contract_hash'],
+            data_manifest_sha256=e_binding['data_manifest_sha256'],
+            training_hash=catalog.manifest['source']['training_hash'], clock_protocol=fields['clock_protocol'])
     if kind == 'warm_start':
         model_identity['target_training'] = dict(
             reward_params_hash=fields['reward_params_hash'], observation_identity=fields['observation_identity'],
@@ -618,6 +651,25 @@ def prepare_transfer(spec, target_schema=None):
         composition = require_ready(spec[KEY])
         if 'target_model_identity' in spec and require_ready(spec['target_model_identity'].get(KEY)) != composition:
             raise ValueError('S3_COMPOSITION_IDENTITY_MISMATCH')
+    return _prepare_transfer(spec, target_schema)
+
+
+def _prepare_transfer(spec, target_schema=None):
+    if KEY in spec:
+        composition = validate_model_composition(spec[KEY], spec['target_config']['agent']['enc']['typ'])
+        if 'target_model_identity' in spec and spec['target_model_identity'].get(KEY) != composition:
+            raise ValueError('S3_COMPOSITION_IDENTITY_MISMATCH')
+        if composition['use_e']:
+            from embodied.run.fg_s3_e_source import validate_binding, validate_e_records
+            validate_binding(spec.get('e_binding'), spec['target_config'], composition, spec['origin']['diagnostic'])
+            if spec['kind'] != 'direct_init':
+                raise ValueError('E architecture requires direct_init')
+            if 'target_model_identity' in spec:
+                identity = spec['target_model_identity']
+                validate_e_records(spec, identity)
+                if (spec.get('target_model_identity_hash') != fingerprint(identity)
+                        or identity['agent_config'] != spec['target_config']['agent']):
+                    raise ValueError('E admitted model identity/config hash mismatch')
     if spec['protocol'] != PROTOCOL or fingerprint({k:v for k,v in spec.items() if k!='content_hash'}) != spec['content_hash']:
         raise ValueError('Source admission receipt corrupt')
     origin = spec['origin']

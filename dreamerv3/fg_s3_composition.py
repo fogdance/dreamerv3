@@ -33,8 +33,10 @@ def resolve_composition(config):
         raise ValueError('Unknown encoder; select '+', '.join(ENCODERS))
     if not isinstance(teaching, str) or teaching not in TEACHING:
         raise ValueError('Unknown teaching; select '+', '.join(TEACHING))
+    # The user released E + Tutor-CD for formal entry on 2026-10-15.
+    # Other E teaching combinations retain their existing readiness gate.
     state = ('waiting_tutor_b2' if teaching == 'tutor_cd_b2' else
-             'waiting_e' if encoder != 'legacy_1m' else 'ready')
+             'waiting_e' if encoder != 'legacy_1m' and teaching != 'tutor_cd' else 'ready')
     return dict(encoder=encoder, teaching=teaching, base_oracle_bc=True,
         use_e=encoder != 'legacy_1m', use_tutor=teaching in ('tutor_cd', 'tutor_cd_b2'),
         use_b2=teaching in ('b2', 'tutor_cd_b2'), legacy_mode=MODES[teaching],
@@ -64,9 +66,24 @@ def require_ready(value):
 
 def validate_encoder(value, encoder_type):
     value = require_ready(value)
+    validate_model_composition(value, encoder_type)
+
+
+def validate_model_composition(value, encoder_type, mode=None):
+    """Structural model contract, without declaring a production capability.
+
+    Internal CPU model tests may instantiate a waiting_e architecture. Public
+    factories/lifecycle still call require_ready before invoking this core.
+    """
+    value = validate_composition(value)
+    if value['teaching'] == 'tutor_cd_b2':
+        raise ValueError('S3_TUTOR_B2_NOT_IMPLEMENTED')
     expected = 'simple' if value['encoder'] == 'legacy_1m' else value['encoder']
     if encoder_type != expected:
         raise ValueError('S3_COMPOSITION_ENCODER_MISMATCH: expected '+expected)
+    if mode is not None and mode != value['legacy_mode']:
+        raise ValueError('S3_COMPOSITION_MODE_MISMATCH')
+    return value
 
 
 def normalize_config(config, *, executable=True):

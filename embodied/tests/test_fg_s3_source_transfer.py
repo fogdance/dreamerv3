@@ -67,7 +67,7 @@ def source_bundle(tmp_path_factory,request):
     labels=root/'labels';build_labels(dataset,oracle,labels)
     build_catalog(dataset,oracle,labels,root/'catalog',diagnostic=True)
     c=load_catalog(root/'catalog')
-    a,source=diagnostic_source(load_labels(labels),root/'base')
+    a,source=diagnostic_source(load_labels(labels),root/'base',clock_protocol='S3_MARKET_MINUTE')
     if getattr(request,'param',False):
         # Explicit diagnostic READY source fixture; no production Gate bypass.
         a.set_avail_actor_enabled(True)

@@ -7,11 +7,12 @@ import jax
 import numpy as np
 
 from embodied.run.fg_checkpoint import file_hash, plain
-from embodied.run.fg_s3_source_admission import prepare_transfer
+from embodied.run.fg_s3_source_admission import prepare_transfer, _prepare_transfer
 from dreamerv3.fg_s3a_actor import parameter_digests
 from gym_trading_env.research.fg_replay import signed
 from gym_trading_env.envs.entry_contract import fingerprint
-from dreamerv3.fg_s3_composition import KEY, require_ready, validate_encoder
+from dreamerv3.fg_s3_composition import (
+    KEY, require_ready, validate_encoder, validate_model_composition)
 
 
 def make_agent(config, output, *, agent_cls=None, device='cpu', bc_lambda=None,
@@ -21,9 +22,28 @@ def make_agent(config, output, *, agent_cls=None, device='cpu', bc_lambda=None,
         if (extra_agent_config or {}).get('s3_v2_mode') != composition['legacy_mode']:
             raise ValueError('S3_COMPOSITION_MODE_MISMATCH')
         validate_encoder(composition, config['agent']['enc']['typ'])
+    elif config['agent']['enc']['typ'] != 'simple':
+        raise ValueError('E model requires explicit Composition identity')
+    return _make_agent(config, output, agent_cls=agent_cls, device=device,
+        bc_lambda=bc_lambda, extra_agent_config=extra_agent_config, composition=composition)
+
+
+def _make_agent(config, output, *, agent_cls=None, device='cpu', bc_lambda=None,
+                extra_agent_config=None, composition=None):
+    """Common construction core; public make_agent checks production readiness."""
+    if composition is not None:
+        validate_model_composition(composition, config['agent']['enc']['typ'],
+            (extra_agent_config or {}).get('s3_v2_mode'))
+    elif config['agent']['enc']['typ'] != 'simple':
+        raise ValueError('E model requires explicit Composition identity')
+    if config['agent']['enc']['typ'] == 'e_multiscale_1m15m':
+        from dreamerv3.fg_s3_v2_agent import _S3V2Model
+        if agent_cls is None or not issubclass(agent_cls, _S3V2Model):
+            raise ValueError('E teaching requires the shared S3V2 model implementation')
     from dreamerv3.agent import Agent
-    from gym_trading_env.research.fg_replay import FIELDS
-    obs = {k:elements.Space(dtype, shape) for k,(shape,dtype) in FIELDS.items() if k!='action'}
+    from gym_trading_env.research.fg_s3_e_observation import fields_for, OBS_SCHEMA
+    fields = fields_for(OBS_SCHEMA if config['agent']['enc']['typ'] == 'e_multiscale_1m15m' else None)
+    obs = {k:elements.Space(dtype, shape) for k,(shape,dtype) in fields.items() if k!='action'}
     act = {'action': elements.Space(np.int32, (), 0, 2)}
     cfg = elements.Config(config)
     if device not in ('cpu', 'gpu'):
@@ -51,6 +71,19 @@ def apply_and_audit_transfer(agent, spec):
         admitted = require_ready(spec.get(KEY))
         if require_ready(composition) != admitted or spec['target_model_identity'].get(KEY) != admitted:
             raise ValueError('S3_COMPOSITION_IDENTITY_MISMATCH')
+    return _apply_and_audit_transfer(agent, spec)
+
+
+def _apply_and_audit_transfer(agent, spec):
+    """Actual transfer audit core; never authorizes a public E lifecycle."""
+    composition = agent.config.get('s3_composition')
+    if spec.get('e_binding') is not None and (KEY not in spec or composition is None):
+        raise ValueError('E source requires matching Composition identity')
+    if KEY in spec or composition is not None:
+        admitted = validate_model_composition(spec.get(KEY), agent.config.enc.typ,
+            agent.config.get('s3_v2_mode'))
+        if composition != admitted or spec['target_model_identity'].get(KEY) != admitted:
+            raise ValueError('S3_COMPOSITION_IDENTITY_MISMATCH')
     expected = spec['target_config']['agent']
     if {k:plain(agent.config[k]) for k in expected} != expected:
         raise ValueError('Target model network/optimizer/loss config differs from SourceAdmission')
@@ -59,8 +92,21 @@ def apply_and_audit_transfer(agent, spec):
     if spec.get('agent_extension') is not None and any(
             plain(agent.config[k]) != v for k, v in spec['agent_extension'].items()):
         raise ValueError('Target B2 extension differs from SourceAdmission')
+    if spec.get('e_binding') is not None:
+        from gym_trading_env.research.fg_s3_e_observation import E_FIELDS_V1, DECODER_KEYS
+        if agent.config.jax.compute_dtype != spec['target_config']['jax']['compute_dtype']:
+            raise ValueError('E target compute dtype differs from SourceAdmission')
+        if set(agent.obs_space) != set(E_FIELDS_V1) - {'action'} or set(agent.model.dec.obs_space) != set(DECODER_KEYS):
+            raise ValueError('E target observation/Decoder schema differs from SourceAdmission')
+        prefixes = ('enc/minute/', 'enc/context15/', 'enc/fusion/')
+        if admitted['use_b2']:
+            prefixes += ('b2_event/', 'b2_early/', 'b2_adapter/', 'b2_schedule/')
+        if any(not any(k.startswith(p) for k in agent.params) for p in prefixes):
+            raise ValueError('E target is missing admitted Encoder or B2 parameters')
     schema = {k:(v.shape,str(v.dtype)) for k,v in agent.params.items()}
-    state = prepare_transfer(spec, schema)
+    # Legacy keeps the original public transfer boundary (also used by its
+    # migration tests); waiting E is exercised only through the private core.
+    state = (_prepare_transfer if spec.get('e_binding') is not None else prepare_transfer)(spec, schema)
     if spec['kind'] == 'warm_start':
         return _apply_parameter_warm_start(agent, spec, state)
     if state is None:
@@ -114,7 +160,8 @@ def apply_and_audit_transfer(agent, spec):
             raise RuntimeError('BC non-Actor/base joint optimizer equality failed')
         baseline_equality = 'PASS'
     return signed(dict(status='PASS_REAL_MODEL_TRANSFER', devices=[str(x) for x in jax.devices()],
-        **({KEY: require_ready(agent.config.s3_composition)} if KEY in spec else {}),
+        **({KEY: validate_model_composition(agent.config.s3_composition, agent.config.enc.typ)} if KEY in spec else {}),
+        **({'e_binding': spec['e_binding'], 'scope': spec['e_binding']['scope']} if 'e_binding' in spec else {}),
         diagnostic=spec['origin']['diagnostic'],
         transfer_code_sha256=file_hash(__file__),
         source_admission_sha256=spec['content_hash'], kind=spec['kind'],
