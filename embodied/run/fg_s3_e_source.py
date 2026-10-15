@@ -14,6 +14,11 @@ SYNTHETIC = 'FG_S3_E_MODEL_SYNTHETIC_V1'
 REAL = 'S3_E_DATA_V1'
 REAL_SCOPE = 'REAL_TRAIN_ACCEPTANCE_ONLY_NOT_FORMAL_RELEASED'
 FORMAL_SCOPE = 'REAL_TRAIN_FORMAL_E_TUTOR_CD_USER_RELEASED'
+FORMAL_SCOPES = {
+    'a2': 'REAL_TRAIN_FORMAL_E_A2_CPU_GPU_ACCEPTED',
+    'tutor_cd': FORMAL_SCOPE,
+    'b2': 'REAL_TRAIN_FORMAL_E_B2_CPU_GPU_ACCEPTED',
+}
 
 
 def source_code():
@@ -31,9 +36,9 @@ def make_binding(config, composition, data_manifest, *, diagnostic=True):
     composition = validate_model_composition(composition, config['agent']['enc']['typ'])
     if type(diagnostic) is not bool:
         raise ValueError('E binding requires an explicit diagnostic boolean')
-    if not diagnostic and (composition['teaching'] != 'tutor_cd'
+    if not diagnostic and (composition['teaching'] not in FORMAL_SCOPES
                            or composition['support_state'] != 'ready'):
-        raise ValueError('Formal E entry is released only for E + Tutor-CD')
+        raise ValueError('Formal E entry requires a released individual teaching mode')
     path = Path(data_manifest).resolve(strict=True)
     data = json.loads(path.read_text())
     if data.get('schema') == REAL and data.get('kind') == 'collection':
@@ -47,7 +52,7 @@ def make_binding(config, composition, data_manifest, *, diagnostic=True):
         from e_data_v1.reference import load_legacy
         if data['schema_sha256'] != EDataConfig().schema(load_legacy()[1])['schema_sha256']:
             raise ValueError('E real TRAIN collection mathematical code/schema changed; rebuild required')
-        scope = REAL_SCOPE if diagnostic else FORMAL_SCOPE
+        scope = REAL_SCOPE if diagnostic else FORMAL_SCOPES[composition['teaching']]
         data_id = data['index_sha256']
         schema_hash, pool_hash = data['schema_sha256'], data['source_pool_sha256']
     elif data.get('schema') == SYNTHETIC:

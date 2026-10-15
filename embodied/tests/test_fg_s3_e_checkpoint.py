@@ -57,7 +57,7 @@ def test_EM15_full_checkpoint_continuous_vs_interrupted_exact(mode,tmp_path):
             counters.state['all_updates']+=1
         a.sync_policy_from_train()
         cp.save();node=cp.latest();manifest=validate_bundle(node,identity)
-        assert manifest['identity']['resolved_composition']['support_state']=='waiting_e'
+        assert manifest['identity']['resolved_composition']['support_state']=='ready'
         assert all(any(k.startswith(p) for k in a.params) for p in
                    ('enc/minute/','enc/context15/','enc/fusion/'))
         for wrong in ({**identity,'resolved_composition':composition('b2' if mode!='b2' else 'a2')},
@@ -95,7 +95,7 @@ def test_EM15_full_checkpoint_continuous_vs_interrupted_exact(mode,tmp_path):
             parameters=parameter_digests(a.params),agent_counters=a.save_exact()['counters'],
             next_metrics=next_metrics,exact_model_optimizer=True,exact_policy=True,
             exact_replay_sample=True,exact_driver_env_sidecar=True,exact_rng_and_counters=True,
-            production_resume='BLOCKED_BY_E_DATA_AND_REVIEW')
+            production_resume='SYNTHETIC_CHECKPOINT_NOT_FOR_FORMAL_TRAINING')
         (tmp_path/'checkpoint_evidence.json').write_text(json.dumps(receipt,indent=2))
     finally:
         ca.close()
