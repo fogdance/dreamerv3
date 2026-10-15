@@ -201,6 +201,12 @@ class LiveRun:
                 identity.update(quality_training_contracts=sorted(query.queries),
                     quality_score_policy='FG_S3_QUALITY_TP_MARKET_DAY_V1',
                     quality_catalog_protocol='FG_S3_QUALITY_CATALOG_V1')
+                if s.get('quality_admission_policy'):
+                    source=self.prepared/'quality_admission_policy.json'
+                    target=root/'quality_admission_policy.json'
+                    target.write_bytes(source.read_bytes())
+                    identity['quality_admission_policy']=dict(path=str(target),sha256=file_hash(target))
+                    identity['immutable_files'][str(target)]=file_hash(target)
             if s['mode'] == 'b2':
                 identity['outcome_identity'] = outcome_catalog.identity
             write_json(root/'run_identity.json', signed(dict(identity=identity)))

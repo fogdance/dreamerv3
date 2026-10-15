@@ -136,9 +136,8 @@ def apply_and_audit_transfer(agent, spec):
         policy_synchronized=True, independent_bc_optimizer_imported=False))
 
 
-def admitted_prediction_parameters(target, source, expected):
-    """Copy precisely the four evaluated predictors; retain fresh optimizer/Q."""
-    prefixes=('quality_event/','quality_touch/','quality_adverse/','quality_score/')
+def admitted_auxiliary_parameters(target, source, expected, *,prefixes=('quality_event/','quality_touch/','quality_adverse/','quality_score/')):
+    """Copy only the explicitly evaluated auxiliary groups; retain fresh optimizer state."""
     keys={k for k in source if k.startswith(prefixes)}
     if (keys!=set(expected) or not all(any(k.startswith(p) for k in keys) for p in prefixes) or
             parameter_digests({k:source[k] for k in keys})!=expected):
@@ -189,10 +188,22 @@ def _apply_parameter_warm_start(agent, spec, source):
                     file_hash(proof['admission_receipt'])!=proof['admission_sha256']):
                 raise ValueError('Admitted prediction Checkpoint changed after prepare')
             predicted=pickle.loads((node/'agent.pkl').read_bytes())['params']
-            copied_heads=admitted_prediction_parameters(fresh['params'],predicted,proof['head_param_digests'])
+            copied_heads=admitted_auxiliary_parameters(fresh['params'],predicted,proof['head_param_digests'])
             fresh['params'].update(copied_heads)
             prediction_copied=parameter_digests(copied_heads)
             extra_copied.update(copied_heads)
+        if spec['agent_extension']['quality_q_admitted']:
+            proof=spec.get('q_source')
+            if not proof:raise ValueError('Full Q lacks its trained numerical Q source')
+            node=Path(proof['checkpoint']);validate_bundle(node)
+            if (file_hash(node/'manifest.json')!=proof['checkpoint_manifest_sha256'] or
+                    file_hash(proof['admission_receipt'])!=proof['admission_sha256']):
+                raise ValueError('Trained Q source changed after prepare')
+            params=pickle.loads((node/'agent.pkl').read_bytes())['params']
+            copied_q=admitted_auxiliary_parameters(fresh['params'],params,proof['head_param_digests'],
+                prefixes=('quality_q_c1/','quality_q_v2/'))
+            fresh['params'].update(copied_q);extra_copied.update(copied_q)
+            prediction_copied.update(parameter_digests(copied_q))
     fresh['policy_params'] = {k:fresh['params'][k] for k in agent.policy_keys}
     fresh.update(pending_sync=None, pending_outs=None, pending_mets=None)
     agent.load_exact(fresh, transfer=True)
@@ -220,7 +231,7 @@ def _apply_parameter_warm_start(agent, spec, source):
         agent_extension=spec.get('agent_extension'),
         fresh_extension_keys=sorted(k for k in after if k.startswith(('b2_','quality_')) and k not in extra_copied),
         quality_actor_copied_keys=sorted(actor_copied),
-        admitted_prediction_param_digests=prediction_copied,
+        admitted_auxiliary_param_digests=prediction_copied,
         slow_critic_initialized_from_critic=not quality,slow_critic_inherited_from_source=quality,
         policy_synchronized=True,
         independent_bc_optimizer_imported=False))

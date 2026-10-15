@@ -623,6 +623,19 @@ def prepare_transfer(spec, target_schema=None):
             raise ValueError('S3_COMPOSITION_IDENTITY_MISMATCH')
     if spec['protocol'] != PROTOCOL or fingerprint({k:v for k,v in spec.items() if k!='content_hash'}) != spec['content_hash']:
         raise ValueError('Source admission receipt corrupt')
+    extension=spec.get('agent_extension',{})
+    if extension.get('s3_v2_mode')=='quality_v2' and extension['quality_stage']=='CONTROLLED_FULL':
+        from gym_trading_env.research.fg_s3_quality_admission import (
+            require_prediction_admission,require_decision_admission,require_q_admission)
+        binding=spec['target_model_identity']['target_training']
+        gates=[('prediction_source',require_prediction_admission)]
+        if extension['quality_decision_admitted']:gates.append(('decision_source',require_decision_admission))
+        if extension['quality_q_admitted']:gates.append(('q_source',require_q_admission))
+        for name,validate in gates:
+            proof=binding[name]
+            if file_hash(proof['admission_receipt'])!=proof['admission_sha256']:
+                raise ValueError('Quality research evidence changed after prepare: '+name)
+            validate(proof['admission_receipt'])
     origin = spec['origin']
     if spec['kind'] == 'direct_init':
         return None
@@ -840,7 +853,7 @@ def _inspect_quality_source(kind, *, catalog, path, config, seed, diagnostic, ag
     if agent_extension['quality_stage']=='CONTROLLED_FULL':
         if kind!='warm_start' or not catalog.manifest.get('prediction_source'):
             raise ValueError('Controlled quality requires the admitted prediction Checkpoint')
-        from gym_trading_env.research.fg_s3_quality_catalog_v2 import require_prediction_admission
+        from gym_trading_env.research.fg_s3_quality_admission import require_prediction_admission
         proof=catalog.manifest['prediction_source']
         admission=require_prediction_admission(proof['admission_receipt'])
         node=Path(proof['checkpoint'])
@@ -858,6 +871,38 @@ def _inspect_quality_source(kind, *, catalog, path, config, seed, diagnostic, ag
         heads=('quality_event/','quality_touch/','quality_adverse/','quality_score/')
         prediction_source={**proof,'head_param_digests':parameter_digests({
             k:v for k,v in prediction_state['params'].items() if k.startswith(heads)})}
+    q_source=None
+    if agent_extension['quality_decision_admitted']:
+        from gym_trading_env.research.fg_s3_quality_admission import require_decision_admission
+        proof=catalog.manifest.get('decision_source')
+        if not proof or file_hash(proof['admission_receipt'])!=proof['admission_sha256']:
+            raise ValueError('Controlled Actor lacks its frozen native action-safety evidence')
+        decision=require_decision_admission(proof['admission_receipt'])
+        expected=[k for k,flag in (('outcome','quality_fuse_outcome'),('score','quality_fuse_score'),('q','quality_q_admitted')) if agent_extension[flag]]
+        if decision['components']!=expected or decision['components']!=proof['components']:
+            raise ValueError('Controlled Actor intervention recipe differs from measured safety evidence')
+        if decision['prediction_admission_sha256']!=catalog.manifest['prediction_source']['admission_sha256']:
+            raise ValueError('Action safety evaluated a different admitted predictor')
+        if agent_extension['quality_q_admitted'] and decision.get('q_admission_sha256')!=catalog.manifest.get('q_source',{}).get('admission_sha256'):
+            raise ValueError('Action safety evaluated a different numerical Q model')
+    if agent_extension['quality_q_admitted']:
+        from gym_trading_env.research.fg_s3_quality_admission import require_q_admission
+        from dreamerv3.fg_s3a_actor import parameter_digests
+        proof=catalog.manifest.get('q_source')
+        if not proof:raise ValueError('Q fusion requires the independently verified Q model source')
+        admitted=require_q_admission(proof['admission_receipt'])
+        node=Path(proof['checkpoint'])
+        if (file_hash(proof['admission_receipt'])!=proof['admission_sha256'] or
+                file_hash(node/'manifest.json')!=proof['checkpoint_manifest_sha256'] or
+                proof['checkpoint_manifest_sha256']!=admitted['checkpoint_manifest_sha256']):
+            raise ValueError('Q source binding changed')
+        params=pickle.loads((node/'agent.pkl').read_bytes())['params']
+        base_prefixes=('enc/','dyn/','dec/','rew/','con/','avail/','pol/','val/')
+        selected=lambda data:parameter_digests({k:v for k,v in data.items() if k.startswith(base_prefixes)})
+        if selected(params)!=selected(state['params']):
+            raise ValueError('Admitted Q features and controlled base NN differ')
+        q_source={**proof,'head_param_digests':parameter_digests({k:v for k,v in params.items()
+            if k.startswith(('quality_q_c1/','quality_q_v2/'))})}
     cfg = copy.deepcopy(cfg)
     cfg['agent']['s3_clock_protocol']='S3_MARKET_MINUTE'
     if cfg['agent']['horizon'] != 333 or not cfg['agent']['contdisc']:
@@ -886,6 +931,9 @@ def _inspect_quality_source(kind, *, catalog, path, config, seed, diagnostic, ag
         model_identity['prediction_source']=prediction_source
         model_identity['optimizer_transfer_policy']+='; copy_evaluated_Outcome_QualityScore_weights'
         fields['optimizer_transfer_policy']=model_identity['optimizer_transfer_policy']
+        fields['target_model_identity_hash']=fingerprint(model_identity)
+    if q_source is not None:
+        fields['q_source']=q_source;model_identity['q_source']=q_source
         fields['target_model_identity_hash']=fingerprint(model_identity)
     if state is not None:
         from dreamerv3.fg_s3a_actor import parameter_digests

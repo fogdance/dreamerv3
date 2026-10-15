@@ -43,6 +43,10 @@ def quality_extensions(settings):
         raise ValueError('B1/B2/B3 are later controlled teaching ablations')
     result = dict(s3_v2_mode='quality_v2',quality_variant=variant,
                   quality_stage=stage,quality_prediction_admitted=admitted)
+    decision=settings.get('quality_decision_admitted',False)
+    if type(decision) is not bool or stage=='HEADS_ONLY' and decision:
+        raise ValueError('HEADS_ONLY does not admit quality decision interventions')
+    result['quality_decision_admitted']=decision
     interval=settings.get('quality_gradient_every_updates',0 if stage=='HEADS_ONLY' else 100)
     if type(interval) is not int or interval<0: raise ValueError('Invalid quality gradient sampling interval')
     result['quality_gradient_every_updates']=interval
@@ -69,6 +73,8 @@ def quality_extensions(settings):
             result[k]=0.
     if result['quality_q_admitted'] and variant != 'FULL':
         raise ValueError('Only admitted FULL may fuse numeric Q')
+    if any(result[k] for k in ('quality_fuse_outcome','quality_fuse_score','quality_q_admitted')) and not decision:
+        raise ValueError('DECISION_GATE_PENDING: forecast accuracy does not admit Actor intervention')
     if variant in ('B1','B2') and (result['quality_fuse_outcome'] or result['quality_fuse_score']):
         raise ValueError('B1/B2 require prediction-to-decision fusion OFF')
     if variant == 'B1':
@@ -106,12 +112,16 @@ def fuse_logits(raw, predictions, mask, config):
     delta_s = .5*jnp.clip((score-60)/40,-1.,1.)
     delta_q = .5*jnp.tanh((p['q_v2'][...,1]-p['q_v2'][...,0])/config['quality_q_scale'])
     legal = jnp.all(mask>.5,-1)
-    delta_o = jnp.where(legal & config['quality_fuse_outcome'],delta_o,0.)
-    delta_s = jnp.where(legal & config['quality_fuse_score'],delta_s,0.)
-    delta_q = jnp.where(legal & config['quality_q_admitted'],delta_q,0.)
+    potential={'quality/diagnostic_delta_O':jnp.where(legal,delta_o,0.),
+               'quality/diagnostic_delta_S':jnp.where(legal,delta_s,0.),
+               'quality/diagnostic_delta_Q':jnp.where(legal,delta_q,0.)}
+    gate=config['quality_decision_admitted']
+    delta_o = jnp.where(legal & gate & config['quality_fuse_outcome'],delta_o,0.)
+    delta_s = jnp.where(legal & gate & config['quality_fuse_score'],delta_s,0.)
+    delta_q = jnp.where(legal & gate & config['quality_q_admitted'],delta_q,0.)
     final = raw.at[...,1].add(delta_o+delta_s+delta_q)
     z = raw[...,1]-raw[...,0]
-    return final,{'quality/base_policy_logit':z,'quality/delta_O':delta_o,
+    return final,{**potential,'quality/base_policy_logit':z,'quality/delta_O':delta_o,
         'quality/delta_S':delta_s,'quality/delta_Q':delta_q,
         'quality/z_final':final[...,1]-final[...,0], 'quality/score_prediction':score,
         'quality/outcome_probs':event,'quality/q_c1_prediction':p['q_c1'],
