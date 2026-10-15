@@ -1,7 +1,4 @@
-"""E fresh-init identity for synthetic and reviewed real TRAIN data.
-
-Public E model activation remains gated until the entire M4 lifecycle passes.
-"""
+"""E fresh-init identity for diagnostic and user-released real TRAIN entry."""
 from pathlib import Path
 import subprocess
 import json
@@ -16,6 +13,7 @@ PROTOCOL = 'FG_S3_E_SOURCE_BINDING_V1'
 SYNTHETIC = 'FG_S3_E_MODEL_SYNTHETIC_V1'
 REAL = 'S3_E_DATA_V1'
 REAL_SCOPE = 'REAL_TRAIN_ACCEPTANCE_ONLY_NOT_FORMAL_RELEASED'
+FORMAL_SCOPE = 'REAL_TRAIN_FORMAL_E_TUTOR_CD_USER_RELEASED'
 
 
 def source_code():
@@ -23,14 +21,19 @@ def source_code():
     return execution_code()
 
 
-def make_binding(config, composition, data_manifest):
-    """Bind reviewed E dataset identity; public training remains waiting_e.
+def make_binding(config, composition, data_manifest, *, diagnostic=True):
+    """Bind the exact dataset/code identity and explicit execution scope.
 
     Real E manifests are content-addressed collection indexes, not the legacy
     `signed(content_hash)` synthetic fixture format. They require verification
     of every immutable TRAIN bundle before the CPU M4 contract can use them.
     """
     composition = validate_model_composition(composition, config['agent']['enc']['typ'])
+    if type(diagnostic) is not bool:
+        raise ValueError('E binding requires an explicit diagnostic boolean')
+    if not diagnostic and (composition['teaching'] != 'tutor_cd'
+                           or composition['support_state'] != 'ready'):
+        raise ValueError('Formal E entry is released only for E + Tutor-CD')
     path = Path(data_manifest).resolve(strict=True)
     data = json.loads(path.read_text())
     if data.get('schema') == REAL and data.get('kind') == 'collection':
@@ -44,9 +47,12 @@ def make_binding(config, composition, data_manifest):
         from e_data_v1.reference import load_legacy
         if data['schema_sha256'] != EDataConfig().schema(load_legacy()[1])['schema_sha256']:
             raise ValueError('E real TRAIN collection mathematical code/schema changed; rebuild required')
-        scope, data_id = REAL_SCOPE, data['index_sha256']
+        scope = REAL_SCOPE if diagnostic else FORMAL_SCOPE
+        data_id = data['index_sha256']
         schema_hash, pool_hash = data['schema_sha256'], data['source_pool_sha256']
     elif data.get('schema') == SYNTHETIC:
+        if not diagnostic:
+            raise ValueError('Formal E entry requires authenticated real TRAIN data')
         read_manifest(path)  # full legacy signed synthetic verification
         scope, data_id = 'CPU_SYNTHETIC_CONTRACT_ONLY', data['content_hash']
         schema_hash, pool_hash = None, None
@@ -81,9 +87,10 @@ def validate_e_records(*documents):
 
 
 def validate_binding(value, config, composition, diagnostic):
-    if not diagnostic or not isinstance(value, dict):
-        raise ValueError('E fresh-init requires a diagnostic authenticated data binding')
-    if value != make_binding(config, composition, value.get('data_manifest', '')):
+    if type(diagnostic) is not bool or not isinstance(value, dict):
+        raise ValueError('E fresh-init requires an authenticated scoped data binding')
+    if value != make_binding(config, composition, value.get('data_manifest', ''),
+                             diagnostic=diagnostic):
         raise ValueError('E fresh-init seed/config/schema/code/data identity mismatch')
     agent = config['agent']
     if (type(config['seed']) is not int or config['seed'] < 0

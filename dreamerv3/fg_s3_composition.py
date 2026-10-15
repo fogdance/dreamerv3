@@ -33,8 +33,10 @@ def resolve_composition(config):
         raise ValueError('Unknown encoder; select '+', '.join(ENCODERS))
     if not isinstance(teaching, str) or teaching not in TEACHING:
         raise ValueError('Unknown teaching; select '+', '.join(TEACHING))
+    # The user released E + Tutor-CD for formal entry on 2026-10-15.
+    # Other E teaching combinations retain their existing readiness gate.
     state = ('waiting_tutor_b2' if teaching == 'tutor_cd_b2' else
-             'waiting_e' if encoder != 'legacy_1m' else 'ready')
+             'waiting_e' if encoder != 'legacy_1m' and teaching != 'tutor_cd' else 'ready')
     return dict(encoder=encoder, teaching=teaching, base_oracle_bc=True,
         use_e=encoder != 'legacy_1m', use_tutor=teaching in ('tutor_cd', 'tutor_cd_b2'),
         use_b2=teaching in ('b2', 'tutor_cd_b2'), legacy_mode=MODES[teaching],
