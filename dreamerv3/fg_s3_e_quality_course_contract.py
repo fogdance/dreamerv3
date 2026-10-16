@@ -12,17 +12,18 @@ import math
 import re
 
 
-COURSE_SCHEMA = 'FG_S3_E_QUALITY_COURSE_V1'
+COURSE_SCHEMA = 'FG_S3_E_QUALITY_COURSE_V2'
 COURSE_STAGES = ('FOUNDATION_WM', 'QUALITY_HEADS', 'ACTOR_SUPERVISED', 'ONLINE_ADAPT')
 REWARD_SCHEMA = 'FG_SINGLE3_REWARD_MARKET_MINUTE_TP_QUALITY_V1'
 CLOCK = 'S3_MARKET_MINUTE'
 COMPOSITION = dict(encoder='e_multiscale_1m15m', teaching='quality_v2')
 REWARD = dict(schema=REWARD_SCHEMA, candidate='C1', beta=.5, rho=.4, L=3., clock_protocol=CLOCK)
-POLICY_FIELDS = ['market_seq_e_shared', 'position_state', 'action_mask', 'market_context_15m']
-OBSERVATION = dict(schema='FG_S3_E_OBSERVATION_V1',
+POLICY_FIELDS = ['market_seq_e_shared', 'position_state', 'action_mask', 'market_context_15m', 'market_macd_5m']
+MACD = {'schema': 'FG_S3_E_MACD5M_CAUSAL_V2', 'periods': [12, 26, 9], 'histogram': 'DIF-Signal', 'initialization': 'first_complete_close; first_DIF_and_signal_zero', 'warmup': '35_complete_buckets_strictly_before_current_bucket', 'scale': '1000*raw/current_visible_1m_Close', 'invalid': 'all_zero', 'bucket': 'five_exact_calendar_minutes_in_one_dated_session', 'partial': 'derive_from_last_committed_EMAs; commit_on_fifth_visible_minute_once', 'continuity': 'carry_EMAs_across_sessions_and_official_days; reset_on_contract', 'errors': 'reject_missing_duplicate_out_of_order_or_late_minutes; never_backfill'}
+OBSERVATION = dict(macd_5m=MACD, schema='FG_S3_E_OBSERVATION_V2',
     fields={k: dict(shape=s, dtype='float32') for k, s in (
         ('market_seq_e_shared', [60, 18]), ('position_state', [9]),
-        ('action_mask', [2]), ('market_context_15m', [24, 7]))},
+        ('action_mask', [2]), ('market_context_15m', [24, 7]), ('market_macd_5m', [4]))},
     policy_observation_fields=POLICY_FIELDS,
     context_fields=['rel_open', 'rel_high', 'rel_low', 'rel_close', 'vol_relative', 'oi_change', 'valid'],
     visibility=dict(data_schema='S3_E_DATA_V1',
@@ -42,7 +43,7 @@ SIDECAR_LAYERS = dict(
         sources=['INVALID', 'HEURISTIC_V2', 'Q_V2_VERIFIED']),
     q=dict(valid_fields=['quality_q_c1_valid', 'quality_q_v2_valid'], source='native_certified_q'))
 TEACHER = dict(kind='quality_v2', fold='TRAIN', score_policy='FG_S3_QUALITY_TP_MARKET_DAY_V1',
-    reward_schema=REWARD_SCHEMA, label_schema='FG_S3_QUALITY_TEACHER_V1',
+    reward_schema=REWARD_SCHEMA, label_schema='FG_S3_E_QUALITY_TEACHER_V2',
     label_location='SIDECAR', layers=SIDECAR_LAYERS)
 AUTHORIZATION = dict(scope='CONTRACT_ONLY', training_authorization='EXTERNAL_REQUIRED')
 BEHAVIORS = ('always_wait', 'always_add', 'probabilistic', 'single_delay', 'quality_oracle_schedule')
