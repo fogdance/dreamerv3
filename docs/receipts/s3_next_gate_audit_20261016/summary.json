@@ -1,0 +1,100 @@
+{
+  "status": "PASS_TARGETED_AND_SHARED_REGRESSION",
+  "baseline_failure_reproduced": true,
+  "first_semantic_change": "c18a8b5917f73110f9b6ce840495f4da1d7ca1d4",
+  "production_files": {
+    "dreamerv3/agent.py": {
+      "baseline": "65fc310b7d48f9ee8a4f07828fc55d5102e22092300cab88931a7f0eeec9d114",
+      "current": "65fc310b7d48f9ee8a4f07828fc55d5102e22092300cab88931a7f0eeec9d114",
+      "identical": true
+    },
+    "embodied/run/fg_s3_source_admission.py": {
+      "baseline": "461c8bf2e1a407d1065e4c5a4a106f87a80b7ebf45a7ecba7d8053c28d5ebc92",
+      "current": "461c8bf2e1a407d1065e4c5a4a106f87a80b7ebf45a7ecba7d8053c28d5ebc92",
+      "identical": true
+    },
+    "embodied/run/fg_s3_gate.py": {
+      "baseline": "3c3c405111c18e210ac9810cd645e0cdc25dcedaad5897f6e21b038ae01a3beb",
+      "current": "3c3c405111c18e210ac9810cd645e0cdc25dcedaad5897f6e21b038ae01a3beb",
+      "identical": true
+    },
+    "embodied/run/action_mask_warmup.py": {
+      "baseline": "a280a4f67566d1d95d753b537d015e389df30bce0d0295da28b1e03f5ad78c2b",
+      "current": "a280a4f67566d1d95d753b537d015e389df30bce0d0295da28b1e03f5ad78c2b",
+      "identical": true
+    },
+    "embodied/run/fg_s3_source_transfer.py": {
+      "baseline": "c9cfc7d1f7391b13ded58e991b9f394264c3fe6271252c1afb8c9f0d01b9dd5f",
+      "current": "c9cfc7d1f7391b13ded58e991b9f394264c3fe6271252c1afb8c9f0d01b9dd5f",
+      "identical": true
+    }
+  },
+  "tests": {
+    "baseline_failure.xml": [
+      {
+        "name": "pytest",
+        "errors": "0",
+        "failures": "1",
+        "skipped": "0",
+        "tests": "1",
+        "time": "1.529",
+        "timestamp": "2026-10-16T08:14:16.824437+08:00",
+        "hostname": "v-X570-AORUS-PRO-WIFI"
+      }
+    ],
+    "targeted_fix.xml": [
+      {
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "0",
+        "tests": "2",
+        "time": "2.137",
+        "timestamp": "2026-10-16T08:21:08.074091+08:00",
+        "hostname": "v-X570-AORUS-PRO-WIFI"
+      }
+    ],
+    "shared_regression.xml": [
+      {
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "0",
+        "tests": "20",
+        "time": "120.035",
+        "timestamp": "2026-10-16T08:22:15.418012+08:00",
+        "hostname": "v-X570-AORUS-PRO-WIFI"
+      }
+    ],
+    "targeted_full_sha.xml": [
+      {
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "0",
+        "tests": "2",
+        "time": "2.123",
+        "timestamp": "2026-10-16T08:26:09.356659+08:00",
+        "hostname": "v-X570-AORUS-PRO-WIFI"
+      }
+    ]
+  },
+  "old_235_test_index": {
+    "path": "/home/v/Documents/work/research/fg-s3-next-integration/validation/quality-first-merge-20261016/final_test_index.json",
+    "sha256": "d67c89485a89c813aa6f8ec010eda8461623f98ab12b811f38c6579157eaeda3",
+    "gate_module_present": false
+  },
+  "files": {
+    "baseline_failure.xml": "8052411cb20cfc8e1f007bf836b0c5a34f9c23663a55d23e70076f5d6e21a685",
+    "targeted_fix.xml": "cdf6a41d815dd677a17a63118334dd89120a3242b1d8ebd691a4c19b4af33074",
+    "shared_regression.xml": "74e141c849b727b0a4f635f466df6f25a77410951bd393ac8757085342f6994a",
+    "targeted_full_sha.xml": "39b22e0b47a0c263f851a33e0a8223c5c87c89c9bd863c9839534a8a7a803fc3",
+    "history_matrix.json": "d0b2d9f1f88662ee2323c3f3f191bfb2fe9b91b202d1e90e8836f0e4491073e2"
+  },
+  "not_verified": [
+    "entire_repository_suite",
+    "GPU",
+    "formal_1M",
+    "research_admission"
+  ]
+}

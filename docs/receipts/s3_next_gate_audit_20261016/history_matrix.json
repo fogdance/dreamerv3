@@ -1,0 +1,93 @@
+{
+  "source_revision": "09e2e5ce5b07433790e7f4c3e40be7ca4e084064",
+  "audit_implementation_sha256": "461c8bf2e1a407d1065e4c5a4a106f87a80b7ebf45a7ecba7d8053c28d5ebc92",
+  "matrix": [
+    {
+      "revision": "00b82f850d44c268167578e07f77b0b613591f4a",
+      "subject": "fix(fg-s3): unify availability gate and audit threshold transfers",
+      "agent_sha256": "9c4b24066852c94c7884f2b11c2f8f4c32df8df54556bbcee0542f71e1cc7dbf",
+      "status": "PASS",
+      "normalized_ast_sha256": "3ff4102f12d80df6b2c2a6d9a61b190b8806fbce8175224a6b4060d56b17204a"
+    },
+    {
+      "revision": "dc6cca7fbbba9f663d70239432322058d5695d0d",
+      "subject": "Implement GPU live DAgger WM and Actor BC with Gate-controlled RL",
+      "agent_sha256": "8bc4bad38fe929384e3d42d0edae1cef220e7689eeb13954126609b69363a4ae",
+      "status": "PASS",
+      "normalized_ast_sha256": "3ff4102f12d80df6b2c2a6d9a61b190b8806fbce8175224a6b4060d56b17204a"
+    },
+    {
+      "revision": "c18a8b5917f73110f9b6ce840495f4da1d7ca1d4",
+      "subject": "Support S3 market-minute discounts and authenticated parameter warm start",
+      "agent_sha256": "3c4cb8ba66d1f4f86f86602e97bf284d223110100c44f713b68aab7701464788",
+      "status": "REJECT",
+      "error": "Source network/training semantics changed: dreamerv3/agent.py"
+    },
+    {
+      "revision": "c2988a7b1887ad27643176d64334e432243e088a",
+      "subject": "B2 D2: learn outcome heads and use bounded predictions in the live Actor",
+      "agent_sha256": "ec79f229b547ecb6c2b8f28f599542f5d1deca0213eca1bbd09d982f59c476dc",
+      "status": "REJECT",
+      "error": "Source network/training semantics changed: dreamerv3/agent.py"
+    },
+    {
+      "revision": "f30d8da2523eddad53aeca1540afe1c77d47b248",
+      "subject": "feat(s3): integrate multiscale E encoder and audited CPU fresh-init core",
+      "agent_sha256": "65fc310b7d48f9ee8a4f07828fc55d5102e22092300cab88931a7f0eeec9d114",
+      "status": "REJECT",
+      "error": "Source network/training semantics changed: dreamerv3/agent.py"
+    },
+    {
+      "revision": "13f03938686a34b8f641c698da3198fb2d74b6cd",
+      "subject": "Merge accepted E A2 and B2 readiness into s3-next",
+      "agent_sha256": "65fc310b7d48f9ee8a4f07828fc55d5102e22092300cab88931a7f0eeec9d114",
+      "status": "REJECT",
+      "error": "Source network/training semantics changed: dreamerv3/agent.py"
+    },
+    {
+      "revision": "6403cd68fdcc4e61f9036a7d06f30ac7a4448312",
+      "subject": "Merge reviewed Quality-first student into s3-next and retain E admission hooks",
+      "agent_sha256": "65fc310b7d48f9ee8a4f07828fc55d5102e22092300cab88931a7f0eeec9d114",
+      "status": "REJECT",
+      "error": "Source network/training semantics changed: dreamerv3/agent.py"
+    },
+    {
+      "revision": "6114b557e5cc5a134a23ae5b446b351e4f95cc0a",
+      "subject": "Document accepted Quality integration and remaining composition gates",
+      "agent_sha256": "65fc310b7d48f9ee8a4f07828fc55d5102e22092300cab88931a7f0eeec9d114",
+      "status": "REJECT",
+      "error": "Source network/training semantics changed: dreamerv3/agent.py"
+    }
+  ],
+  "changed_methods": {
+    "c18a8b5917f73110f9b6ce840495f4da1d7ca1d4": {
+      "added": [
+        "Agent._feedback_discount"
+      ],
+      "changed": [
+        "Agent.__init__",
+        "Agent._apply_replay_context",
+        "Agent.ext_space",
+        "Agent.loss",
+        "Agent.world_model",
+        "lambda_return",
+        "repl_loss"
+      ]
+    },
+    "c2988a7b1887ad27643176d64334e432243e088a": {
+      "added": [
+        "Agent.policy_distribution"
+      ],
+      "changed": [
+        "Agent.policy"
+      ]
+    },
+    "f30d8da2523eddad53aeca1540afe1c77d47b248": {
+      "added": [],
+      "changed": [
+        "Agent.__init__"
+      ]
+    }
+  },
+  "production_unchanged_in_e_worktree": true
+}

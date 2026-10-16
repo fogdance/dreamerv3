@@ -10,3 +10,4 @@
 - W&B 位于兄弟 Gym 的独立 Tracker，Dreamer Trainer 不引入网络依赖。
 - 当前集成保留 A2、Tutor、B2 的独立教学语义，并包含 Archive V1、已准入 E 和 Legacy+Quality。E+Quality 与 Tutor+B2 尚未实现；Quality 预测、Q、决策门禁独立，Full 研究未放行。
 - 本轮两侧父提交 Review、实际 CPU 测试与限制见 [Quality-first 集成复核](../../gym-trading-env/docs/S3_NEXT_QUALITY_FIRST_INTEGRATION_REVIEW_20261016.md)。
+- 测试合同、历史迁移版本固定与共享边界回归遵循工作区根 `AGENTS.md`；本次旧 Gate 断言失效的证据及20项共享回归见 [根因报告](S3_NEXT_GATE_AUDIT_ROOT_CAUSE_20261016.md)。

@@ -45,18 +45,33 @@ def test_threshold_boundaries_float32_bfloat16_and_safe_wait():
 
 def test_audited_ast_accepts_only_the_reviewed_transition():
     root=Path(__file__).resolve().parents[2]
-    old=subprocess.check_output(['git','show','09e2e5c:dreamerv3/agent.py'],cwd=root)
+    old=subprocess.check_output(['git','show','09e2e5ce5b07433790e7f4c3e40be7ca4e084064:dreamerv3/agent.py'],cwd=root)
+    reviewed=subprocess.check_output(['git','show','00b82f850d44c268167578e07f77b0b613591f4a:dreamerv3/agent.py'],cwd=root)
     current=(root/'dreamerv3/agent.py').read_bytes()
-    assert len(audit_code_transition(old,current,'dreamerv3/agent.py'))==64
+    # Pin both ends of the actual Gate-only change. Current HEAD also includes
+    # market-minute discounts and E architecture changes; accepting those as a
+    # Gate-only full-state transfer would violate the production contract.
+    assert len(audit_code_transition(old,reviewed,'dreamerv3/agent.py'))==64
+    assert len(audit_code_transition(current,current,'dreamerv3/agent.py'))==64
     bad_helper=current.replace(b'pred = logits >= 0',b'pred = logits > 0')
     with pytest.raises(ValueError,match='Unreviewed availability helper'):
-        audit_code_transition(old,bad_helper,'dreamerv3/agent.py')
+        audit_code_transition(current,bad_helper,'dreamerv3/agent.py')
     bad_loss=current.replace(b'postpred = availability_prediction',b'postpred = 1 + availability_prediction')
     with pytest.raises(ValueError,match='semantics changed'):
-        audit_code_transition(old,bad_loss,'dreamerv3/agent.py')
+        audit_code_transition(current,bad_loss,'dreamerv3/agent.py')
     bad_factory=current.replace(b'return self.loss',b'return self.report',1)
     with pytest.raises(ValueError,match='loss factory'):
-        audit_code_transition(old,bad_factory,'dreamerv3/agent.py')
+        audit_code_transition(current,bad_factory,'dreamerv3/agent.py')
+
+
+def test_gate_only_audit_rejects_market_minute_semantic_change():
+    root=Path(__file__).resolve().parents[2]
+    # The immediate before/after pair isolates the first incompatible change:
+    # feedback discount gamma became gamma ** market_advance (including 0).
+    old=subprocess.check_output(['git','show','dc6cca7fbbba9f663d70239432322058d5695d0d:dreamerv3/agent.py'],cwd=root)
+    market_minute=subprocess.check_output(['git','show','c18a8b5917f73110f9b6ce840495f4da1d7ca1d4:dreamerv3/agent.py'],cwd=root)
+    with pytest.raises(ValueError,match='Source network/training semantics changed'):
+        audit_code_transition(old,market_minute,'dreamerv3/agent.py')
 
 
 def test_direct_init_real_runner_uses_twenty_reports_and_regression_stop(source_bundle,tmp_path):
