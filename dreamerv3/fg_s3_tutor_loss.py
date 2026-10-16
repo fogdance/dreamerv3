@@ -15,7 +15,7 @@ def agent_extensions(settings):
     if mode == 'quality_v2':
         from .fg_s3_quality_v2 import quality_extensions
         return quality_extensions(settings)
-    if mode not in ('a2', 'c2', 'tutor', 'b2'):
+    if mode not in ('a2', 'c2', 'tutor', 'b2', 'e'):
         raise ValueError('Unknown S3-V2 mode')
     if mode == 'b2':
         from .fg_s3_b2_outcome import b2_extensions

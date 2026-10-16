@@ -18,6 +18,7 @@ FORMAL_SCOPES = {
     'a2': 'REAL_TRAIN_FORMAL_E_A2_CPU_GPU_ACCEPTED',
     'tutor_cd': FORMAL_SCOPE,
     'b2': 'REAL_TRAIN_FORMAL_E_B2_CPU_GPU_ACCEPTED',
+    'none': 'REAL_TRAIN_FORMAL_E_ONLY_USER_REQUESTED',
 }
 
 
@@ -38,7 +39,7 @@ def make_binding(config, composition, data_manifest, *, diagnostic=True):
         raise ValueError('E binding requires an explicit diagnostic boolean')
     if not diagnostic and (composition['teaching'] not in FORMAL_SCOPES
                            or composition['support_state'] != 'ready'):
-        raise ValueError('Formal E entry requires a released individual teaching mode')
+        raise ValueError('Formal E entry requires an explicitly released composition')
     path = Path(data_manifest).resolve(strict=True)
     data = json.loads(path.read_text())
     if data.get('schema') == REAL and data.get('kind') == 'collection':

@@ -15,6 +15,8 @@ from .fg_s3c_agent import S3CAgent
 from .fg_s3_tutor_loss import agent_extensions, eligible_teacher, pair_mask, tutor_objective
 from .fg_s3_composition import require_ready, validate_encoder, validate_model_composition
 
+RL_MODES = ('c2', 'e')
+
 
 @contextmanager
 def masked_joint_optimizer(optimizer, actor_active, critic_active, extra_active=None):
@@ -58,8 +60,11 @@ class _S3V2Model(S3CAgent):
             raise ValueError('E model requires explicit Composition identity')
         super().__init__(obs_space, act_space, config)
         self.mode = config.s3_v2_mode
-        if self.mode not in ('a2', 'c2', 'tutor', 'b2', 'quality_v2'):
-            raise ValueError('S3-V2 supports A2, C2, Tutor or B2')
+        if self.mode not in ('a2', 'c2', 'tutor', 'b2', 'quality_v2', 'e'):
+            raise ValueError('Unknown S3-V2 mode')
+        if self.mode == 'e' and (composition is None or composition['teaching'] != 'none'
+                                or config.bc_lambda != 0):
+            raise ValueError('E-only requires explicit teaching:none and zero BC lambda')
         if self.mode == 'b2':
             from .fg_s3_b2_outcome import b2_extensions, DecisionAdapter, MixSchedule
             self.b2 = b2_extensions({'mode': 'b2', **{k: config[k] for k in
@@ -294,7 +299,7 @@ class _S3V2Model(S3CAgent):
 
     def v2_loss(self, carry, obs, prevact, training, *, teacher_y, teacher_valid, outcomes=None):
         ready = self.avail_actor_gate.read() > 0
-        if self.mode == 'c2':
+        if self.mode in RL_MODES:
             base, (carry, entries, feat, metrics) = nj.cond(ready,
                 partial(self._components, training=training, rl=True),
                 partial(self._components, training=training, rl=False),
@@ -334,7 +339,7 @@ class _S3V2Model(S3CAgent):
         metrics.update({'bc/nll': extra.get('bc/nll', bc), 'bc/active': jnp.float32(active),
             'bc/lambda': jnp.float32(self.config.bc_lambda), 'bc/total_loss': total,
             'avail/ready': jnp.float32(ready),
-            'v2/rl_active': jnp.float32(ready & (self.mode == 'c2'))})
+            'v2/rl_active': jnp.float32(ready & (self.mode in RL_MODES))})
         diagnostic = {}
         if self.mode == 'tutor' and self.tutor_gradient_every:
             diagnostic['tutor_features'] = jax.lax.stop_gradient(self.feat2tensor(feat))
@@ -398,7 +403,7 @@ class _S3V2Model(S3CAgent):
         if nj.creating():
             return Agent.train(self, carry, data)
         carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
-        rl = (self.mode == 'c2') & (self.avail_actor_gate.read() > 0)
+        rl = (self.mode in RL_MODES) & (self.avail_actor_gate.read() > 0)
         bc = (self.config.bc_lambda > 0) & jnp.any(data['teacher_valid'][:, 1:])
         if self.mode == 'tutor':
             y = data['teacher_action'][:, 1:]
@@ -460,7 +465,7 @@ class _S3V2Model(S3CAgent):
         if self.mode == 'b2':
             self.b2_schedule.advance(extra_active['b2_event/'])
             metrics['b2/mix_next'] = self.b2_schedule.read()
-        if self.mode == 'c2':
+        if self.mode in RL_MODES:
             def update_slow():
                 self.slowval.update()
                 return jnp.int32(0)

@@ -21,7 +21,7 @@ from embodied.run.fg_s3_gate import make_gate_controller
 from embodied.run.fg_s3_source_admission import transfer_control_state, runtime_versions
 from embodied.run.fg_s3_source_transfer import make_agent, apply_and_audit_transfer
 from embodied.run.fg_s3c_train import code_identity, reconcile_update_log
-from dreamerv3.fg_s3_v2_agent import S3V2Agent
+from dreamerv3.fg_s3_v2_agent import S3V2Agent, RL_MODES
 from dreamerv3.fg_s3_tutor_loss import agent_extensions
 from dreamerv3.fg_s3_composition import identity_fields, settings_composition, validate_records
 from dreamerv3.fg_s3a_actor import parameter_digests
@@ -162,7 +162,7 @@ class LiveRun:
         self.offset = int(spec.get('target_update_offset', spec['origin']['step']))
         cfg = self.config = elements.Config(frozen_model['config'])
         extensions = agent_extensions(s)
-        if s['mode'] in ('tutor', 'b2','quality_v2') and frozen_model['agent_extension'] != extensions:
+        if s['mode'] in ('tutor', 'b2','quality_v2','e') and frozen_model['agent_extension'] != extensions:
             raise ValueError('Frozen extended model configuration differs from settings')
         self.agent = agent = self.create_agent(plain(cfg), root/'model', device=s['device'],
             agent_cls=self.agent_class, bc_lambda=s['bc_lambda'], extra_agent_config=extensions,
@@ -192,6 +192,7 @@ class LiveRun:
             replay_capacity=s['replay_capacity'], max_env_steps=s['env_steps'],
             beta_schedule=s['beta_schedule'], outcome_catalog=outcome_catalog,
             quality_catalog=query if s['mode']=='quality_v2' else None,
+            teacher_enabled=s['mode'] != 'e',
             **e_collector)
         self.gate = make_gate_controller(plain(cfg), spec['gate_policy'], control,
                                         agent.get_avail_actor_enabled())
@@ -229,7 +230,7 @@ class LiveRun:
                 seed=cfg.seed, mix_replay_seed=s['replay_seed'], beta=s['beta'],
                 beta_schedule=s['beta_schedule'], bc_lambda=s['bc_lambda'],
                 versions=preparation['versions'], diagnostic=s['scope'] == 'diagnostic')
-            if s['mode'] in ('tutor', 'b2','quality_v2'):
+            if s['mode'] in ('tutor', 'b2','quality_v2','e'):
                 identity['agent_extension'] = extensions
             if 'e_binding' in preparation:
                 identity['e_binding'] = preparation['e_binding']
@@ -430,7 +431,7 @@ class LiveRun:
             self.report_gate()
             after = parameter_digests(self.agent.params) if audit else None
             changed = [k for k in before if before[k] != after[k]] if audit else None
-            if audit and (s['mode'] != 'c2' or not cycle_rl_ready) and any(k.startswith(
+            if audit and (s['mode'] not in RL_MODES or not cycle_rl_ready) and any(k.startswith(
                                        ('val/', 'slowval/', 'slowval_count/', 'retnorm/', 'valnorm/', 'advnorm/'))
                                        or (k.startswith('opt/state/') and '/val/' in k) for k in changed):
                 raise RuntimeError('Non-RL update changed a frozen Critic/RL state')
@@ -474,7 +475,8 @@ class LiveRun:
             collect_seconds=collect_seconds, update_seconds=update_seconds,
             core_env_steps_per_second=int(self.step)/max(collect_seconds+update_seconds, 1e-6),
             process_peak_rss_mib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024,
-            oracle_query_recent_seconds={str(p): float(np.percentile(self.collector.query_seconds, p))
+            oracle_query_recent_seconds={str(p): (float(np.percentile(self.collector.query_seconds, p))
+                if self.collector.query_seconds else None)
                 for p in (50, 95, 99)},
             actor_oracle_add_recall=tp/(tp+fn) if tp+fn else None,
             retained_teacher_rows=len(self.collector.records), teacher_journal=str(self.collector.journal),

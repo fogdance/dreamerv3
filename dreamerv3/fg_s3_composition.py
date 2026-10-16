@@ -5,8 +5,9 @@ LEGACY_SCHEMA = 'FG_S3_V2_DIAGNOSTIC_CONFIG_V1'
 CONFIG_SCHEMA = 'FG_S3_V2_COMPOSITION_CONFIG_V1'
 KEY = 'resolved_composition'
 ENCODERS = ('legacy_1m', 'e_multiscale_1m15m')
-TEACHING = ('a2', 'tutor_cd', 'b2', 'tutor_cd_b2', 'quality_v2')
-MODES = {'a2': 'a2', 'tutor_cd': 'tutor', 'b2': 'b2', 'tutor_cd_b2': None, 'quality_v2':'quality_v2'}
+TEACHING = ('a2', 'tutor_cd', 'b2', 'tutor_cd_b2', 'quality_v2', 'none')
+MODES = {'a2': 'a2', 'tutor_cd': 'tutor', 'b2': 'b2', 'tutor_cd_b2': None,
+         'quality_v2':'quality_v2', 'none':'e'}
 
 
 def resolve_composition(config):
@@ -33,12 +34,14 @@ def resolve_composition(config):
         raise ValueError('Unknown encoder; select '+', '.join(ENCODERS))
     if not isinstance(teaching, str) or teaching not in TEACHING:
         raise ValueError('Unknown teaching; select '+', '.join(TEACHING))
+    if teaching == 'none' and encoder != 'e_multiscale_1m15m':
+        raise ValueError('E-only teaching:none requires e_multiscale_1m15m')
     # E+A2 and E+B2 passed real TRAIN CPU, size50m GPU 1K and cold resume.
     # Tutor-CD retains its prior release. Quality uses the admitted legacy
     # encoder only; E+Quality and joint Tutor+B2 need separate implementation.
     state = ('waiting_tutor_b2' if teaching == 'tutor_cd_b2' else
              'waiting_quality_e' if encoder == 'e_multiscale_1m15m' and teaching == 'quality_v2' else 'ready')
-    return dict(encoder=encoder, teaching=teaching, base_oracle_bc=True,
+    return dict(encoder=encoder, teaching=teaching, base_oracle_bc=teaching != 'none',
         use_e=encoder != 'legacy_1m', use_tutor=teaching in ('tutor_cd', 'tutor_cd_b2'),
         use_b2=teaching in ('b2', 'tutor_cd_b2'), legacy_mode=MODES[teaching],
         support_state=state, schema_version=1)
