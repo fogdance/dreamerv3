@@ -1,0 +1,2 @@
+# Preserve raw pytest receipts, including whitespace in captured tracebacks.
+docs/receipts/**/*.xml -text -whitespace

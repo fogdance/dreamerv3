@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="1.529" timestamp="2026-10-16T08:14:16.824437+08:00" hostname="v-X570-AORUS-PRO-WIFI"><testcase classname="embodied.tests.test_fg_s3_gate" name="test_audited_ast_accepts_only_the_reviewed_transition" time="0.042"><failure message="ValueError: Source network/training semantics changed: dreamerv3/agent.py">def test_audited_ast_accepts_only_the_reviewed_transition():
+        root=Path(__file__).resolve().parents[2]
+        old=subprocess.check_output(['git','show','09e2e5c:dreamerv3/agent.py'],cwd=root)
+        current=(root/'dreamerv3/agent.py').read_bytes()
+&gt;       assert len(audit_code_transition(old,current,'dreamerv3/agent.py'))==64
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+../dreamerv3/embodied/tests/test_fg_s3_gate.py:50: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+source = b'import re\n\nimport chex\nimport elements\nimport embodied.jax\nimport embodied.jax.nets as nn\nimport jax\nimport j...    rets.append(interm[:, t] + live[:, t] * cont[:, t] * rets[-1])\n  return jnp.stack(list(reversed(rets))[:-1], 1)\n'
+target = b'import re\n\nimport chex\nimport elements\nimport embodied.jax\nimport embodied.jax.nets as nn\nimport jax\nimport j...    rets.append(interm[:, t] + live[:, t] * cont[:, t] * rets[-1])\n  return jnp.stack(list(reversed(rets))[:-1], 1)\n'
+name = 'dreamerv3/agent.py'
+
+    def audit_code_transition(source, target, name):
+        normalized = _normalized_code(source, name)
+        if normalized != _normalized_code(target, name):
+&gt;           raise ValueError('Source network/training semantics changed: '+name)
+E           ValueError: Source network/training semantics changed: dreamerv3/agent.py
+
+../dreamerv3/embodied/run/fg_s3_source_admission.py:172: ValueError</failure></testcase></testsuite></testsuites>
