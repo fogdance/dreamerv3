@@ -44,7 +44,9 @@ SIDECAR_LAYERS = dict(
     q=dict(valid_fields=['quality_q_c1_valid', 'quality_q_v2_valid'], source='native_certified_q'))
 TEACHER = dict(kind='quality_v2', fold='TRAIN', score_policy='FG_S3_QUALITY_TP_MARKET_DAY_V1',
     reward_schema=REWARD_SCHEMA, label_schema='FG_S3_E_QUALITY_TEACHER_V2',
-    label_location='SIDECAR', layers=SIDECAR_LAYERS)
+    label_location='SIDECAR', layers=SIDECAR_LAYERS,
+    strict_objective=dict(reward_schema=REWARD_SCHEMA,gamma_rational=[332,333],
+        tie_break='WAIT',scope='TRAIN_NATIVE_COMPLETE_SUFFIX_ONLY'))
 AUTHORIZATION = dict(scope='CONTRACT_ONLY', training_authorization='EXTERNAL_REQUIRED')
 BEHAVIORS = ('always_wait', 'always_add', 'probabilistic', 'single_delay', 'quality_oracle_schedule')
 WM_GROUPS = ('enc/', 'dyn/', 'dec/', 'rew/', 'con/', 'avail/')
@@ -287,7 +289,7 @@ def inspect_course_readiness(validated: dict) -> dict:
             blockers.append('MISSING_' + key.upper())
     for behavior in value['curriculum']['behaviors']:
         if behavior['kind'] == 'quality_oracle_schedule':
-            blockers.append('QUALITY_ORACLE_SCHEDULE_NOT_IMPLEMENTED:' + behavior['behavior_id'])
+            blockers.append('QUALITY_ORACLE_SCHEDULE_NOT_AUTHENTICATED_BY_PREFLIGHT:' + behavior['behavior_id'])
             if behavior['parameters']['source'] is None:
                 blockers.append('MISSING_QUALITY_ORACLE_SOURCE:' + behavior['behavior_id'])
     return dict(status='CONTRACT_ONLY', admission_status='NOT_ADMITTED',
