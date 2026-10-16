@@ -93,12 +93,12 @@ def _apply_and_audit_transfer(agent, spec):
             plain(agent.config[k]) != v for k, v in spec['agent_extension'].items()):
         raise ValueError('Target B2 extension differs from SourceAdmission')
     if spec.get('e_binding') is not None:
-        from gym_trading_env.research.fg_s3_e_observation import E_FIELDS_V1, DECODER_KEYS
+        from gym_trading_env.research.fg_s3_e_observation import E_FIELDS_V2, DECODER_KEYS
         if agent.config.jax.compute_dtype != spec['target_config']['jax']['compute_dtype']:
             raise ValueError('E target compute dtype differs from SourceAdmission')
-        if set(agent.obs_space) != set(E_FIELDS_V1) - {'action'} or set(agent.model.dec.obs_space) != set(DECODER_KEYS):
+        if set(agent.obs_space) != set(E_FIELDS_V2) - {'action'} or set(agent.model.dec.obs_space) != set(DECODER_KEYS):
             raise ValueError('E target observation/Decoder schema differs from SourceAdmission')
-        prefixes = ('enc/minute/', 'enc/context15/', 'enc/fusion/')
+        prefixes = ('enc/minute/', 'enc/context15/', 'enc/macd5/', 'enc/fusion/')
         if admitted['use_b2']:
             prefixes += ('b2_event/', 'b2_early/', 'b2_adapter/', 'b2_schedule/')
         if any(not any(k.startswith(p) for k in agent.params) for p in prefixes):

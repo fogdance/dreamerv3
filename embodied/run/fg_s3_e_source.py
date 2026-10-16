@@ -9,8 +9,8 @@ from gym_trading_env.research.fg_replay import read_manifest, signed
 from gym_trading_env.research.fg_s3_e_observation import observation_contract
 from dreamerv3.fg_s3_composition import validate_model_composition
 
-PROTOCOL = 'FG_S3_E_SOURCE_BINDING_V1'
-SYNTHETIC = 'FG_S3_E_MODEL_SYNTHETIC_V1'
+PROTOCOL = 'FG_S3_E_SOURCE_BINDING_V2'
+SYNTHETIC = 'FG_S3_E_MODEL_SYNTHETIC_V2'
 REAL = 'S3_E_DATA_V1'
 REAL_SCOPE = 'REAL_TRAIN_ACCEPTANCE_ONLY_NOT_FORMAL_RELEASED'
 FORMAL_SCOPE = 'REAL_TRAIN_FORMAL_E_TUTOR_CD_USER_RELEASED'

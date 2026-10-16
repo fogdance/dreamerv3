@@ -59,7 +59,7 @@ def test_EM15_full_checkpoint_continuous_vs_interrupted_exact(mode,tmp_path):
         cp.save();node=cp.latest();manifest=validate_bundle(node,identity)
         assert manifest['identity']['resolved_composition']['support_state']=='ready'
         assert all(any(k.startswith(p) for k in a.params) for p in
-                   ('enc/minute/','enc/context15/','enc/fusion/'))
+                   ('enc/minute/','enc/context15/','enc/macd5/','enc/fusion/'))
         for wrong in ({**identity,'resolved_composition':composition('b2' if mode!='b2' else 'a2')},
                       {**identity,'e_binding':{**binding,'data_manifest_sha256':'foreign'}}):
             with pytest.raises(ValueError,match='identity mismatch'):validate_bundle(node,wrong)

@@ -96,8 +96,8 @@ class Agent(embodied.jax.Agent):
     from .fg_s3_e_encoder import S3EMultiscaleEncoder
     if config.enc.typ == 'e_multiscale_1m15m':
       from gym_trading_env.research.fg_s3_e_observation import (
-          E_FIELDS_V1, ENCODER_KEYS, DECODER_KEYS)
-      if set(obs_space) != set(E_FIELDS_V1) - {'action'}:
+          E_FIELDS_V2, ENCODER_KEYS, DECODER_KEYS)
+      if set(obs_space) != set(E_FIELDS_V2) - {'action'}:
         raise ValueError('E Agent requires the complete versioned E ObsSpace')
       enc_space = {k: obs_space[k] for k in ENCODER_KEYS}
       dec_space = {k: obs_space[k] for k in DECODER_KEYS}
