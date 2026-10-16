@@ -29,6 +29,14 @@ DEFAULTS = dict(quality_alpha=.8, quality_kappa=1., quality_wmax=2.,
 
 
 def quality_extensions(settings):
+    supervision=settings.get('quality_supervision_protocol')
+    if supervision is not None:
+        from gym_trading_env.research.fg_s3_e_quality_supervision import PROTOCOL
+        if supervision != PROTOCOL:
+            raise ValueError('Unknown Quality supervision protocol')
+        forbidden=('quality_q_c1_lambda','quality_q_v2_lambda','quality_soft_lambda')
+        if any(settings.get(k,0.) != 0. for k in forbidden):
+            raise ValueError('E_QUALITY_SUPERVISION_Q_SOFT_FORBIDDEN')
     stage=settings.get('quality_stage','HEADS_ONLY')
     if stage not in ('HEADS_ONLY','CONTROLLED_FULL'):
         raise ValueError('Unknown Quality-first research stage')
@@ -43,6 +51,8 @@ def quality_extensions(settings):
         raise ValueError('B1/B2/B3 are later controlled teaching ablations')
     result = dict(s3_v2_mode='quality_v2',quality_variant=variant,
                   quality_stage=stage,quality_prediction_admitted=admitted)
+    if supervision is not None:
+        result['quality_supervision_protocol']=supervision
     decision=settings.get('quality_decision_admitted',False)
     if type(decision) is not bool or stage=='HEADS_ONLY' and decision:
         raise ValueError('HEADS_ONLY does not admit quality decision interventions')
@@ -51,7 +61,8 @@ def quality_extensions(settings):
     if type(interval) is not int or interval<0: raise ValueError('Invalid quality gradient sampling interval')
     result['quality_gradient_every_updates']=interval
     for k,v in DEFAULTS.items():
-        x = settings.get(k,v)
+        default=0. if supervision and k in forbidden else v
+        x = settings.get(k,default)
         if isinstance(x,bool) or not isinstance(x,(int,float)) or not math.isfinite(x) or x < 0:
             raise ValueError('Invalid quality setting: '+k)
         result[k] = float(x)
@@ -156,7 +167,8 @@ def pair_identity(labels, first):
     owner = labels['quality_owner']
     segment = jnp.cumsum(first.astype(jnp.int32),-1)
     return ((owner[:,:,None,:] == owner[:,None,:,:]).all(-1)
-            & (segment[:,:,None] == segment[:,None,:]))
+            & (segment[:,:,None] == segment[:,None,:])
+            & (owner != 0).any(-1)[:,:,None] & (owner != 0).any(-1)[:,None,:])
 
 
 def teaching_objective(dist, labels, y, valid, first, config, bc_lambda=1.):

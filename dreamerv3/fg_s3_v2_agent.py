@@ -120,6 +120,15 @@ class _S3V2Model(S3CAgent):
             labels = {name:data[name][:,k:] for name in FIELDS}
             if any(x.shape[:2] != y.shape for x in labels.values()):
                 raise ValueError('Quality effective time axis differs from native Replay')
+            if self.quality.get('quality_supervision_protocol'):
+                forbidden=(labels['quality_q_c1_valid'].any() | labels['quality_q_v2_valid'].any()
+                           | labels['quality_soft_valid'].any() | (labels['quality_soft_source'] != 0).any())
+                def reject(_):
+                    def fail():
+                        raise ValueError('E_QUALITY_SUPERVISION_Q_SOFT_FORBIDDEN')
+                    jax.debug.callback(fail)
+                    return jnp.int32(0)
+                jax.lax.cond(forbidden,reject,lambda _:jnp.int32(0),None)
             return partial(self.quality_loss,teacher_y=y,teacher_valid=valid,labels=labels)
         if self.mode == 'b2':
             from gym_trading_env.research.fg_s3_b2_outcome_catalog import FIELDS
