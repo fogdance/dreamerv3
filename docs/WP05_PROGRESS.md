@@ -7,3 +7,5 @@ B: explicit all-non-opt parameter handoff using original sharding, no historical
 C: original four-head prediction_terms, detached causal WM features, per-head original optimizer masks and exact frozen state, no-valid rollback/counter skip, full nonfinite rollback. 12 distinct new cases final PASS; F1/legacy regression running.
 
 D: cached pure read-only F2 forward exposes original Encoder/posterior diagnostics. K32/T64 native multiscale source reaches all four heads. F1/legacy 26 PASS, Gym D cases 12 PASS. Independent research acceptance UNSUPPORTED on smoke data.
+
+E: thin HeadsRun uses original CourseStream/Agent/StepSchedule/RuntimeState/FullCheckpoint. Checkpoint position is consumed batches; optimization clocks independent. 8 CPU tests PASS including full cold exactness and skip-state resume, no repeated F1 handoff. Original log reconciliation gains an explicit position field with legacy default unchanged.

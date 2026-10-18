@@ -116,7 +116,7 @@ class JointCounters:
             recall=s['tp']/(s['tp']+s['fn']) if s['tp']+s['fn'] else None)
 
 
-def reconcile_update_log(root, step, offset):
+def reconcile_update_log(root, step, offset, *, position_key="local_update"):
     """Archive an uncommitted log tail before restoring the checkpoint boundary."""
     path = root/'updates.jsonl'
     raw = path.read_bytes() if path.exists() else b''
@@ -126,7 +126,9 @@ def reconcile_update_log(root, step, offset):
         if i >= len(lines):
             raise ValueError('Update log missing checkpointed updates')
         row = json.loads(lines[i])
-        if row['local_update'] != i+1 or row['agent_update'] != offset+i+1:
+        valid_update=(row['agent_update']==offset+i+1 if position_key=='local_update' else
+                      row['local_update']==row['agent_update'] and 0<=row['agent_update']<=i+1)
+        if row[position_key] != i+1 or not valid_update:
             raise ValueError('Checkpointed update log chronology differs')
         prefix.append(lines[i])
     committed = b''.join(prefix)
@@ -139,7 +141,7 @@ def reconcile_update_log(root, step, offset):
     pending = root/('.updates.pending_'+token)
     pending.write_bytes(committed);os.replace(pending,path)
     write_json(backups/(token+'.json'),signed(dict(checkpoint_local_update=step,
-        source_update_offset=offset,archive=str(backup),archive_sha256=file_hash(backup),
+        source_update_offset=offset,position_key=position_key,archive=str(backup),archive_sha256=file_hash(backup),
         restored_log_sha256=file_hash(path))))
 
 

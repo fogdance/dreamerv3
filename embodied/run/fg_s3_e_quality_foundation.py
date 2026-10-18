@@ -21,8 +21,8 @@ BACKEND='external_immutable_course_reader'
 
 class CourseStream:
     """Lifecycle adapter, not another sampler or Replay."""
-    def __init__(self,reader,settings):
-        self.reader=reader;self.adapter=F1WindowAdapter(reader,settings)
+    def __init__(self,reader,settings,*,adapter_cls=F1WindowAdapter):
+        self.reader=reader;self.adapter=adapter_cls(reader,settings)
     def __iter__(self):return self
     def __next__(self):return self.adapter.sample()[0]
     def validate_snapshot(self,state=None):
