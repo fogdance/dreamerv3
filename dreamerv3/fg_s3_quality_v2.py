@@ -154,6 +154,16 @@ def fuse_logits(raw, predictions, mask, config):
 
 
 def policy_forward(agent, features, mask, bdims):
+    if getattr(agent,'f3',False):
+        from .fg_s3_e_quality_actor import distribution
+        policy,raw=distribution(agent,features,mask,bdims)
+        action=policy[agent.action_key];zero=jnp.zeros(raw.shape[:-1],jnp.float32)
+        diagnostics={'quality/base_policy_logit':raw[...,1]-raw[...,0],
+            'quality/z_final':raw[...,1]-raw[...,0],'quality/delta_O':zero,'quality/delta_S':zero,'quality/delta_Q':zero,
+            'quality/pADD_raw':jax.nn.softmax(raw,-1)[...,1],
+            'quality/pADD_after_mask_unimix':action.prob(jnp.ones(raw.shape[:-1],jnp.int32)),
+            'quality/argmax_action':action.pred()}
+        return policy,diagnostics,{}
     predictions = predict(agent,features,bdims)
     head_only=agent.quality['quality_stage']=='HEADS_ONLY'
     actor=agent.pol if head_only else agent.quality_actor

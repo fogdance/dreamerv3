@@ -13,3 +13,7 @@ F1/F2→F3 完整 non-opt 接续、fresh optimizer/counters 和来源负例通�
 
 原 Reader 多流组合不实现新 sampler；F3 继承原 HeadsRun.update/run/FullCheckpoint 生命周期，只提供阶段权限、counters 和预算 hooks。`D_run` 16 passed，`D_boundary` 14 passed（13 项重合），均 exit 0。L1 仅保留高分 L2 ADD→低分 L2 WAIT，默认关；跨账户/segment/batch 不组成 Pair。
 
+# 06.E
+
+纯 F3 policy 不调用预测头，原始 quality_actor 仅经过一次原 mask/unimix。训练/推理同特征相同分布；修正诊断 seed 以匹配原 Agent._seeds。CPU 合成可学性及原生无 Teacher 完整金融回放通过，`E_evaluation_retry` 4 passed / exit 0。真实策略有效性尚未验收。
+

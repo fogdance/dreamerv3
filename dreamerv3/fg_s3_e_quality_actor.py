@@ -187,7 +187,7 @@ def train(model,data):
     return (*carry,{k:data[k][:,-1] for k in model.act_space}),{'effective_stepid':ids},metrics
 
 
-def read_only_forward(agent,data):
+def read_only_forward(agent,data,*,seed_counter=202):
     import numpy as np
     import jax,jax.numpy as jnp,ninjax as nj
     if not hasattr(agent,'_f3_read_forward'):
@@ -201,5 +201,8 @@ def read_only_forward(agent,data):
             return dict(loss=value,features=feat,stepid=ids,logits=logits,
                 p_add=policy[agent.model.action_key].prob(jnp.ones(logits.shape[:-1],jnp.int32)),metrics=mets,**diagnostics)
         agent._f3_read_forward=jax.jit(nj.pure(fn),static_argnames=('create','modify'))
-    _,out=agent._f3_read_forward(agent.params,{k:jnp.asarray(v) for k,v in data.items()},seed=202,create=False,modify=True)
+    # Match the original Agent.train seed protocol, rather than treating the
+    # counter as a raw Ninjax key (which changes stochastic RSSM history).
+    seed=agent._seeds(seed_counter,agent.train_mirrored)
+    _,out=agent._f3_read_forward(agent.params,{k:jnp.asarray(v) for k,v in data.items()},seed=seed,create=False,modify=True)
     return jax.tree.map(np.asarray,out)
