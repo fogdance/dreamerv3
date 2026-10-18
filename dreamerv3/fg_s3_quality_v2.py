@@ -29,6 +29,9 @@ DEFAULTS = dict(quality_alpha=.8, quality_kappa=1., quality_wmax=2.,
 
 
 def quality_extensions(settings):
+    if settings.get('quality_f1_protocol') is not None or settings.get('quality_stage') == 'FOUNDATION_WM':
+        from .fg_s3_e_quality_foundation import quality_configuration
+        return quality_configuration(settings, DEFAULTS)
     supervision=settings.get('quality_supervision_protocol')
     if supervision is not None:
         from gym_trading_env.research.fg_s3_e_quality_supervision import PROTOCOL

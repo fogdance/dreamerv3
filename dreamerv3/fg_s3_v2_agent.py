@@ -60,6 +60,7 @@ class _S3V2Model(S3CAgent):
             raise ValueError('E model requires explicit Composition identity')
         super().__init__(obs_space, act_space, config)
         self.mode = config.s3_v2_mode
+        self.f1 = config.get('quality_f1_protocol') is not None
         if self.mode not in ('a2', 'c2', 'tutor', 'b2', 'quality_v2', 'e'):
             raise ValueError('Unknown S3-V2 mode')
         if self.mode == 'e' and (composition is None or composition['teaching'] != 'none'
@@ -92,6 +93,9 @@ class _S3V2Model(S3CAgent):
             from .fg_s3_quality_v2 import quality_extensions, head_modules
             self.quality = quality_extensions({'mode':self.mode,**{k:v for k,v in dict(config).items() if k.startswith('quality_')}})
             head_modules(self,config)
+        if self.f1:
+            from .fg_s3_e_quality_foundation import validate_model
+            validate_model(config)
         if config.replay_context != 1 or config.replay_context_mode != 'recompute_prefix':
             raise ValueError('S3-V2 requires one causal recomputed prefix')
         if not np.isfinite(config.bc_lambda) or config.bc_lambda < 0:
@@ -103,6 +107,8 @@ class _S3V2Model(S3CAgent):
         if nj.creating():
             if self.mode == 'quality_v2': return self.quality_init_loss
             return self.b2_init_loss if self.mode == 'b2' else self.loss
+        if self.f1:
+            raise ValueError('F1_OPTIMIZER_ROUTE_NOT_IMPLEMENTED')
         k = self.config.replay_context
         y, valid = data['teacher_action'][:, k:], data['teacher_valid'][:, k:]
         if y.shape != effective_stepid.shape[:2] or valid.shape != y.shape:
@@ -140,6 +146,8 @@ class _S3V2Model(S3CAgent):
 
     @property
     def ext_space(self):
+        if self.f1:
+            return Agent.ext_space.fget(self)
         space = super().ext_space
         if self.mode == 'quality_v2':
             from gym_trading_env.research.fg_s3_quality_catalog_v2 import FIELDS
@@ -411,6 +419,8 @@ class _S3V2Model(S3CAgent):
     def train(self, carry, data):
         if nj.creating():
             return Agent.train(self, carry, data)
+        if self.f1:
+            raise ValueError('F1_OPTIMIZER_ROUTE_NOT_IMPLEMENTED')
         carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
         rl = (self.mode in RL_MODES) & (self.avail_actor_gate.read() > 0)
         bc = (self.config.bc_lambda > 0) & jnp.any(data['teacher_valid'][:, 1:])
