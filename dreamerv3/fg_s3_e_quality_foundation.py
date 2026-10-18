@@ -84,6 +84,15 @@ def causal_context(model,data,k,t):
     return carry,target(obs),target(prevact),ids[:,k:]
 
 
+def frozen_features(model,data,k,t,*,diagnostics=False):
+    """Original causal WM forward shared by frozen F2/F3 representations."""
+    import jax
+    carry,obs,prevact,ids=causal_context(model,data,k,t)
+    _,(carry,_,out,metrics)=model.wm_only(carry,obs,prevact,False,diagnostics=diagnostics)
+    result=(jax.lax.stop_gradient(model.feat2tensor(out['repfeat'])),carry,ids)
+    return (*result,dict(encoder_tokens=metrics['f1_raw/encoder_tokens'],posterior_logits=out['repfeat']['logit'])) if diagnostics else result
+
+
 def loss(model, carry, obs, prevact, training, *, diagnostics=False):
     # Original Ninjax requires every selected optimizer parameter to be read.
     # Read-only .values keeps its complete joint schema without evaluating

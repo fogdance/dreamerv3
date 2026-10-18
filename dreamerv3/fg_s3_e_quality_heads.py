@@ -71,12 +71,8 @@ def register_state_schema(model,params):
     return owner
 
 def features(model,data,*,diagnostics=False):
-    import jax
-    from .fg_s3_e_quality_foundation import causal_context
-    carry,obs,prevact,ids=causal_context(model,data,model.config.quality_f2_burnin_steps,model.config.quality_f2_target_steps)
-    _,(carry,_,out,metrics)=model.wm_only(carry,obs,prevact,False,diagnostics=diagnostics)
-    result=(jax.lax.stop_gradient(model.feat2tensor(out['repfeat'])),carry,ids)
-    return (*result,dict(encoder_tokens=metrics['f1_raw/encoder_tokens'],posterior_logits=out['repfeat']['logit'])) if diagnostics else result
+    from .fg_s3_e_quality_foundation import frozen_features
+    return frozen_features(model,data,model.config.quality_f2_burnin_steps,model.config.quality_f2_target_steps,diagnostics=diagnostics)
 
 def active_heads(labels,config):
     import jax.numpy as jnp

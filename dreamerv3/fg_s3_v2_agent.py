@@ -34,10 +34,13 @@ def masked_joint_optimizer(optimizer, actor_active, critic_active, extra_active=
         if allowed_prefixes is not None:
             from .fg_s3_e_quality_course_contract import ALL_GROUPS, WM_GROUPS
             from .fg_s3_e_quality_heads import GROUPS, STAGE
+            from .fg_s3_e_quality_actor import GROUPS as ACTOR_GROUPS, STAGE as ACTOR_STAGE
             legal = tuple(allowed_prefixes)==WM_GROUPS and stage is None
             legal |= tuple(allowed_prefixes)==GROUPS and stage==STAGE
-            if stage is not None and set(extra_active or {})!=set(GROUPS):
-                raise ValueError('F2_DYNAMIC_MASK_OUTSIDE_ALLOWLIST')
+            legal |= tuple(allowed_prefixes)==ACTOR_GROUPS and stage==ACTOR_STAGE
+            expected=ACTOR_GROUPS if stage==ACTOR_STAGE else GROUPS
+            if stage is not None and set(extra_active or {})!=set(expected):
+                raise ValueError('QUALITY_DYNAMIC_MASK_OUTSIDE_ALLOWLIST')
             if not legal or any(not k.startswith(ALL_GROUPS) for k in params):
                 raise ValueError('F1_UNKNOWN_PARAMETER_OR_WM_ALLOWLIST')
             active = {k:((jnp.bool_(k.startswith(allowed_prefixes)) & next((value for prefix,value in rules.items() if k.startswith(prefix)),jnp.bool_(False)))

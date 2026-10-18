@@ -86,5 +86,118 @@ def register_state_schema(model,params):
     return model.f3_state_owner
 
 
+def features(model,data,*,diagnostics=False):
+    from .fg_s3_e_quality_foundation import frozen_features
+    return frozen_features(model,data,model.config.quality_f3_burnin_steps,model.config.quality_f3_target_steps,diagnostics=diagnostics)
+
+
+def distribution(model,feat,mask,bdims):
+    """One original quality_actor, one native mask/unimix, no predictions."""
+    import jax
+    import embodied
+    raw=model.quality_actor(jax.lax.stop_gradient(feat),bdims)[model.action_key].logits
+    policy=model._masked_policy({model.action_key:embodied.jax.outs.Categorical(raw)},mask,False)
+    return policy,raw
+
+
+def actor_objective(dist,labels,mask,first,last,terminal,config):
+    """L2 truth; each optional component has its own actual denominator."""
+    import jax
+    import jax.numpy as jnp
+    from .fg_s3_quality_v2 import mean,pair_identity
+    y=labels['teacher_action']
+    valid=labels['teacher_valid'] & ((y==0)|(y==1)) & (mask==1).all(-1) & ~first & ~last & ~terminal
+    natural=labels['f3_natural'];auxiliary=jnp.where((~natural).any(),~natural,jnp.ones_like(natural))
+    nv=valid & natural;av=valid & auxiliary
+    safe_y=jnp.where(valid,y,0)
+    nll=-dist.logp(safe_y);z=jnp.where(valid,dist.logits[...,1]-dist.logits[...,0],0.)
+    pos=av & (y==1);neg=av & (y==0)
+    nat=mean(nll,nv);bal=jnp.where(pos.any() & neg.any(),.5*(mean(nll,pos)+mean(nll,neg)),mean(nll,av))
+    identity=pair_identity(labels,first)
+    strict=identity & pos[:,:,None] & neg[:,None,:]
+    gap=z[:,:,None]-z[:,None,:]
+    pairloss=jax.nn.softplus(-gap/config['quality_pair_tau'])
+    strict_loss=mean(pairloss,strict)
+    known=labels['quality_score_valid'] & labels['quality_outcome_valid'] & av
+    score=jnp.where(known,labels['quality_score'],0.)
+    candidates=identity & known[:,:,None] & known[:,None,:] & (score[:,:,None]-score[:,None,:]>=15)
+    consistent=candidates & strict
+    same=candidates & (y[:,:,None]==y[:,None,:])
+    reverse=candidates & (y==0)[:,:,None] & (y==1)[:,None,:]
+    quality_loss=mean(pairloss,consistent)
+    loss=(config['quality_f3_natural_lambda']*nat+config['quality_f3_balanced_lambda']*bal+
+          config['quality_strict_pair_lambda']*strict_loss+config['quality_pair_lambda']*quality_loss)
+    active=(config['quality_f3_natural_lambda']>0)&nv.any()
+    active|=(config['quality_f3_balanced_lambda']>0)&av.any()
+    active|=(config['quality_strict_pair_lambda']>0)&strict.any()
+    active|=(config['quality_pair_lambda']>0)&consistent.any()
+    padd=dist.prob(jnp.ones_like(safe_y));pred=dist.pred()
+    m={'f3/active':active,'f3/valid_count':valid.sum(),'f3/natural_count':nv.sum(),
+       'f3/natural_add':(nv & (y==1)).sum(),'f3/natural_wait':(nv & (y==0)).sum(),
+       'f3/auxiliary_count':av.sum(),'f3/auxiliary_add':pos.sum(),'f3/auxiliary_wait':neg.sum(),
+       'f3/natural_loss':nat,'f3/balanced_loss':bal,'f3/strict_pair_loss':strict_loss,
+       'f3/quality_pair_loss':quality_loss,'f3/strict_pair_count':strict.sum(),
+       'f3/quality_pair_count':consistent.sum(),'f3/quality_pair_candidates':candidates.sum(),
+       'f3/quality_pair_conflicts':(candidates & ~strict).sum(),
+       'f3/quality_pair_same_action_filtered':same.sum(),'f3/quality_pair_reversed_filtered':reverse.sum(),
+       'f3/no_pair':~strict.any(),'f3/accuracy':mean((pred==y).astype(jnp.float32),nv),
+       'f3/add_accuracy':mean((pred==y).astype(jnp.float32),nv & (y==1)),
+       'f3/wait_accuracy':mean((pred==y).astype(jnp.float32),nv & (y==0)),
+       'f3/p_add_mean':mean(padd,nv),'f3/brier':mean((padd-safe_y)**2,nv),
+       'f3/strict_pair_accuracy':mean((gap>0).astype(jnp.float32),strict),
+       'f3/soft_valid_count':jnp.int32(0),'f3/q_valid_count':jnp.int32(0)}
+    return loss,m
+
+
+def objective(model,feat,labels,mask,first,last,terminal):
+    for module in model.modules:_=module.values
+    policy,raw=distribution(model,feat,mask,2)
+    loss,metrics=actor_objective(policy[model.action_key],labels,mask,first,last,terminal,model.quality)
+    return loss,(raw,metrics)
+
+
 def train(model,data):
-    raise NotImplementedError('F3_UPDATE_IMPLEMENTATION_PENDING')
+    import jax.numpy as jnp
+    import ninjax as nj
+    from functools import partial
+    from .fg_s3_v2_agent import masked_joint_optimizer
+    actual={k:(tuple(v.shape),str(v.dtype)) for k,v in nj.context().items()}
+    if actual!=getattr(model,'f3_state_schema',None):raise ValueError('F3_UNKNOWN_OR_CHANGED_STATE_SCHEMA')
+    before=dict(nj.context());feat,carry,ids=features(model,data)
+    start=1+model.config.quality_f3_burnin_steps
+    labels={key:data[key][:,start:] for key in LABELS}
+    args=[data[k][:,start:] for k in ('action_mask','is_first','is_last','is_terminal')]
+    # Read-only activity uses the same objective masks, never an executed action.
+    _,(_,preview)=objective(model,feat,labels,*args)
+    active=preview['f3/active']
+    with masked_joint_optimizer(model.opt,False,False,{GROUPS[0]:active},allowed_prefixes=GROUPS,stage=STAGE):
+        metrics,(_,extra)=model.opt(partial(objective,model),feat,labels,*args,has_aux=True)
+    finite=jnp.isfinite(metrics['opt/loss']) & jnp.isfinite(metrics['opt/grad_norm'])
+    finite &= jnp.stack([jnp.isfinite(v).all() for v in nj.context().values()]).all()
+    for key,old in before.items():
+        enabled=active if model.f3_state_owner[key] in (GROUPS[0],'CLOCK') else jnp.bool_(False)
+        nj.context()[key]=jnp.where(finite & enabled,nj.context()[key],old)
+    metrics.update(extra);metrics['opt/updates']=model.opt.step.read()
+    metrics.update({'f3/finite':finite,'f3/updated':finite & active,'f3/skip_no_valid':~extra['f3/valid_count'].astype(bool),
+        'f3/target_positions':jnp.int32(feat.shape[0]*feat.shape[1]),'f3/burnin_positions':jnp.int32(feat.shape[0]*(start-1)),
+        'f3/target_market_minutes':data['market_advance'][:,start:].sum(),
+        'f3/burnin_market_minutes':data['market_advance'][:,1:start].sum(),'f3/optimizer_updates':model.opt.step.read()})
+    return (*carry,{k:data[k][:,-1] for k in model.act_space}),{'effective_stepid':ids},metrics
+
+
+def read_only_forward(agent,data):
+    import numpy as np
+    import jax,jax.numpy as jnp,ninjax as nj
+    if not hasattr(agent,'_f3_read_forward'):
+        def fn(raw):
+            feat,_,ids,diagnostics=features(agent.model,raw,diagnostics=True)
+            start=1+agent.config.quality_f3_burnin_steps
+            labels={k:raw[k][:,start:] for k in LABELS}
+            args=[raw[k][:,start:] for k in ('action_mask','is_first','is_last','is_terminal')]
+            value,(logits,mets)=objective(agent.model,feat,labels,*args)
+            policy,_=distribution(agent.model,feat,args[0],2)
+            return dict(loss=value,features=feat,stepid=ids,logits=logits,
+                p_add=policy[agent.model.action_key].prob(jnp.ones(logits.shape[:-1],jnp.int32)),metrics=mets,**diagnostics)
+        agent._f3_read_forward=jax.jit(nj.pure(fn),static_argnames=('create','modify'))
+    _,out=agent._f3_read_forward(agent.params,{k:jnp.asarray(v) for k,v in data.items()},seed=202,create=False,modify=True)
+    return jax.tree.map(np.asarray,out)

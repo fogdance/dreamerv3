@@ -280,11 +280,13 @@ class Agent(embodied.Agent):
       ready = self._take_outs(internal.fetch_async(mets))
       if not bool(ready['f1/finite']):
         raise FloatingPointError('F1_NONFINITE_UPDATE_REJECTED_WITHOUT_STATE_COMMIT')
-    if self.config.get('quality_f2_protocol'):
+    stage = ('f3' if self.config.get('quality_f3_protocol') else
+             'f2' if self.config.get('quality_f2_protocol') else None)
+    if stage:
       ready = self._take_outs(internal.fetch_async(mets))
-      if not bool(ready['f2/finite']):
-        raise FloatingPointError('F2_NONFINITE_UPDATE_REJECTED_WITHOUT_STATE_COMMIT')
-      if bool(ready['f2/updated']):
+      if not bool(ready[stage+'/finite']):
+        raise FloatingPointError(stage.upper()+'_NONFINITE_UPDATE_REJECTED_WITHOUT_STATE_COMMIT')
+      if bool(ready[stage+'/updated']):
         self.n_updates.increment()
     else:
       self.n_updates.increment()
