@@ -12,6 +12,92 @@ SAMPLING_STAGE = 'WM_NATURAL'
 FROZEN_GROUPS = tuple(p for p in ALL_GROUPS if p not in WM_GROUPS)
 
 
+def register_state_schema(model, params):
+    """Freeze the actually initialized schema, including original optax leaves."""
+    parameter_layout(params)
+    clocks = {'opt/step/value','opt/state/1/0','opt/state/2/0',
+              'opt/state/'+str(4 if model.config.opt.wd else 3)+'/count'}
+    if not clocks <= params.keys():
+        raise ValueError('F1_UNRECOGNIZED_OPTIMIZER_CLOCK_SCHEMA')
+    mutable = {}
+    for key in params:
+        if key.startswith('opt/'):
+            if key in clocks:
+                mutable[key] = True
+            elif key.startswith(('opt/state/1/1/','opt/state/2/1/')):
+                # Ninjax Tree sanitizes '_' in nested dict names. The six WM
+                # prefixes have no underscores and remain unambiguous.
+                mutable[key] = key.split('/',4)[4].startswith(WM_GROUPS)
+            else:
+                raise ValueError('F1_UNKNOWN_OPTIMIZER_SLOT: '+key)
+        else:
+            mutable[key] = key.startswith(WM_GROUPS)
+    model.f1_state_schema = {k:(tuple(v.shape),str(v.dtype)) for k,v in params.items()}
+    model.f1_mutable_keys = mutable
+    model.f1_shared_clocks = tuple(sorted(clocks))
+    return dict(mutable=mutable,shared_clocks=sorted(clocks))
+
+
+def check_state_schema(model, params):
+    actual = {k:(tuple(v.shape),str(v.dtype)) for k,v in params.items()}
+    if actual != getattr(model,'f1_state_schema',None):
+        raise ValueError('F1_UNKNOWN_OR_CHANGED_STATE_SCHEMA')
+
+
+def context(model, data):
+    """One original prefix plus K detached original WM steps, never old carry."""
+    import jax
+    import jax.numpy as jnp
+    k,t = model.config.quality_f1_burnin_steps,model.config.quality_f1_target_steps
+    if data['stepid'].shape[1:] != (1+k+t,20):
+        raise ValueError('F1_WINDOW_LENGTH_OR_STEPID_MISMATCH')
+    carry,obs,prevact,ids = model._apply_replay_context(model.init_train(len(data['is_first'])),data)
+    prefix = lambda tree:jax.tree.map(lambda x:x[:,:k],tree)
+    _,(carry,_,_,_) = model.wm_only(carry,prefix(obs),prefix(prevact),training=False)
+    carry = jax.tree.map(jax.lax.stop_gradient,carry)
+    target = lambda tree:jax.tree.map(lambda x:x[:,k:],tree)
+    return carry,target(obs),target(prevact),ids[:,k:]
+
+
+def loss(model, carry, obs, prevact, training):
+    # Original Ninjax requires every selected optimizer parameter to be read.
+    # Read-only .values keeps its complete joint schema without evaluating
+    # reference/Quality heads, inventing targets, or adding zero-weight losses.
+    for module in model.modules:
+        _ = module.values
+    return model.wm_only(carry,obs,prevact,training)
+
+
+def train(model, data):
+    """One original joint optimizer invocation with a positive WM allowlist."""
+    import jax
+    import jax.numpy as jnp
+    import ninjax as nj
+    from .fg_s3_v2_agent import masked_joint_optimizer
+    check_state_schema(model,nj.context())
+    before = dict(nj.context())
+    carry,obs,prevact,ids = context(model,data)
+    with masked_joint_optimizer(model.opt,False,False,allowed_prefixes=WM_GROUPS):
+        from functools import partial
+        metrics,(carry,_,_,extra) = model.opt(partial(loss,model),carry,obs,prevact,training=True,has_aux=True)
+    check_state_schema(model,nj.context())
+    finite = jnp.isfinite(metrics['opt/loss']) & jnp.isfinite(metrics['opt/grad_norm'])
+    finite &= jnp.stack([jnp.isfinite(v).all() for v in nj.context().values()]).all()
+    # Preserve original values directly: adding a zero update can change -0.0.
+    # A rejected numerical candidate restores the entire old functional state.
+    nj.context().update({key:jnp.where(finite,nj.context()[key],old)
+        if model.f1_mutable_keys[key] else old for key,old in before.items()})
+    metrics.update(extra)
+    metrics.update({'f1/finite':finite,'f1/target_positions':jnp.int32(obs['reward'].size),
+        'f1/target_market_minutes':obs['market_advance'].sum(),
+        'f1/burnin_positions':jnp.int32(len(data['is_first'])*model.config.quality_f1_burnin_steps),
+        'f1/burnin_market_minutes':data['market_advance'][:,1:1+model.config.quality_f1_burnin_steps].sum(),
+        'f1/optimizer_updates':model.opt.step.read(),
+        'f1/teacher_updates':jnp.int32(0),'f1/actor_updates':jnp.int32(0)})
+    carry = (*carry,{key:data[key][:,-1] for key in model.act_space})
+    return carry,{'effective_stepid':ids},metrics
+
+
 def dimensions(target_steps, burnin_steps):
     if (type(target_steps) is not int or target_steps < 1 or
             type(burnin_steps) is not int or burnin_steps < 1):

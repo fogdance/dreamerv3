@@ -19,7 +19,7 @@ RL_MODES = ('c2', 'e')
 
 
 @contextmanager
-def masked_joint_optimizer(optimizer, actor_active, critic_active, extra_active=None):
+def masked_joint_optimizer(optimizer, actor_active, critic_active, extra_active=None, *, allowed_prefixes=None):
     """Keep the original optimizer schema, schedule and a single update call.
 
     Zero gradients alone do not freeze inherited momentum or weight decay.
@@ -31,8 +31,14 @@ def masked_joint_optimizer(optimizer, actor_active, critic_active, extra_active=
 
     def update(grads, state, params=None):
         rules = {'pol/': actor_active, 'val/': critic_active, **(extra_active or {})}
-        active = {k: next((value for prefix, value in rules.items() if k.startswith(prefix)),
-                         jnp.bool_(True)) for k in params}
+        if allowed_prefixes is not None:
+            from .fg_s3_e_quality_course_contract import ALL_GROUPS, WM_GROUPS
+            if tuple(allowed_prefixes) != WM_GROUPS or any(not k.startswith(ALL_GROUPS) for k in params):
+                raise ValueError('F1_UNKNOWN_PARAMETER_OR_WM_ALLOWLIST')
+            active = {k:jnp.bool_(k.startswith(allowed_prefixes)) for k in params}
+        else:
+            active = {k: next((value for prefix, value in rules.items() if k.startswith(prefix)),
+                             jnp.bool_(True)) for k in params}
         grads = {k: jnp.where(active[k], v, jnp.zeros_like(v)) for k, v in grads.items()}
         updates, candidate = original.update(grads, state, params)
         updates = {k: jnp.where(active[k], v, jnp.zeros_like(v)) for k, v in updates.items()}
@@ -108,7 +114,8 @@ class _S3V2Model(S3CAgent):
             if self.mode == 'quality_v2': return self.quality_init_loss
             return self.b2_init_loss if self.mode == 'b2' else self.loss
         if self.f1:
-            raise ValueError('F1_OPTIMIZER_ROUTE_NOT_IMPLEMENTED')
+            from .fg_s3_e_quality_foundation import loss
+            return partial(loss,self)
         k = self.config.replay_context
         y, valid = data['teacher_action'][:, k:], data['teacher_valid'][:, k:]
         if y.shape != effective_stepid.shape[:2] or valid.shape != y.shape:
@@ -420,7 +427,8 @@ class _S3V2Model(S3CAgent):
         if nj.creating():
             return Agent.train(self, carry, data)
         if self.f1:
-            raise ValueError('F1_OPTIMIZER_ROUTE_NOT_IMPLEMENTED')
+            from .fg_s3_e_quality_foundation import train
+            return train(self,data)
         carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
         rl = (self.mode in RL_MODES) & (self.avail_actor_gate.read() > 0)
         bc = (self.config.bc_lambda > 0) & jnp.any(data['teacher_valid'][:, 1:])
