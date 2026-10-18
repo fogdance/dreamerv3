@@ -59,6 +59,7 @@ class HeadsRun:
         self.reader=EQualityCourseReader.open(preparation.source,stage='HEADS_VALID',sampling_spec=s['sampling_spec'],seed=s['model_init']['seed'],index_path=self.index)
         self.source=CourseStream(self.reader,s,adapter_cls=F2WindowAdapter)
         self.source.validate_snapshot()
+        self.source.adapter.validate_support()
         if resume:self.source.validate_snapshot(pickle.loads((selected/'course_reader.pkl').read_bytes()))
         self.agent=create_agent(s,self.root/'model',controlled_small=engineering)
         if not resume:
