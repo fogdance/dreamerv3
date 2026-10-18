@@ -78,12 +78,13 @@ def register_state_schema(model,params):
     model.f2_state_owner=owner
     return owner
 
-def features(model,data):
+def features(model,data,*,diagnostics=False):
     import jax
     from .fg_s3_e_quality_foundation import causal_context
     carry,obs,prevact,ids=causal_context(model,data,model.config.quality_f2_burnin_steps,model.config.quality_f2_target_steps)
-    _,(carry,_,out,_)=model.wm_only(carry,obs,prevact,False)
-    return jax.lax.stop_gradient(model.feat2tensor(out['repfeat'])),carry,ids
+    _,(carry,_,out,metrics)=model.wm_only(carry,obs,prevact,False,diagnostics=diagnostics)
+    result=(jax.lax.stop_gradient(model.feat2tensor(out['repfeat'])),carry,ids)
+    return (*result,dict(encoder_tokens=metrics['f1_raw/encoder_tokens'],posterior_logits=out['repfeat']['logit'])) if diagnostics else result
 
 def active_heads(labels,config):
     import jax.numpy as jnp
@@ -134,3 +135,18 @@ def train(model,data):
         'f2/optimizer_updates':model.opt.step.read()})
     metrics.update({'f2/'+p[:-1]+'_active':v for p,v in active.items()})
     return (*carry,{k:data[k][:,-1] for k in model.act_space}),{'effective_stepid':ids},metrics
+
+
+def read_only_forward(agent,data):
+    import numpy as np
+    import jax,jax.numpy as jnp,ninjax as nj
+    from .fg_s3_e_quality_heads import features,objective,LABELS
+    if not hasattr(agent,'_f2_read_forward'):
+        def fn(raw):
+            feat,_,ids,diagnostics=features(agent.model,raw,diagnostics=True)
+            start=1+agent.config.quality_f2_burnin_steps
+            value,(pred,mets)=objective(agent.model,feat,{k:raw[k][:,start:] for k in LABELS})
+            return dict(loss=value,features=feat,stepid=ids,predictions=pred,metrics=mets,**diagnostics)
+        agent._f2_read_forward=jax.jit(nj.pure(fn),static_argnames=('create','modify'))
+    _,out=agent._f2_read_forward(agent.params,{k:jnp.asarray(v) for k,v in data.items()},seed=202,create=False,modify=True)
+    return jax.tree.map(np.asarray,out)
