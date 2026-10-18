@@ -134,7 +134,9 @@ def actor_objective(dist,labels,mask,first,last,terminal,config):
     padd=dist.prob(jnp.ones_like(safe_y));pred=dist.pred()
     m={'f3/active':active,'f3/valid_count':valid.sum(),'f3/natural_count':nv.sum(),
        'f3/natural_add':(nv & (y==1)).sum(),'f3/natural_wait':(nv & (y==0)).sum(),
-       'f3/auxiliary_count':av.sum(),'f3/auxiliary_add':pos.sum(),'f3/auxiliary_wait':neg.sum(),
+       'f3/auxiliary_count':(valid & ~natural).sum(),
+       'f3/auxiliary_add':(valid & ~natural & (y==1)).sum(),'f3/auxiliary_wait':(valid & ~natural & (y==0)).sum(),
+       'f3/balanced_count':av.sum(),
        'f3/natural_loss':nat,'f3/balanced_loss':bal,'f3/strict_pair_loss':strict_loss,
        'f3/quality_pair_loss':quality_loss,'f3/strict_pair_count':strict.sum(),
        'f3/quality_pair_count':consistent.sum(),'f3/quality_pair_candidates':candidates.sum(),

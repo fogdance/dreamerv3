@@ -35,6 +35,7 @@ class HeadsCounters:
         self.state=copy.deepcopy(state)
 
 class HeadsRun:
+    metrics_stage='f2'
     def __init__(self,preparation,index_path,root,*,resume=False,authorize_training=False,_probe=None):
         permit=_PERMITS.get(id(preparation))
         engineering=permit is not None and permit[0] is preparation and permit[1] is _probe
@@ -69,12 +70,17 @@ class HeadsRun:
             self.root.mkdir(parents=True)
             write_json(self.root/'run_identity.json',signed(dict(identity=self.identity)))
             write_json(self.root/'f1_to_f2_transfer.json',signed(receipt))
+        self._initialize_runtime(resume,engineering)
+
+    def _initialize_runtime(self,resume,engineering,*,counter_type=HeadsCounters):
+        """Original shared offline loop/checkpoint lifecycle for F2 and F3."""
+        s=self.settings
         self.stream=self.agent.stream(self.source)
         # Snapshot position advances for every consumed batch, even a skipped one.
-        self.step=elements.Counter();self.counters=HeadsCounters();self.samples=[0]
+        self.step=elements.Counter();self.counters=counter_type();self.samples=[0]
         self.schedule=StepSchedule(s['report_every_updates'],s['save_every_updates'])
         def set_carry(value):
-            if value is not None:raise ValueError('F2_RANDOM_CARRY_MUST_BE_EMPTY')
+            if value is not None:raise ValueError(self.metrics_stage.upper()+'_RANDOM_CARRY_MUST_BE_EMPTY')
         self.runtime=RuntimeState(self.schedule,SimpleNamespace(),[self.stream],lambda:None,set_carry,{},self.samples)
         self.cp=FullCheckpoint(self.root/'ckpt',self.step,self.identity,[self.stream],reserve_gib=1 if engineering else 10,keep_all=True,backend=BACKEND)
         self.cp.course_reader=self.source;self.cp.agent=self.agent;self.cp.step=self.step
@@ -82,43 +88,57 @@ class HeadsRun:
         self.metrics=[];self.last_batch=None
         if resume:
             self.cp.load()
-            if int(self.step)!=self.counters.state['consumed_batches'] or int(self.agent.n_updates)!=self.counters.state['optimizer_updates']:raise ValueError('F2_RESTORED_COUNTER_MISMATCH')
+            if int(self.step)!=self.counters.state['consumed_batches'] or int(self.agent.n_updates)!=self.counters.state['optimizer_updates']:raise ValueError(self.metrics_stage.upper()+'_RESTORED_COUNTER_MISMATCH')
             reconcile_update_log(self.root,int(self.step),0,position_key='consumed_batches')
         else:self.cp.save()
 
     def update(self):
-        if int(self.agent.n_updates)>=self.settings['optimizer_updates']:raise ValueError('F2_UPDATE_BUDGET_EXHAUSTED')
+        self._check_consumption_budget()
+        if int(self.agent.n_updates)>=self.settings['optimizer_updates']:raise ValueError(self.metrics_stage.upper()+'_UPDATE_BUDGET_EXHAUSTED')
         self.runtime.start();batch=next(self.stream);self.last_batch=host(batch)
         try:
-            _,_,metrics=self.agent.train(self.agent.init_train(self.settings['batch_size']),batch)
+            _,_,metrics=self.agent.train(self.agent.init_train(self.agent.config.batch_size),batch)
         except FloatingPointError as error:
-            import uuid
-            write_json(self.root/('rejected_'+uuid.uuid4().hex+'.json'),signed(dict(error=str(error),
-                source=self.preparation.source.receipt['content_identity'],stepid=self.last_batch['stepid'].tolist(),
-                consumed_before=int(self.step),optimizer_updates=int(self.agent.n_updates))))
+            self._reject_batch(error)
             raise
-        metrics=host(metrics);updated=bool(metrics['f2/updated']);self.step.increment();c=self.counters.state
+        prefix=self.metrics_stage+'/'
+        metrics=host(metrics);updated=bool(metrics[prefix+'updated']);self.step.increment();c=self.counters.state
         c['consumed_batches']+=1;c['optimizer_updates']+=int(updated)
-        c['skip_no_valid']+=int(bool(metrics['f2/skip_no_valid']))
-        c['skip_disabled_loss']+=int(not updated and not metrics['f2/skip_no_valid'])
-        for k in ('target_positions','target_market_minutes','burnin_positions','burnin_market_minutes'):c[k]+=int(metrics['f2/'+k])
-        for name in c['head_valid_exposures']:
-            valid=int(metrics['quality/'+name+'_valid_count']);c['head_valid_exposures'][name]+=valid
-            if updated and metrics['f2/quality_'+name+'_active']:c['head_optimizer_exposures'][name]+=valid
-        self.samples[0]+=int(metrics['f2/target_positions'])
-        if int(self.agent.n_updates)!=c['optimizer_updates']:raise ValueError('F2_OPTIMIZER_COUNT_DRIFT')
+        c['skip_no_valid']+=int(bool(metrics[prefix+'skip_no_valid']))
+        c['skip_disabled_loss']+=int(not updated and not metrics[prefix+'skip_no_valid'])
+        for k in ('target_positions','target_market_minutes','burnin_positions','burnin_market_minutes'):c[k]+=int(metrics[prefix+k])
+        self._accumulate_metrics(metrics,updated)
+        self.samples[0]+=int(metrics[prefix+'target_positions'])
+        if int(self.agent.n_updates)!=c['optimizer_updates']:raise ValueError(self.metrics_stage.upper()+'_OPTIMIZER_COUNT_DRIFT')
         report,save=self.schedule.advance(c['optimizer_updates']) if updated else (False,False)
-        row={k:np.asarray(v).tolist() for k,v in metrics.items()};row['f2/report_boundary']=report
+        row={k:np.asarray(v).tolist() for k,v in metrics.items()};row[prefix+'report_boundary']=report
         self.metrics.append(row)
         with (self.root/'updates.jsonl').open('a') as f:f.write(json.dumps(dict(local_update=c['optimizer_updates'],agent_update=int(self.agent.n_updates),consumed_batches=int(self.step),metrics=row))+'\n')
         if save or not updated:self.cp.save()
         return row
 
+    def _accumulate_metrics(self,metrics,updated):
+        c=self.counters.state
+        for name in c['head_valid_exposures']:
+            valid=int(metrics['quality/'+name+'_valid_count']);c['head_valid_exposures'][name]+=valid
+            if updated and metrics['f2/quality_'+name+'_active']:c['head_optimizer_exposures'][name]+=valid
+
+    def _reject_batch(self,error):
+        import uuid
+        write_json(self.root/('rejected_'+uuid.uuid4().hex+'.json'),signed(dict(error=str(error),
+            source=self.preparation.source.receipt['content_identity'],stepid=self.last_batch['stepid'].tolist(),
+            consumed_before=int(self.step),optimizer_updates=int(self.agent.n_updates))))
+
+    def _check_consumption_budget(self):pass
+
     def run(self,stop_at=None):
         stop=self.settings['optimizer_updates'] if stop_at is None else stop_at
-        if type(stop) is not int or not int(self.agent.n_updates)<=stop<=self.settings['optimizer_updates']:raise ValueError('F2_STOP_OUTSIDE_UPDATE_BUDGET')
+        if type(stop) is not int or not int(self.agent.n_updates)<=stop<=self.settings['optimizer_updates']:raise ValueError(self.metrics_stage.upper()+'_STOP_OUTSIDE_UPDATE_BUDGET')
         while int(self.agent.n_updates)<stop:self.update()
         self.cp.save(final=True)
+        return self.result()
+
+    def result(self):
         return dict(status='F2_ENGINEERING_COMPLETE' if self.identity['controlled_small'] else 'F2_TRAIN_AUTHORIZED',
             foundation_status=self.preparation.receipt['identity']['source_f1']['foundation_status'],
             counters=self.counters.save(),training_admitted=self.identity['training_admitted'],model_research_go=False,checkpoint=str(self.cp.latest()))
