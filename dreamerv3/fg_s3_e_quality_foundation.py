@@ -15,6 +15,10 @@ FROZEN_GROUPS = tuple(p for p in ALL_GROUPS if p not in WM_GROUPS)
 def register_state_schema(model, params):
     """Freeze the actually initialized schema, including original optax leaves."""
     parameter_layout(params)
+    known=(*ALL_GROUPS,'avail_actor_gate/','retnorm/','valnorm/','advnorm/','slowval_count/')
+    if any(not k.startswith(('opt/',*known)) for k in params):
+        raise ValueError('F1_UNKNOWN_INITIAL_STATE_PREFIX')
+    slot_parameters={k.replace('_','') for k in params if not k.startswith('opt/')}
     clocks = {'opt/step/value','opt/state/1/0','opt/state/2/0',
               'opt/state/'+str(4 if model.config.opt.wd else 3)+'/count'}
     if not clocks <= params.keys():
@@ -27,7 +31,10 @@ def register_state_schema(model, params):
             elif key.startswith(('opt/state/1/1/','opt/state/2/1/')):
                 # Ninjax Tree sanitizes '_' in nested dict names. The six WM
                 # prefixes have no underscores and remain unambiguous.
-                mutable[key] = key.split('/',4)[4].startswith(WM_GROUPS)
+                leaf=key.split('/',4)[4]
+                if leaf not in slot_parameters:
+                    raise ValueError('F1_UNKNOWN_OPTIMIZER_PARAMETER_SLOT: '+key)
+                mutable[key] = leaf.startswith(WM_GROUPS)
             else:
                 raise ValueError('F1_UNKNOWN_OPTIMIZER_SLOT: '+key)
         else:
