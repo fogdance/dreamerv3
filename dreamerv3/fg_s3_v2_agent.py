@@ -301,9 +301,9 @@ class _S3V2Model(S3CAgent):
             extra['b2/'+key+'_mean'] = masked_mean(diagnostics['b2/'+key], valid)
         return bc, extra
 
-    def wm_only(self, carry, obs, prevact, training):
+    def wm_only(self, carry, obs, prevact, training, *, diagnostics=False):
         (ec, dc, xc, ee, de, xe, tokens, feat, _, _, _, losses, metrics) = self.world_model(
-            carry, obs, prevact, training)
+            carry, obs, prevact, training, diagnostics=diagnostics)
         loss = sum(v.mean() * self.scales[k] for k, v in losses.items())
         metrics.update({f'loss/{k}': v.mean() for k, v in losses.items()})
         return loss, ((ec, dc, xc), (ee, de, xe), dict(repfeat=feat, losses=losses), metrics)

@@ -59,13 +59,13 @@ def context(model, data):
     return carry,target(obs),target(prevact),ids[:,k:]
 
 
-def loss(model, carry, obs, prevact, training):
+def loss(model, carry, obs, prevact, training, *, diagnostics=False):
     # Original Ninjax requires every selected optimizer parameter to be read.
     # Read-only .values keeps its complete joint schema without evaluating
     # reference/Quality heads, inventing targets, or adding zero-weight losses.
     for module in model.modules:
         _ = module.values
-    return model.wm_only(carry,obs,prevact,training)
+    return model.wm_only(carry,obs,prevact,training,diagnostics=diagnostics)
 
 
 def train(model, data):

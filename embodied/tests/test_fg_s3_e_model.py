@@ -159,8 +159,26 @@ def test_EM04_actual_policy_context_changes_rssm_and_actor(raw_e,tmp_path):
     other['market_context_15m'][...,:6]=-100.
     other['market_context_15m'][...,6]=1.
     c2,_,o2=a.policy(a.init_policy(1),other,mode='eval')
-    assert not np.array_equal(c1[1]['stoch'],c2[1]['stoch'])
-    assert not np.array_equal(o1['p_add'],o2['p_add'])
+    # A changed categorical posterior can produce the same single hard draw.
+    # This also reproduces on the fixed WP03 baseline. First prove posterior
+    # sensitivity, then actual causal Actor sensitivity over a fixed rollout.
+    def posterior(raw):
+        carry=a.model.init_policy(1)
+        _,_,tokens=a.model.enc(carry[0],raw,raw['is_first'],False,single=True)
+        _,_,feat=a.model.dyn.observe(carry[1],tokens,carry[3],raw['is_first'],False,single=True)
+        return feat['logit']
+    def logits(raw):
+        return np.asarray(nj.pure(posterior)(a.params,jax.tree.map(jnp.asarray,raw),
+                          seed=202,create=False,modify=False)[1])
+    assert not np.array_equal(logits(obs),logits(other))
+    def rollout(raw):
+        a.load_exact(snapshot);carry=a.init_policy(1);out=[]
+        for _ in range(8):
+            carry,_,o=a.policy(carry,raw,mode='eval');out.append(np.asarray(o['p_add']))
+        return np.stack(out)
+    original_probs,changed_probs=rollout(obs),rollout(other)
+    assert not np.array_equal(original_probs,changed_probs)
     (tmp_path/'policy_effect.json').write_text(json.dumps(dict(
-        p_add_original=np.asarray(o1['p_add']).tolist(),p_add_changed=np.asarray(o2['p_add']).tolist(),
-        synthetic_context_magnitude=-100.,rng_identical=True),indent=2))
+        p_add_original=original_probs.tolist(),p_add_changed=changed_probs.tolist(),
+        synthetic_context_magnitude=-100.,rng_identical=True,rollout_steps=8,
+        posterior_logits_changed=True),indent=2))
