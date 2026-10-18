@@ -17,3 +17,8 @@ F1/F2→F3 完整 non-opt 接续、fresh optimizer/counters 和来源负例通�
 
 纯 F3 policy 不调用预测头，原始 quality_actor 仅经过一次原 mask/unimix。训练/推理同特征相同分布；修正诊断 seed 以匹配原 Agent._seeds。CPU 合成可学性及原生无 Teacher 完整金融回放通过，`E_evaluation_retry` 4 passed / exit 0。真实策略有效性尚未验收。
 
+# 06.F
+
+原 FullCheckpoint 两流普通/skip 冷恢复逐字节通过（Gym F_cold_cli 20 passed），共享 Guard 20 passed、原 F2 cold 8 passed、相关课程/Clock/MACD/legacy Quality 121 passed，均 exit 0。自审修正 partial 工程调用不误标完整完成，失败/通过回归均保留。GPU 宿主 cuInit CUDA_ERROR_UNKNOWN，无 GPU 参数更新；真实长训练与 TEST 未执行。
+
+完整证据和未验收项见兄弟 Gym `docs/WP06_IMPLEMENTATION_REVIEW.md`、`docs/receipts/wp06/`；最终成对提交清单和独立集成记录由发布文档归档。

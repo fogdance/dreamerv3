@@ -154,7 +154,8 @@ class ActorRun(HeadsRun):
             raise ValueError('INSUFFICIENT_CURRICULUM_SUPPORT: F3_CONSUMPTION_BUDGET_EXHAUSTED')
 
     def result(self):
-        return dict(status='F3_ENGINEERING_COMPLETE' if self.identity['controlled_small'] else 'F3_TRAIN_AUTHORIZED',
+        complete=int(self.agent.n_updates)==self.settings['optimizer_updates']
+        return dict(status=('F3_ENGINEERING_COMPLETE' if complete else 'F3_ENGINEERING_PARTIAL') if self.identity['controlled_small'] else 'F3_TRAIN_AUTHORIZED',
             foundation_status=self.preparation.receipt['identity']['source_model']['foundation_status'],
             counters=self.counters.save(),training_admitted=self.identity['training_admitted'],model_research_go=False,
             checkpoint=str(self.cp.latest()),reader_coverage=self.source.coverage())
