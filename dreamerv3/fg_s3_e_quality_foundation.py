@@ -45,6 +45,20 @@ def register_state_schema(model, params):
     return dict(mutable=mutable,shared_clocks=sorted(clocks))
 
 
+def state_owners(model,params,groups):
+    """Shared complete native-state ownership for a stage execution subset."""
+    register_state_schema(model,params)
+    names={k.replace('_',''):k for k in params if not k.startswith('opt/')}
+    if len(names)!=sum(not k.startswith('opt/') for k in params):raise ValueError('QUALITY_AMBIGUOUS_SLOT_KEY')
+    owner={}
+    for key in params:
+        if key in model.f1_shared_clocks:owner[key]='CLOCK'
+        else:
+            parameter=names[key.split('/',4)[4]] if key.startswith(('opt/state/1/1/','opt/state/2/1/')) else key
+            owner[key]=next((p for p in groups if parameter.startswith(p)),None)
+    return owner
+
+
 def check_state_schema(model, params):
     actual = {k:(tuple(v.shape),str(v.dtype)) for k,v in params.items()}
     if actual != getattr(model,'f1_state_schema',None):

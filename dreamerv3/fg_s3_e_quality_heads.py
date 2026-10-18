@@ -64,16 +64,8 @@ def validate_model(config):
         raise ValueError('F2_MODEL_STAGE_OR_TEMPORAL_CONTRACT_MISMATCH')
 
 def register_state_schema(model,params):
-    from .fg_s3_e_quality_foundation import register_state_schema as original
-    original(model,params)  # Same complete original optimizer schema, fail closed.
-    names={k.replace('_',''):k for k in params if not k.startswith('opt/')}
-    if len(names)!=sum(not k.startswith('opt/') for k in params):raise ValueError('F2_AMBIGUOUS_SLOT_KEY')
-    owner={}
-    for key in params:
-        if key in model.f1_shared_clocks:owner[key]='CLOCK'
-        else:
-            parameter=names[key.split('/',4)[4]] if key.startswith(('opt/state/1/1/','opt/state/2/1/')) else key
-            owner[key]=next((p for p in GROUPS if parameter.startswith(p)),None)
+    from .fg_s3_e_quality_foundation import state_owners
+    owner=state_owners(model,params,GROUPS)
     model.f2_state_schema=dict(model.f1_state_schema)
     model.f2_state_owner=owner
     return owner

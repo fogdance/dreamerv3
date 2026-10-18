@@ -29,6 +29,11 @@ DEFAULTS = dict(quality_alpha=.8, quality_kappa=1., quality_wmax=2.,
 
 
 def quality_extensions(settings):
+    if sum(settings.get('quality_f'+str(n)+'_protocol') is not None for n in (1,2,3))>1:
+        raise ValueError('QUALITY_EXECUTION_STAGES_MUTUALLY_EXCLUSIVE')
+    if settings.get('quality_f3_protocol') is not None or settings.get('quality_stage')=='ACTOR_SUPERVISED':
+        from .fg_s3_e_quality_actor import quality_configuration
+        return quality_configuration(settings,DEFAULTS)
     if settings.get('quality_f2_protocol') is not None or settings.get('quality_stage') == 'QUALITY_HEADS':
         from .fg_s3_e_quality_heads import quality_configuration
         return quality_configuration(settings, DEFAULTS)

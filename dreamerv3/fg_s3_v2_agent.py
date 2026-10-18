@@ -74,6 +74,8 @@ class _S3V2Model(S3CAgent):
         self.mode = config.s3_v2_mode
         self.f1 = config.get('quality_f1_protocol') is not None
         self.f2 = config.get('quality_f2_protocol') is not None
+        self.f3 = config.get('quality_f3_protocol') is not None
+        if sum((self.f1,self.f2,self.f3))>1:raise ValueError('QUALITY_EXECUTION_STAGES_MUTUALLY_EXCLUSIVE')
         if self.mode not in ('a2', 'c2', 'tutor', 'b2', 'quality_v2', 'e'):
             raise ValueError('Unknown S3-V2 mode')
         if self.mode == 'e' and (composition is None or composition['teaching'] != 'none'
@@ -108,6 +110,9 @@ class _S3V2Model(S3CAgent):
             head_modules(self,config)
         if self.f2:
             from .fg_s3_e_quality_heads import validate_model
+            validate_model(config)
+        if self.f3:
+            from .fg_s3_e_quality_actor import validate_model
             validate_model(config)
         if self.f1:
             from .fg_s3_e_quality_foundation import validate_model
@@ -163,6 +168,11 @@ class _S3V2Model(S3CAgent):
 
     @property
     def ext_space(self):
+        if self.f3:
+            from .fg_s3_e_quality_actor import LABELS
+            from gym_trading_env.research.fg_s3_quality_catalog_v2 import FIELDS
+            return {**Agent.ext_space.fget(self),**{k:elements.Space(*FIELDS[k]) for k in LABELS if k in FIELDS},
+                'teacher_action':elements.Space(np.int32),'teacher_valid':elements.Space(bool),'f3_natural':elements.Space(bool)}
         if self.f2:
             from .fg_s3_e_quality_heads import LABELS
             from gym_trading_env.research.fg_s3_quality_catalog_v2 import FIELDS
@@ -440,6 +450,9 @@ class _S3V2Model(S3CAgent):
     def train(self, carry, data):
         if nj.creating():
             return Agent.train(self, carry, data)
+        if self.f3:
+            from .fg_s3_e_quality_actor import train
+            return train(self,data)
         if self.f2:
             from .fg_s3_e_quality_heads import train
             return train(self,data)
