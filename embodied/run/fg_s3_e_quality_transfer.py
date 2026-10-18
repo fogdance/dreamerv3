@@ -1,4 +1,4 @@
-"""Explicit F1→F2 parameter handoff, distinct from FullCheckpoint resume."""
+"""Explicit F1/F2 stage parameter handoff, distinct from exact resume."""
 from pathlib import Path
 import pickle
 import numpy as np
@@ -68,11 +68,12 @@ def inspect_f1(settings,*,allow_engineering=False):
     proof['training_evidence']=dict(status='ENGINEERING_ONLY') if engineering else training_evidence(root,identity,agent)
     return proof,agent
 
-def transfer_parameters(agent,source,proof):
+def transfer_parameters(agent,source,proof,*,target_stage='QUALITY_HEADS'):
     """All validation precedes mutation. Neither source optimizer nor counters load."""
     import jax
     from embodied.jax import internal
     from dreamerv3.fg_s3a_actor import parameter_digests
+    if target_stage not in ('QUALITY_HEADS','ACTOR_SUPERVISED'):raise ValueError('QUALITY_HANDOFF_TARGET_STAGE')
     fresh=agent.save_exact()
     if any(fresh['counters'].values()) or any(fresh[k] is not None for k in ('pending_sync','pending_outs','pending_mets')):
         raise ValueError('F2_HANDOFF_REQUIRES_FRESH_AGENT')
@@ -93,7 +94,91 @@ def transfer_parameters(agent,source,proof):
     after=parameter_digests(agent.params);expected=parameter_digests({k:source['params'][k] for k in keys})
     if any(after[k]!=expected[k] for k in keys) or any(after[k]!=before[k] for k in after if k.startswith('opt/')):
         raise RuntimeError('F2_HANDOFF_BYTE_AUDIT_FAILED')
-    return signed(dict(protocol='F1_TO_F2_TRANSFER_RECEIPT',source=proof,engineering_only=proof['engineering_only'],
+    return signed(dict(protocol='F1_TO_F2_TRANSFER_RECEIPT' if target_stage=='QUALITY_HEADS' else 'F1_OR_F2_TO_F3_TRANSFER_RECEIPT',source=proof,engineering_only=proof['engineering_only'],
         foundation_status=proof['foundation_status'],nonopt_keys=sorted(keys),source_nonopt=expected,target_nonopt={k:after[k] for k in sorted(keys)},
-        fresh_optimizer={k:after[k] for k in sorted(after) if k.startswith('opt/')},fresh_counters=fresh['counters'],target_seed=int(agent.config.seed),reader_stage='HEADS_VALID',
+        fresh_optimizer={k:after[k] for k in sorted(after) if k.startswith('opt/')},fresh_counters=fresh['counters'],target_seed=int(agent.config.seed),reader_stage='HEADS_VALID' if target_stage=='QUALITY_HEADS' else 'ACTOR_STRICT',
         same_run_resume=False,training_admitted=False,nonopt_identity_hash=fingerprint(expected)))
+
+
+def source_freeze_evidence(root,identity,final,groups):
+    """Inspect actual initial/final source bytes, including protected slots."""
+    initial=Path(root)/'ckpt/step_000000000000';validate_bundle(initial,identity)
+    first=pickle.loads((initial/'agent.pkl').read_bytes())
+    if first['counters']['updates']!=0:raise ValueError('F3_SOURCE_INITIAL_COUNTER_INVALID')
+    a,b=first['params'],final['params']
+    if a.keys()!=b.keys() or any(a[k].shape!=b[k].shape or a[k].dtype!=b[k].dtype
+            or not np.isfinite(b[k]).all() or not np.isfinite(a[k]).all() for k in a):
+        raise ValueError('F3_SOURCE_FULL_STATE_SCHEMA_OR_FINITE')
+    names={k.replace('_',''):k for k in a if not k.startswith('opt/')}
+    if len(names)!=sum(not k.startswith('opt/') for k in a):raise ValueError('F3_SOURCE_AMBIGUOUS_SLOT')
+    clocks={'opt/step/value','opt/state/1/0','opt/state/2/0'}
+    frozen=[];changed=[]
+    for k in a:
+        if k.startswith('opt/'):
+            if k in clocks or k.startswith(('opt/state/3/','opt/state/4/')) and k.endswith('/count'):continue
+            if not k.startswith(('opt/state/1/1/','opt/state/2/1/')) or k.split('/',4)[4] not in names:
+                raise ValueError('F3_SOURCE_UNKNOWN_OPTIMIZER_SLOT')
+            parameter=names[k.split('/',4)[4]]
+        else:parameter=k
+        if parameter.startswith(groups):
+            if a[k].tobytes()!=b[k].tobytes() and not k.startswith('opt/'):changed.append(k)
+        else:
+            if a[k].tobytes()!=b[k].tobytes():raise ValueError('F3_SOURCE_FROZEN_STATE_CHANGED: '+k)
+            frozen.append(k)
+    if not changed:raise ValueError('F3_SOURCE_PARAMETERS_NOT_TRAINED')
+    return dict(initial_manifest_sha256=digest(initial/'manifest.json'),changed_parameters=changed,
+                frozen_keys=frozen,all_frozen_bytes_equal=True)
+
+
+def inspect_stage(settings,*,allow_engineering=False):
+    """F1 or F2 source for a new F3 run; never a same-run resume."""
+    from gym_trading_env.research.fg_s3_e_quality_actor import model_config
+    from gym_trading_env.research.fg_s3_e_observation import observation_contract
+    from dreamerv3.fg_s3_e_quality_course_contract import WM_GROUPS
+    from dreamerv3.fg_s3_e_quality_heads import GROUPS as HEADS,execution_contract
+    stage=settings['source_stage'];root=Path(settings['source_run']);node=Path(settings['source_checkpoint'])
+    if stage not in ('F1','F2') or not node.is_relative_to(root/'ckpt'):raise ValueError('F3_SOURCE_STAGE_OR_NODE_INVALID')
+    if stage=='F1':
+        legacy={**settings,'source_f1_run':str(root),'source_f1_checkpoint':str(node)}
+        proof,agent=inspect_f1(legacy,allow_engineering=allow_engineering)
+        proof={**proof,'source_stage':'F1'}
+        proof['source_freeze']=source_freeze_evidence(root,proof['identity'],agent,WM_GROUPS)
+        return proof,agent
+    identity=read_manifest(root/'run_identity.json')['identity'];meta=validate_bundle(node,identity)
+    if identity.get('protocol')!='FG_S3_E_QUALITY_F2_RUN_V1' or identity.get('backend')!='external_immutable_course_reader':
+        raise ValueError('F3_SOURCE_MUST_BE_F2')
+    engineering=identity.get('controlled_small') is True
+    if engineering and not allow_engineering:raise ValueError('F3_FOUNDATION_NOT_TRAINED')
+    if not engineering and identity.get('training_admitted') is not True:raise ValueError('F3_FORMAL_SOURCE_REQUIRED')
+    prep=identity['preparation'];s=prep['settings']
+    if (prep.get('protocol')!='FG_S3_E_QUALITY_HEADS_V1' or s['stage']!='QUALITY_HEADS'
+            or prep['execution_contract']!=execution_contract() or prep['observation']!=observation_contract()
+            or prep['effective_model']['agent']!=plain(model_config(settings,controlled_small=engineering))['agent']):
+        raise ValueError('F3_SOURCE_MODEL_OBSERVATION_OR_STAGE_MISMATCH')
+    upstream,_=inspect_f1(s,allow_engineering=allow_engineering)
+    if engineering!=upstream['engineering_only'] or any(upstream[k]!=prep['source_f1'][k]
+            for k in ('manifest_sha256','run_identity_sha256')):raise ValueError('F3_SOURCE_UPSTREAM_LINEAGE_MISMATCH')
+    agent=pickle.loads((node/'agent.pkl').read_bytes());c=pickle.loads((node/'counters.pkl').read_bytes())
+    budget=s['optimizer_updates'];consumed=c['consumed_batches']
+    if (type(budget) is not int or budget<=0 or not meta['protected'] or meta['step']!=consumed
+            or c['optimizer_updates']!=budget or agent['counters']['updates']!=budget
+            or int(np.asarray(agent['params']['opt/step/value']))!=budget):raise ValueError('F3_SOURCE_NOT_COMPLETED')
+    import json
+    rows=[json.loads(line) for line in (root/'updates.jsonl').read_text().splitlines()]
+    if len(rows)!=consumed:raise ValueError('F3_SOURCE_UPDATE_LEDGER_INCOMPLETE')
+    count=0
+    for i,row in enumerate(rows,1):
+        m=row['metrics'];updated=m['f2/updated']
+        if type(updated) is not bool:raise ValueError('F3_SOURCE_UPDATE_LEDGER_INVALID')
+        count+=int(updated)
+        if (row['consumed_batches']!=i or row['local_update']!=count or row['agent_update']!=count
+                or m['opt/updates']!=count or m['f2/finite'] is not True
+                or not np.isfinite(m['opt/loss']) or not np.isfinite(m['opt/grad_norm'])):
+            raise ValueError('F3_SOURCE_UPDATE_LEDGER_INVALID')
+    if count!=budget:raise ValueError('F3_SOURCE_UPDATE_COUNT_MISMATCH')
+    proof=dict(protocol='FG_S3_F2_SOURCE_V1',source_stage='F2',run=str(root),checkpoint=str(node),
+        run_identity_sha256=digest(root/'run_identity.json'),manifest_sha256=digest(node/'manifest.json'),
+        identity=identity,engineering_only=engineering,foundation_status='FOUNDATION_NOT_TRAINED' if engineering else 'FORMAL_F2_COMPLETED',
+        upstream_proof=upstream,training_evidence=dict(consumed_batches=consumed,verified_updates=count,update_log_sha256=digest(root/'updates.jsonl')),
+        source_freeze=source_freeze_evidence(root,identity,agent,HEADS))
+    return proof,agent
