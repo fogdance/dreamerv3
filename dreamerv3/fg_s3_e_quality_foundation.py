@@ -53,9 +53,13 @@ def check_state_schema(model, params):
 
 def context(model, data):
     """One original prefix plus K detached original WM steps, never old carry."""
+    return causal_context(model,data,model.config.quality_f1_burnin_steps,model.config.quality_f1_target_steps)
+
+
+def causal_context(model,data,k,t):
+    """Shared original WM causal history, parameterized only by window geometry."""
     import jax
     import jax.numpy as jnp
-    k,t = model.config.quality_f1_burnin_steps,model.config.quality_f1_target_steps
     if data['stepid'].shape[1:] != (1+k+t,20):
         raise ValueError('F1_WINDOW_LENGTH_OR_STEPID_MISMATCH')
     carry,obs,prevact,ids = model._apply_replay_context(model.init_train(len(data['is_first'])),data)

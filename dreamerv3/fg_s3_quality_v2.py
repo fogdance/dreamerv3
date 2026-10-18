@@ -259,7 +259,16 @@ def active_branches(labels, y, valid, first, config, bc_lambda):
         'quality_q_v2/':(config['quality_q_v2_lambda']>0) & labels['quality_q_v2_valid'].any()}
 
 
-def prediction_objective(pred, labels, y, strict_valid, config):
+def prediction_terms(pred, labels, config):
+    """Shared four-head mathematics; sanitize invalid placeholders before ops."""
+    labels = dict(labels)
+    pred = dict(pred)
+    for name in ('event','touch','adverse','score'):
+        key = 'quality_'+name
+        valid = labels[key+'_valid']
+        labels[key] = jnp.where(valid, labels[key], 0)
+        mask = valid[...,None] if name=='event' else valid
+        pred[name] = jnp.where(mask, pred[name], 0.)
     event_valid = labels['quality_event_valid']
     event_y = labels['quality_event']
     ce = optax.softmax_cross_entropy_with_integer_labels(pred['event'],event_y)
@@ -272,10 +281,6 @@ def prediction_objective(pred, labels, y, strict_valid, config):
     score_per = optax.huber_loss(score_pred,score_target,delta=.1)+.1*optax.sigmoid_binary_cross_entropy(
         (score_pred-.8)/.1,(labels['quality_score']>=80).astype(jnp.float32))
     score = mean(score_per,labels['quality_score_valid'])
-    dc1 = pred['q_c1'][...,1]-pred['q_c1'][...,0]
-    rank = mean(jnp.where(y==1,jax.nn.softplus(-dc1),jax.nn.relu(dc1)**2),strict_valid)
-    c1_value = mean(optax.huber_loss(pred['q_c1'],labels['quality_q_c1'],delta=1).mean(-1),labels['quality_q_c1_valid'])
-    qv2 = mean(optax.huber_loss(pred['q_v2'],labels['quality_q_v2'],delta=1).mean(-1),labels['quality_q_v2_valid'])
     probs = jax.nn.softmax(pred['event'],-1)
     idx = jnp.arange(5)
     valid_pairs = (idx[:,None] < idx[None,:]) & event_valid[...,:5,None] & event_valid[...,None,:5]
@@ -283,21 +288,31 @@ def prediction_objective(pred, labels, y, strict_valid, config):
     mono = mean(violation,jnp.broadcast_to(valid_pairs[...,None],violation.shape))
     open_violation = mean(jax.nn.relu(probs[...,None,:5,3]-probs[...,:5,None,3]),valid_pairs)
     loss = (config['quality_outcome_lambda']*outcome+config['quality_score_lambda']*score
-        +config['quality_q_c1_lambda']*(rank+c1_value)+config['quality_q_v2_lambda']*qv2
         +config['quality_mono_lambda']*mono)
     metrics = {'quality/outcome_loss':outcome,'quality/event_loss':event,'quality/touch_loss':touch,
-        'quality/adverse_loss':adverse,'quality/score_loss':score,'quality/q_c1_rank_loss':rank,
-        'quality/q_c1_value_loss':c1_value,'quality/q_v2_loss':qv2,'quality/mono_loss':mono,
+        'quality/adverse_loss':adverse,'quality/score_loss':score,'quality/mono_loss':mono,
         'quality/open_monotonic_violation':open_violation,
         'quality/event_valid_count':event_valid.sum(),'quality/touch_valid_count':labels['quality_touch_valid'].sum(),
         'quality/adverse_valid_count':labels['quality_adverse_valid'].sum(),
         'quality/score_valid_count':labels['quality_score_valid'].sum(),
-        'quality/q_c1_value_valid_count':labels['quality_q_c1_valid'].sum(),
-        'quality/q_v2_value_valid_count':labels['quality_q_v2_valid'].sum(),
-        'quality/score_mae':100*mean(jnp.abs(score_pred-score_target),labels['quality_score_valid']),
-        'quality/q_v2_delta_mse':mean(((pred['q_v2'][...,1]-pred['q_v2'][...,0])-
-            (labels['quality_q_v2'][...,1]-labels['quality_q_v2'][...,0]))**2,labels['quality_q_v2_valid'])}
+        'quality/score_mae':100*mean(jnp.abs(score_pred-score_target),labels['quality_score_valid'])}
     for h in range(7):
         for c,name in enumerate(('tp','sl','other','open')):
             metrics[f'quality/h{h}_{name}_count']=(event_valid[...,h] & (event_y[...,h]==c)).sum()
+    return loss,metrics
+
+
+def prediction_objective(pred, labels, y, strict_valid, config):
+    """Legacy joint interface delegates unchanged legal four-head mathematics."""
+    loss,metrics = prediction_terms(pred,labels,config)
+    dc1 = pred['q_c1'][...,1]-pred['q_c1'][...,0]
+    rank = mean(jnp.where(y==1,jax.nn.softplus(-dc1),jax.nn.relu(dc1)**2),strict_valid)
+    c1_value = mean(optax.huber_loss(pred['q_c1'],labels['quality_q_c1'],delta=1).mean(-1),labels['quality_q_c1_valid'])
+    qv2 = mean(optax.huber_loss(pred['q_v2'],labels['quality_q_v2'],delta=1).mean(-1),labels['quality_q_v2_valid'])
+    loss += config['quality_q_c1_lambda']*(rank+c1_value)+config['quality_q_v2_lambda']*qv2
+    metrics.update({'quality/q_c1_rank_loss':rank,'quality/q_c1_value_loss':c1_value,
+        'quality/q_v2_loss':qv2,'quality/q_c1_value_valid_count':labels['quality_q_c1_valid'].sum(),
+        'quality/q_v2_value_valid_count':labels['quality_q_v2_valid'].sum(),
+        'quality/q_v2_delta_mse':mean(((pred['q_v2'][...,1]-pred['q_v2'][...,0])-
+            (labels['quality_q_v2'][...,1]-labels['quality_q_v2'][...,0]))**2,labels['quality_q_v2_valid'])})
     return loss,metrics

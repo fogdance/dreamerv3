@@ -62,3 +62,75 @@ def validate_model(config):
             or config.replay_context!=1 or config.replay_context_mode!='recompute_prefix'
             or config.batch_length!=dimensions(config.quality_f2_target_steps,config.quality_f2_burnin_steps)):
         raise ValueError('F2_MODEL_STAGE_OR_TEMPORAL_CONTRACT_MISMATCH')
+
+def register_state_schema(model,params):
+    from .fg_s3_e_quality_foundation import register_state_schema as original
+    original(model,params)  # Same complete original optimizer schema, fail closed.
+    names={k.replace('_',''):k for k in params if not k.startswith('opt/')}
+    if len(names)!=sum(not k.startswith('opt/') for k in params):raise ValueError('F2_AMBIGUOUS_SLOT_KEY')
+    owner={}
+    for key in params:
+        if key in model.f1_shared_clocks:owner[key]='CLOCK'
+        else:
+            parameter=names[key.split('/',4)[4]] if key.startswith(('opt/state/1/1/','opt/state/2/1/')) else key
+            owner[key]=next((p for p in GROUPS if parameter.startswith(p)),None)
+    model.f2_state_schema=dict(model.f1_state_schema)
+    model.f2_state_owner=owner
+    return owner
+
+def features(model,data):
+    import jax
+    from .fg_s3_e_quality_foundation import causal_context
+    carry,obs,prevact,ids=causal_context(model,data,model.config.quality_f2_burnin_steps,model.config.quality_f2_target_steps)
+    _,(carry,_,out,_)=model.wm_only(carry,obs,prevact,False)
+    return jax.lax.stop_gradient(model.feat2tensor(out['repfeat'])),carry,ids
+
+def active_heads(labels,config):
+    import jax.numpy as jnp
+    v=labels['quality_event_valid'][...,:5]
+    pairs=(jnp.arange(5)[:,None]<jnp.arange(5)[None,:]) & v[..., :,None] & v[...,None,:]
+    return {'quality_event/':((config['quality_outcome_lambda']>0)&labels['quality_event_valid'].any()) | ((config['quality_mono_lambda']>0)&pairs.any()),
+        'quality_touch/':(config['quality_outcome_lambda']>0)&labels['quality_touch_valid'].any(),
+        'quality_adverse/':(config['quality_outcome_lambda']>0)&labels['quality_adverse_valid'].any(),
+        'quality_score/':(config['quality_score_lambda']>0)&labels['quality_score_valid'].any()}
+
+def objective(model,feat,labels):
+    import jax.numpy as jnp
+    from .fg_s3_quality_v2 import prediction_terms
+    for module in model.modules:_=module.values
+    pred={name:getattr(model,'quality_'+name)(feat,2).pred().astype(jnp.float32) for name in TARGETS}
+    value,metrics=prediction_terms(pred,labels,model.quality)
+    return value,(pred,metrics)
+
+def train(model,data):
+    import jax
+    import jax.numpy as jnp
+    import ninjax as nj
+    from functools import partial
+    from .fg_s3_v2_agent import masked_joint_optimizer
+    actual={k:(tuple(v.shape),str(v.dtype)) for k,v in nj.context().items()}
+    if actual!=getattr(model,'f2_state_schema',None):raise ValueError('F2_UNKNOWN_OR_CHANGED_STATE_SCHEMA')
+    before=dict(nj.context())
+    feat,carry,ids=features(model,data)
+    start=1+model.config.quality_f2_burnin_steps
+    labels={key:data[key][:,start:] for key in LABELS}
+    active=active_heads(labels,model.quality);any_active=jnp.stack(list(active.values())).any()
+    with masked_joint_optimizer(model.opt,False,False,active,allowed_prefixes=GROUPS,stage=STAGE):
+        metrics,(pred,extra)=model.opt(partial(objective,model),feat,labels,has_aux=True)
+    finite=jnp.isfinite(metrics['opt/loss']) & jnp.isfinite(metrics['opt/grad_norm'])
+    finite &= jnp.stack([jnp.isfinite(v).all() for v in nj.context().values()]).all()
+    for key,old in before.items():
+        owner=model.f2_state_owner[key]
+        enabled=any_active if owner=='CLOCK' else active.get(owner,jnp.bool_(False))
+        nj.context()[key]=jnp.where(finite & enabled,nj.context()[key],old)
+    metrics.update(extra)
+    metrics['opt/updates']=model.opt.step.read()
+    metrics.update({'f2/finite':finite,'f2/updated':finite & any_active,
+        'f2/skip_no_valid':~jnp.stack([labels['quality_'+n+'_valid'].any() for n in TARGETS]).any(),
+        'f2/target_positions':jnp.int32(feat.shape[0]*feat.shape[1]),
+        'f2/burnin_positions':jnp.int32(feat.shape[0]*(start-1)),
+        'f2/target_market_minutes':data['market_advance'][:,start:].sum(),
+        'f2/burnin_market_minutes':data['market_advance'][:,1:start].sum(),
+        'f2/optimizer_updates':model.opt.step.read()})
+    metrics.update({'f2/'+p[:-1]+'_active':v for p,v in active.items()})
+    return (*carry,{k:data[k][:,-1] for k in model.act_space}),{'effective_stepid':ids},metrics
