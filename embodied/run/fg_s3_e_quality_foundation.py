@@ -120,7 +120,7 @@ class FoundationRun:
         self.runtime=RuntimeState(self.schedule,SimpleNamespace(),[self.stream],
                                   lambda:None,set_carry,{},self.samples)
         self.cp=FullCheckpoint(self.root/'ckpt',self.step,self.identity,[self.stream],
-                              reserve_gib=1,keep_all=True,backend=BACKEND)
+                              reserve_gib=1 if engineering else 10,keep_all=True,backend=BACKEND)
         self.cp.course_reader=self.source;self.cp.agent=self.agent
         self.cp.step=self.step;self.cp.counters=self.counters;self.cp.runtime=self.runtime
         self.metrics=[];self.last_batch=None
