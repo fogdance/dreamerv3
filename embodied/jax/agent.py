@@ -274,7 +274,20 @@ class Agent(embodied.Agent):
             'train', step_num=int(self.n_updates)):
           self.params, carry, outs, mets = self._train(
               dona, allo, seed, carry, data)
-    self.n_updates.increment()
+    if self.config.get('quality_f1_protocol'):
+      # F1 returns the original full functional state on a nonfinite candidate.
+      # Check before advancing host counters or publishing any policy buffers.
+      ready = self._take_outs(internal.fetch_async(mets))
+      if not bool(ready['f1/finite']):
+        raise FloatingPointError('F1_NONFINITE_UPDATE_REJECTED_WITHOUT_STATE_COMMIT')
+    if self.config.get('quality_f2_protocol'):
+      ready = self._take_outs(internal.fetch_async(mets))
+      if not bool(ready['f2/finite']):
+        raise FloatingPointError('F2_NONFINITE_UPDATE_REJECTED_WITHOUT_STATE_COMMIT')
+      if bool(ready['f2/updated']):
+        self.n_updates.increment()
+    else:
+      self.n_updates.increment()
 
     if self.jaxcfg.enable_policy and not self.jaxcfg.sync_train_metrics:
       if not self.pending_sync:

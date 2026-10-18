@@ -109,12 +109,18 @@ def _inline_world_model(tree):
     return (enc_carry, dyn_carry, dec_carry, enc_entries, dyn_entries,
             dec_entries, tokens, repfeat, reset, B, T, losses, metrics)
 ''').body[0]
+        diagnostic_args = ast.parse('''def world_model(self, carry, obs, prevact, training, *, diagnostics=False):
+    pass
+''').body[0].args
         call = ast.parse('''(enc_carry, dyn_carry, dec_carry, enc_entries, dyn_entries,
 dec_entries, tokens, repfeat, reset, B, T, losses, metrics) = self.world_model(carry, obs, prevact, training)
 ''').body[0]
         loss = next(x for x in cls.body if isinstance(x, ast.FunctionDef) and x.name == 'loss')
         dump = lambda x: ast.dump(x, include_attributes=False)
-        if (dump(helper.args) != dump(expected.args) or helper.decorator_list
+        # F1 adds one explicit, disabled-by-default observation switch. Keep
+        # its entire body (including every diagnostic branch) in the compared
+        # AST. This permits same-version auditing, not an old-to-F1 transfer.
+        if (dump(helper.args) not in (dump(expected.args), dump(diagnostic_args)) or helper.decorator_list
                 or dump(helper.body[-1]) != dump(expected.body[0])
                 or dump(loss.body[0]) != dump(call)):
             raise ValueError('Unreviewed World Model extraction contract')

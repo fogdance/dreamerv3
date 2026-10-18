@@ -223,19 +223,27 @@ def validate_bundle(path, expected_identity=None):
 
 
 class FullCheckpoint(elements.Checkpoint):
-  def __init__(self, directory, step, identity, streams, key_steps=(), reserve_gib=10, keep_all=False):
+  def __init__(self, directory, step, identity, streams, key_steps=(), reserve_gib=10, keep_all=False,
+               *, backend='native_replay'):
     super().__init__(directory, keep=None, step=step)
     self._directory = Path(directory)
     self._identity, self._streams = plain(identity), streams
     self._key_steps = set(int(x) for x in key_steps)
     self._reserve = float(reserve_gib) * 1024 ** 3
     self._keep_all = bool(keep_all)
+    if backend not in ('native_replay', 'external_immutable_course_reader'):
+      raise ValueError('Unknown FG full checkpoint backend')
+    self._backend = backend
 
   def latest(self):
     if not self._directory.exists():
       return None
     candidates = sorted((p for p in self._directory.glob('step_*') if (p / 'done').is_file()), reverse=True)
     for path in candidates:
+      if self._backend == 'external_immutable_course_reader':
+        # F1 never silently rolls a damaged latest bundle back to step zero.
+        validate_bundle(path, self._identity)
+        return path
       try:
         validate_bundle(path)
       except (ValueError, OSError, KeyError, json.JSONDecodeError, pickle.UnpicklingError):
@@ -258,6 +266,10 @@ class FullCheckpoint(elements.Checkpoint):
   def save(self, path=None, keys=None, final=False):
     if path or keys:
       raise ValueError('FG full checkpoint does not allow partial saves')
+    if self._backend == 'external_immutable_course_reader':
+      if 'replay' in self._saveables or 'course_reader' not in self._saveables:
+        raise ValueError('External Reader backend cannot impersonate native Replay')
+      self._saveables['course_reader'].validate_snapshot()
     self._directory.mkdir(parents=True, exist_ok=True)
     step = int(self._step)
     dest = self._directory / f'step_{step:012d}'
@@ -271,8 +283,11 @@ class FullCheckpoint(elements.Checkpoint):
           os.replace(tmp, dest / 'manifest.json')
       self._publish(dest)
       return
-    replay = self._saveables['replay']
-    estimate = sum(x.nbytes for x in replay.chunks.values())
+    if self._backend == 'native_replay':
+      replay = self._saveables['replay']
+      estimate = sum(x.nbytes for x in replay.chunks.values())
+    else:
+      estimate = 0  # Corpus and index are immutable external references.
     estimate += sum(getattr(v, 'nbytes', 0) for v in getattr(self._saveables['agent'], 'params', {}).values())
     # Saving a new node does not reread every byte of an immutable old Replay.
     latest = getattr(self, '_published', None)
@@ -294,6 +309,8 @@ class FullCheckpoint(elements.Checkpoint):
       meta = dict(schema=1, protocol='FG_FULL_V1', step=step, identity=self._identity,
           protected=bool(final or step in self._key_steps),
           files={str(p.relative_to(temp)): file_hash(p) for p in sorted(temp.rglob('*')) if p.is_file()})
+      if self._backend != 'native_replay':
+        meta['backend'] = self._backend
       (temp / 'manifest.json').write_text(json.dumps(meta, sort_keys=True, indent=2))
       (temp / 'done').write_text('')
       validate_bundle(temp, self._identity)
@@ -325,8 +342,19 @@ class FullCheckpoint(elements.Checkpoint):
   def load(self, path=None, keys=None):
     if keys:
       raise ValueError('FG full checkpoint does not allow partial restores')
-    path = Path(path or self.latest())
-    validate_bundle(path, self._identity)
+    selected = path or self.latest()
+    if selected is None:
+      raise ValueError('No FG full checkpoint; refusing fresh restore')
+    path = Path(selected)
+    meta = validate_bundle(path, self._identity)
+    if meta.get('backend', 'native_replay') != self._backend:
+      raise ValueError('FG full checkpoint backend mismatch')
+    if self._backend == 'external_immutable_course_reader':
+      if 'replay' in self._saveables or 'course_reader' not in self._saveables:
+        raise ValueError('External Reader checkpoint registration mismatch')
+      # Revalidate external bytes before modifying Agent or optimizer state.
+      saved = pickle.loads((path / 'course_reader.pkl').read_bytes())
+      self._saveables['course_reader'].validate_snapshot(saved)
     for name, obj in self._saveables.items():
       state = pickle.loads((path / f'{name}.pkl').read_bytes())
       if name == 'replay':

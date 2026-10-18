@@ -236,7 +236,7 @@ class Agent(embodied.jax.Agent):
     """Factory for training-only losses; report and policy stay independent."""
     return self.loss
 
-  def world_model(self, carry, obs, prevact, training):
+  def world_model(self, carry, obs, prevact, training, *, diagnostics=False):
     enc_carry, dyn_carry, dec_carry = carry
     reset = obs['is_first']
     B, T = reset.shape
@@ -253,7 +253,8 @@ class Agent(embodied.jax.Agent):
     dec_carry, dec_entries, recons = self.dec(
         dec_carry, repfeat, reset, training)
     inp = sg(self.feat2tensor(repfeat), skip=self.config.reward_grad)
-    losses['rew'] = self.rew(inp, 2).loss(obs['reward'])
+    reward_dist = self.rew(inp, 2)
+    losses['rew'] = reward_dist.loss(obs['reward'])
     con = f32(~obs['is_terminal'])
     if self.config.contdisc:
       con *= self._feedback_discount(obs)
@@ -273,6 +274,13 @@ class Agent(embodied.jax.Agent):
     priorpred = availability_prediction(priorlogit, self.config.avail_threshold)[1]
     metrics.update(self._availability_metrics('post', postpred, avail_target))
     metrics.update(self._availability_metrics('prior', priorpred, avail_target))
+    if diagnostics:
+      metrics.update({
+          'f1_raw/reward_prediction': reward_dist.pred(),
+          'f1_raw/availability_post': postpred,
+          'f1_raw/availability_prior': priorpred,
+          'f1_raw/continue_target': con,
+          'f1_raw/encoder_tokens': tokens})
     for key, recon in recons.items():
       space, value = self.obs_space[key], obs[key]
       assert value.dtype == space.dtype, (key, space, value.dtype)

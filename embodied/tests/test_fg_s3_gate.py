@@ -53,6 +53,12 @@ def test_audited_ast_accepts_only_the_reviewed_transition():
     # Gate-only full-state transfer would violate the production contract.
     assert len(audit_code_transition(old,reviewed,'dreamerv3/agent.py'))==64
     assert len(audit_code_transition(current,current,'dreamerv3/agent.py'))==64
+    wp03=subprocess.check_output(['git','show','446d1bc99debd2d05c313eafd7d0c414ebd2815c:dreamerv3/agent.py'],cwd=root)
+    with pytest.raises(ValueError,match='semantics changed'):
+        audit_code_transition(wp03,current,'dreamerv3/agent.py')
+    enabled=current.replace(b'*, diagnostics=False',b'*, diagnostics=True')
+    with pytest.raises(ValueError,match='World Model extraction contract'):
+        audit_code_transition(current,enabled,'dreamerv3/agent.py')
     bad_helper=current.replace(b'pred = logits >= 0',b'pred = logits > 0')
     with pytest.raises(ValueError,match='Unreviewed availability helper'):
         audit_code_transition(current,bad_helper,'dreamerv3/agent.py')
