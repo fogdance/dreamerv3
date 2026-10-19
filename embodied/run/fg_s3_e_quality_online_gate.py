@@ -7,6 +7,7 @@ import math
 from gym_trading_env.envs.entry_contract import fingerprint
 
 NAMES=('COLLECTION_VALID','SUPERVISED_STABLE','WM_VALID_FOR_RL','RL_NUMERIC_READY')
+_REVIEWS={}
 
 
 class OnlineGates:
@@ -78,13 +79,45 @@ class OnlineGates:
             frozen_equal=frozen_equal,formal_admission=False)
         return good
 
-    def require_rl(self,preparation,*,authorized=False):
+    def review_rl(self,preparation,path,approved_sha256,*,authorized=False):
+        """Explicit operator-reviewed digest, independent of technical Gates.
+
+        A file saying PASS is not authority. The caller must supply its reviewed
+        digest and separate RL authorization; the native F3 proof remains required.
+        This method does not produce approvals or alter the technical thresholds.
+        """
+        import json
+        from gym_trading_env.research.fg_replay import digest
+        from gym_trading_env.research.fg_s3_e_quality_course_preflight import _local_path
+        from gym_trading_env.research.fg_s3_e_quality_actor import require_training_authority
+        if authorized is not True:raise ValueError('ONLINE_SEPARATE_RL_AUTHORIZATION_REQUIRED')
+        require_training_authority(preparation,authorized=True)
+        if not all(self.ready.values()):raise ValueError('ONLINE_RL_GATE_CLOSED')
+        path=_local_path(path)
+        if (not isinstance(approved_sha256,str) or len(approved_sha256)!=64
+                or digest(path)!=approved_sha256):raise ValueError('ONLINE_REVIEWED_RL_DIGEST_REQUIRED')
+        expected=dict(protocol='FG_S3_E_QUALITY_FORMAL_RL_REVIEW_V1',verdict='APPROVED_FOR_FORMAL_RL',
+            gate_identity=self.identity,evidence_hash=fingerprint(self.evidence),wm_identity=self.wm_identity,
+            f3_preparation_identity=fingerprint(preparation.receipt))
+        if json.loads(path.read_text())!=expected:raise ValueError('ONLINE_RL_REVIEW_BINDING_MISMATCH')
+        token=object();_REVIEWS[token]=(self,expected,approved_sha256)
+        return token
+
+    def require_rl(self,preparation,*,authorized=False,review=None):
         from gym_trading_env.research.fg_s3_e_quality_actor import require_training_authority
         blockers=[key for key,value in self.ready.items() if not value]
         if blockers:raise ValueError('ONLINE_RL_GATE_CLOSED: '+','.join(blockers))
         # Reuse the in-process native proof/authorization mechanism, not a
         # JSON "PASS" or the old bundled ONLINE_ADAPT flags.
         require_training_authority(preparation,authorized=authorized)
+        reviewed=_REVIEWS.get(review)
+        # The review seals the evidence at review time. New finite update
+        # counters do not invalidate it; current technical readiness, frozen WM,
+        # exact Run identity and native F3 authority are still checked each time.
+        if (not reviewed or reviewed[0] is not self or reviewed[1]['wm_identity']!=self.wm_identity
+                or reviewed[1]['f3_preparation_identity']!=fingerprint(preparation.receipt)):
+            self.formal_admitted=False
+            raise ValueError('ONLINE_INDEPENDENT_RL_RESEARCH_REVIEW_REQUIRED')
         self.formal_admitted=True
 
     def save(self):

@@ -48,7 +48,8 @@ class OnlineRun(ActorRun,LiveRun):
     protocol='FG_S3_E_QUALITY_ONLINE_RUN_V1'
 
     def __init__(self,spec,factory,source,history=None,*,resume=False,authorized=False,
-                 native_preparation=None,_probe=None,_test_location=None,wm_policy=None):
+                 native_preparation=None,_probe=None,_test_location=None,wm_policy=None,initial_state=None,
+                 rl_review=None):
         from dreamerv3.fg_s3_e_quality_online import validate_execution,execution_contract
         from dreamerv3.fg_s3a_actor import parameter_digests
         from gym_trading_env.envs.entry_contract import fingerprint
@@ -68,7 +69,9 @@ class OnlineRun(ActorRun,LiveRun):
         if _test_location is not None and not engineering:raise ValueError('ONLINE_TEST_RELOCATION_FORBIDDEN')
         if source.get('fold')!='TRAIN':raise ValueError('ONLINE_TRAIN_SOURCE_REQUIRED')
         if self.mode!='SHADOW' and history is None:raise ValueError('ONLINE_HISTORICAL_READER_REQUIRED')
-        if history is not None:history.validate_snapshot()
+        if history is not None:
+            from gym_trading_env.research.fg_s3_e_quality_online import validate_history_contract
+            history.validate_snapshot();validate_history_contract(history,proof)
         self.root=Path(_test_location or s['run_dir']).resolve()
         protected=[Path(s['source_run']),Path(proof['identity']['preparation']['settings']['corpus_root'])]
         if history is not None:protected.extend(Path(r.admission.source.corpus_root) for r in history.readers)
@@ -97,6 +100,7 @@ class OnlineRun(ActorRun,LiveRun):
             course=proof['identity']['preparation']['course'],source_nonopt=fingerprint({k:v for k,v in parameter_digests(state['params']).items() if not k.startswith('opt/')}),
             history=None if history is None else history.identity_hash,live_source=copy.deepcopy(source),
             env_config_hash=env.config_hash,e_identity=env.e_observation_identity,
+            initial_account=None if initial_state is None else fingerprint(initial_state),
             chunksize=chunksize,code=execution_identity(),packages=runtime_versions(),
             controlled_small=engineering,numeric_probe=bool(engineering and permit[2]),training_admitted=not engineering and self.mode!='SHADOW',
             checkpoint_position='ATOMIC_TRANSACTION_SEQUENCE',checkpoint_policy='STRICT_LATEST_NO_FALLBACK')
@@ -113,13 +117,14 @@ class OnlineRun(ActorRun,LiveRun):
             write_json(self.root/'source_to_online_transfer.json',transfer)
         self.gates=OnlineGates(fingerprint(self.identity),formal_mask_policy(self.settings),wm_policy=wm_policy)
         self.native_preparation=native_preparation;self.authorized=authorized
+        self.rl_review=rl_review
         self.factory=factory
         chunk_identity=ChunkIdentity(fingerprint(self.identity))
         self.collector=OnlineCollector(env,source,self.root/'rollout',Path(__file__).resolve().parents[3]/'dreamerv3',
             agent=self.agent,seed=s['env_seed'],budget=s['env_steps'],capacity=s['replay_capacity'],existing=resume,
             replay_length=1+self.settings['burnin_steps']+self.settings['target_steps'],chunksize=chunksize,
             exploration_rate=s['exploration_rate'],exploration_seed=s['replay_seed'],chunk_identity=chunk_identity,
-            execution_identity=fingerprint(self.identity))
+            execution_identity=fingerprint(self.identity),initial_state=initial_state)
         self.publisher=None;self.source=None;self.stream=None
         if self.mode!='SHADOW':
             self.publisher=LabelPublisher(self.collector,factory,source)
@@ -244,7 +249,7 @@ class OnlineRun(ActorRun,LiveRun):
                     if self.mode=='ONLINE_RL_CONTROLLED':
                         if self.identity['numeric_probe']:self.agent.set_avail_actor_enabled(True)
                         else:
-                            try:self.gates.require_rl(self.native_preparation,authorized=self.authorized)
+                            try:self.gates.require_rl(self.native_preparation,authorized=self.authorized,review=self.rl_review)
                             except ValueError:self.agent.set_avail_actor_enabled(False)
                             else:self.agent.set_avail_actor_enabled(True)
                     while phase['updates_done']<s['updates_per_collect']:self.update()
@@ -264,7 +269,8 @@ class OnlineRun(ActorRun,LiveRun):
         return self.result()
 
     def result(self):
-        return dict(protocol=self.protocol,status='ONLINE_ENGINEERING_COMPLETE' if int(self.step)==self.spec['env_steps'] and self.phase.state['stage']=='IDLE' else 'ONLINE_ENGINEERING_PARTIAL',
+        complete=int(self.step)==self.spec['env_steps'] and self.phase.state['stage']=='IDLE'
+        return dict(protocol=self.protocol,status=('ONLINE_ENGINEERING_' if self.identity['controlled_small'] else 'ONLINE_RUN_')+('COMPLETE' if complete else 'PARTIAL'),
             execution_mode=self.mode,env_steps=int(self.step),counters=self.counters.save(),
             gate=self.gates.report(),phase=self.phase.save(),source_exposures=self.source_exposures.save(),checkpoint=str(self.cp.latest()),
             training_admitted=self.identity['training_admitted'],real_TRAIN_updates=0 if self.identity['controlled_small'] else int(self.agent.n_updates),
