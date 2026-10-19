@@ -25,6 +25,10 @@ class CourseStream:
         self.reader=reader;self.adapter=adapter_cls(reader,settings)
     def __iter__(self):return self
     def __next__(self):return self.adapter.sample()[0]
+    @property
+    def readers(self):return (self.reader,)
+    def coverage(self):return self.reader.coverage()
+    def close(self):self.reader.close()
     def validate_snapshot(self,state=None):
         inspect_source(self.reader.admission.source)  # Rehash every bound member.
         if digest(self.reader.index_path)!=self.reader.index_hash:

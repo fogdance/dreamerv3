@@ -10,9 +10,10 @@ from gym_trading_env.research.fg_s3_e_quality_reader import EQualityCourseReader
 
 
 class ActorStreams:
-    """Compose original same-corpus Readers; sampling/RNG remain in WP03."""
+    """Compose native F3 role streams; sampling and RNG remain in WP03 Readers."""
     def __init__(self,preparation,index_path):
-        self.streams=[];s=preparation.settings
+        self.streams=[];self._group_identity=None;self._failed=self._closed=False
+        self.last_batch_audit=[];s=preparation.settings
         specs=[('NATURAL',s['sampling_spec'])]
         if s.get('aux_sampling_spec') is not None:specs.append(('AUXILIARY',s['aux_sampling_spec']))
         self.roles=[role for role,_ in specs]
@@ -26,38 +27,82 @@ class ActorStreams:
         except BaseException:
             self.close();raise
 
+    @classmethod
+    def from_streams(cls,role_streams,*,identity):
+        """Compose ready lifecycle streams without adding a sampler or Run."""
+        from gym_trading_env.envs.entry_contract import fingerprint
+        roles=[role for role,_ in role_streams]
+        if roles not in (['NATURAL'],['NATURAL','AUXILIARY']):
+            raise ValueError('F3_READER_GROUP_ROLES_INVALID')
+        result=cls.__new__(cls)
+        result.roles=roles;result.streams=[stream for _,stream in role_streams]
+        result._group_identity=fingerprint(identity)
+        result._failed=result._closed=False;result.last_batch_audit=[]
+        result.validate_snapshot()
+        return result
+
+    def _ensure_open(self):
+        if self._closed or self._failed:raise ValueError('F3_READER_GROUP_INVALID_REOPEN_REQUIRED')
+
     @property
-    def readers(self):return [stream.reader for stream in self.streams]
+    def readers(self):return [reader for stream in self.streams for reader in stream.readers]
     def __iter__(self):return self
     def __next__(self):
-        before=[s.save() for s in self.streams]
+        self._ensure_open();before=self.save()
         try:
             batches=[]
             for role,stream in zip(self.roles,self.streams):
                 data=next(stream);data['f3_natural'][...]=role=='NATURAL';batches.append(data)
-            return {k:np.concatenate([b[k] for b in batches],axis=0) for k in batches[0]}
+            result={k:np.concatenate([b[k] for b in batches],axis=0) for k in batches[0]}
+            if self._group_identity is not None:
+                self.last_batch_audit=[dict(role=role,**row) for role,stream in zip(self.roles,self.streams)
+                                       for row in stream.last_batch_audit]
+                if len(self.last_batch_audit)!=len(result['stepid']):raise ValueError('F3_READER_GROUP_AUDIT_SIZE')
+            return result
         except BaseException:
-            for stream,state in zip(self.streams,before):stream.reader.load_state_dict(state)
+            self._rollback(before)
             raise
 
-    def save(self):return dict(protocol='FG_S3_F3_READER_GROUP_V1',roles=list(self.roles),readers=[s.save() for s in self.streams])
+    def save(self):
+        self._ensure_open()
+        state=dict(protocol='FG_S3_F3_READER_GROUP_V1',roles=list(self.roles),readers=[s.save() for s in self.streams])
+        if self._group_identity is not None:
+            state.update(protocol='FG_S3_F3_BOUND_READER_GROUP_V1',identity=self._group_identity,
+                         last_batch_audit=copy.deepcopy(self.last_batch_audit))
+        return state
     save_full=save
     def validate_snapshot(self,state=None):
-        if state is not None and (state.get('protocol')!='FG_S3_F3_READER_GROUP_V1' or state.get('roles')!=self.roles
+        self._ensure_open()
+        protocol='FG_S3_F3_BOUND_READER_GROUP_V1' if self._group_identity is not None else 'FG_S3_F3_READER_GROUP_V1'
+        if state is not None and (state.get('protocol')!=protocol or state.get('roles')!=self.roles
                 or len(state.get('readers',[]))!=len(self.streams)):raise ValueError('F3_READER_GROUP_IDENTITY_MISMATCH')
+        if state is not None and self._group_identity is not None:
+            expected=[dict(role=role,**row) for role,value in zip(self.roles,state['readers'])
+                      for row in value.get('last_batch_audit',[])]
+            if state.get('identity')!=self._group_identity or state.get('last_batch_audit')!=expected:
+                raise ValueError('F3_READER_GROUP_IDENTITY_MISMATCH')
         for i,stream in enumerate(self.streams):stream.validate_snapshot(None if state is None else state['readers'][i])
+    def _apply(self,state):
+        for stream,value in zip(self.streams,state['readers']):stream.load(value)
+        if self._group_identity is not None:self.last_batch_audit=copy.deepcopy(state['last_batch_audit'])
+    def _rollback(self,state):
+        for stream,value in zip(self.streams,state['readers']):
+            try:stream.load(value)
+            except BaseException:self._failed=True
+        if self._group_identity is not None:self.last_batch_audit=copy.deepcopy(state['last_batch_audit'])
     def load(self,state):
         self.validate_snapshot(state)
         before=self.save()
-        try:
-            for stream,value in zip(self.streams,state['readers']):stream.load(value)
+        try:self._apply(state)
         except BaseException:
-            for stream,value in zip(self.streams,before['readers']):stream.reader.load_state_dict(value)
+            self._rollback(before)
             raise
     load_full=load
-    def coverage(self):return {role:r.coverage() for role,r in zip(self.roles,self.readers)}
+    def coverage(self):return {role:stream.coverage() for role,stream in zip(self.roles,self.streams)}
     def close(self):
-        for stream in self.streams:stream.reader.close()
+        if self._closed:return
+        for stream in self.streams:stream.close()
+        self._closed=True
 
 
 _PERMITS={}
