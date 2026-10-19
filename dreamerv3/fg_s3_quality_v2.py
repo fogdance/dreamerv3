@@ -159,6 +159,7 @@ def policy_forward(agent, features, mask, bdims):
         policy,raw=distribution(agent,features,mask,bdims)
         action=policy[agent.action_key];zero=jnp.zeros(raw.shape[:-1],jnp.float32)
         diagnostics={'quality/base_policy_logit':raw[...,1]-raw[...,0],
+            'quality/actor_logits':raw,
             'quality/z_final':raw[...,1]-raw[...,0],'quality/delta_O':zero,'quality/delta_S':zero,'quality/delta_Q':zero,
             'quality/pADD_raw':jax.nn.softmax(raw,-1)[...,1],
             'quality/pADD_after_mask_unimix':action.prob(jnp.ones(raw.shape[:-1],jnp.int32)),

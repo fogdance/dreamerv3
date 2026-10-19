@@ -65,3 +65,21 @@ def inspect_f3(spec, *, allow_engineering=False):
         source_freeze=source_freeze_evidence(root, identity, state, ('quality_actor/',)),
         verified_updates=count, update_log_sha256=digest(root/'updates.jsonl'))
     return signed(proof), state
+
+
+class OnlinePolicy:
+    """Original deterministic ActorPolicy; policy carry stays in original Driver."""
+    waited = 0
+    waiting = False
+
+    def __init__(self, agent):
+        from gym_trading_env.research.fg_single3_evaluation import ActorPolicy
+        self.original = ActorPolicy(agent)
+
+    @property
+    def last_diagnostics(self):
+        return self.original.last_diagnostics
+
+    def __call__(self, carry, obs):
+        return self.original(carry, obs)
+
