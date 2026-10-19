@@ -432,6 +432,25 @@ class Agent(embodied.Agent):
     self.pending_outs = self.pending_mets = None
     return outs, mets
 
+  def save_policy_state(self):
+    """Inference RNG position only; weights and training state stay external."""
+    with self.policy_lock, self.n_actions.lock:
+      if self.pending_sync is not None:
+        raise ValueError('Evaluation requires an already published policy')
+      return dict(protocol='FG_POLICY_INFERENCE_STATE_V1',
+                  seed=int(self.config.seed), actions=int(self.n_actions.value))
+
+  def load_policy_state(self, state):
+    if (set(state) != {'protocol', 'seed', 'actions'}
+        or state['protocol'] != 'FG_POLICY_INFERENCE_STATE_V1'
+        or type(state['seed']) is not int or state['seed'] != int(self.config.seed)
+        or type(state['actions']) is not int or state['actions'] < 0):
+      raise ValueError('Policy inference state identity mismatch')
+    with self.policy_lock, self.n_actions.lock:
+      if self.pending_sync is not None:
+        raise ValueError('Evaluation requires an already published policy')
+      self.n_actions.value = state['actions']
+
   def load_exact(self, data, transfer=False):
     self.load(data, restore_batches=True)
     with self.policy_lock:
