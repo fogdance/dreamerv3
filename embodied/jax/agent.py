@@ -201,7 +201,8 @@ class Agent(embodied.Agent):
     if self.jaxcfg.use_shardmap:
       batch_size = batch_size // self.policy_mesh.size
     return self._split(internal.to_local(self._init_policy(
-        self.policy_params, self._seeds(0, self.policy_mirrored), batch_size)))
+        self.policy_params, self._seeds(0, self.policy_mirrored,
+            getattr(self, '_evaluation_seed', None)), batch_size)))
 
   def init_train(self, batch_size):
     batch_size = batch_size * jax.process_count()
@@ -232,7 +233,8 @@ class Agent(embodied.Agent):
       with self.n_actions.lock:
         counter = self.n_actions.value
         self.n_actions.value += 1
-      seed = self._seeds(counter, self.policy_mirrored)
+      seed = self._seeds(counter, self.policy_mirrored,
+          getattr(self, '_evaluation_seed', None) if mode == 'eval' else None)
       carry = internal.to_global(self._stack(carry), self.policy_sharded)
 
     with self.policy_lock:
@@ -437,13 +439,23 @@ class Agent(embodied.Agent):
     with self.policy_lock, self.n_actions.lock:
       if self.pending_sync is not None:
         raise ValueError('Evaluation requires an already published policy')
-      return dict(protocol='FG_POLICY_INFERENCE_STATE_V1',
-                  seed=int(self.config.seed), actions=int(self.n_actions.value))
+      return dict(protocol='FG_POLICY_INFERENCE_STATE_V2',
+                  seed=int(getattr(self, '_evaluation_seed', self.config.seed)), actions=int(self.n_actions.value))
+
+  def configure_evaluation_seed(self, seed):
+    """A private evaluation RNG; original model/training seed is immutable."""
+    if type(seed) is not int or seed < 0:
+      raise ValueError('Explicit nonnegative evaluation seed required')
+    with self.policy_lock, self.n_actions.lock:
+      if self.n_actions.value != 0 or self.pending_sync is not None:
+        raise ValueError('Evaluation seed can only be set before first action')
+      self._evaluation_seed = seed
 
   def load_policy_state(self, state):
     if (set(state) != {'protocol', 'seed', 'actions'}
-        or state['protocol'] != 'FG_POLICY_INFERENCE_STATE_V1'
-        or type(state['seed']) is not int or state['seed'] != int(self.config.seed)
+        or state['protocol'] != 'FG_POLICY_INFERENCE_STATE_V2'
+        or type(state['seed']) is not int
+        or state['seed'] != int(getattr(self, '_evaluation_seed', self.config.seed))
         or type(state['actions']) is not int or state['actions'] < 0):
       raise ValueError('Policy inference state identity mismatch')
     with self.policy_lock, self.n_actions.lock:
@@ -512,8 +524,8 @@ class Agent(embodied.Agent):
         lambda x: np.float32(x) if x.dtype == jnp.bfloat16 else x, outs)
     return outs
 
-  def _seeds(self, counter, sharding):
-    rng = np.random.default_rng(seed=[self.config.seed, int(counter)])
+  def _seeds(self, counter, sharding, evaluation_seed=None):
+    rng = np.random.default_rng(seed=[self.config.seed if evaluation_seed is None else evaluation_seed, int(counter)])
     seeds = rng.integers(0, np.iinfo(np.uint32).max, (2,), np.uint32)
     return internal.device_put(seeds, sharding)
 
