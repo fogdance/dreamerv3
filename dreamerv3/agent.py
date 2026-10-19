@@ -294,12 +294,9 @@ class Agent(embodied.jax.Agent):
     return (enc_carry, dyn_carry, dec_carry, enc_entries, dyn_entries,
             dec_entries, tokens, repfeat, reset, B, T, losses, metrics)
 
-  def loss(self, carry, obs, prevact, training):
-    (enc_carry, dyn_carry, dec_carry, enc_entries, dyn_entries,
-     dec_entries, tokens, repfeat, reset, B, T, losses, metrics) = self.world_model(
-         carry, obs, prevact, training)
-
-    # Imagination
+  def imagination_loss(self, dyn_entries, dyn_carry, repfeat, training):
+    """Original RSSM rollout and imagined objective, shared by explicit stages."""
+    B, T = jax.tree.leaves(repfeat)[0].shape[:2]
     K = min(self.config.imag_last or T, T)
     H = self.config.imag_length
     starts = self.dyn.starts(dyn_entries, dyn_carry, K)
@@ -316,8 +313,7 @@ class Agent(embodied.jax.Agent):
     assert all(x.shape[:2] == (B * K, H + 1) for x in jax.tree.leaves(imgfeat))
     assert all(x.shape[:2] == (B * K, H + 1) for x in jax.tree.leaves(imgact))
     inp = self.feat2tensor(imgfeat)
-    imgpolicy = self._masked_policy(
-        self.pol(inp, 2), imgmask, allow_fallback=True)
+    imgpolicy = self._imagination_distribution(imgfeat, imgmask, 2)
     los, imgloss_out, mets = imag_loss(
         imgact,
         self.rew(inp, 2).pred(),
@@ -330,17 +326,29 @@ class Agent(embodied.jax.Agent):
         contdisc=self.config.contdisc,
         horizon=self.config.horizon,
         **self.config.imag_loss)
+    mets['avail/img_cardinality'] = f32(imgmask).sum(-1).mean()
+    mets['avail/img_fallback_rate'] = f32(imgfallback).mean()
+    action_valid = jnp.take_along_axis(
+        imgmask, imgact[self.action_key][..., None], -1)[..., 0]
+    mets['avail/img_action_invalid_rate'] = f32(~action_valid).mean()
+
+    imgloss_out.update(imag_features=imgfeat, imag_actions=imgact, imag_mask=imgmask)
+    return los, imgloss_out, mets
+
+  def loss(self, carry, obs, prevact, training):
+    (enc_carry, dyn_carry, dec_carry, enc_entries, dyn_entries,
+     dec_entries, tokens, repfeat, reset, B, T, losses, metrics) = self.world_model(
+         carry, obs, prevact, training)
+
+    # Imagination
+    K = min(self.config.imag_last or T, T)
+    los, imgloss_out, mets = self.imagination_loss(dyn_entries, dyn_carry, repfeat, training)
     avail_ready = self.avail_actor_gate.read()
     los['policy'] *= sg(f32(avail_ready))
     los['value'] *= sg(f32(avail_ready))
     losses.update({k: v.mean(1).reshape((B, K)) for k, v in los.items()})
     metrics.update(mets)
     metrics['avail/ready'] = avail_ready
-    metrics['avail/img_cardinality'] = f32(imgmask).sum(-1).mean()
-    metrics['avail/img_fallback_rate'] = f32(imgfallback).mean()
-    action_valid = jnp.take_along_axis(
-        imgmask, imgact[self.action_key][..., None], -1)[..., 0]
-    metrics['avail/img_action_invalid_rate'] = f32(~action_valid).mean()
 
     # Replay
     if self.config.repval_loss:
@@ -409,12 +417,12 @@ class Agent(embodied.jax.Agent):
     return hard_nonempty_mask(prob, self.config.avail_threshold,
         self.config.get('avail_always_available_index', -1), raw_mask=raw_mask)
 
+  def _imagination_distribution(self, feat, mask, bdims):
+    return self._masked_policy(self.pol(self.feat2tensor(feat), bdims), mask, allow_fallback=True)
+
   def _sample_imag_action(self, feat, bdims):
     mask, fallback = self._predicted_action_mask_info(feat, bdims)
-    action = sample(self._masked_policy(
-        self.pol(self.feat2tensor(feat), bdims),
-        mask,
-        allow_fallback=True))
+    action = sample(self._imagination_distribution(feat, mask, bdims))
     return {
         **action,
         IMAG_ACTION_MASK: mask,
