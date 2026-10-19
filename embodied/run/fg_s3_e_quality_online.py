@@ -82,4 +82,3 @@ class OnlinePolicy:
 
     def __call__(self, carry, obs):
         return self.original(carry, obs)
-
