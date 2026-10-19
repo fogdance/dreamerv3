@@ -59,3 +59,25 @@ def validate_execution(raw):
     if not node.is_relative_to(src/'ckpt') or out.is_relative_to(src) or src.is_relative_to(out):
         raise ValueError('ONLINE_SOURCE_OR_OUTPUT_PATH_INVALID')
     return result
+
+
+def model_extensions(target,burnin,mode,loss=None):
+    from .fg_s3_e_quality_actor import model_extensions as original
+    execution_contract(mode)
+    return {**original(target,burnin,loss), 'quality_online_protocol':PROTOCOL,'quality_online_mode':mode}
+
+
+def validate_model_settings(settings):
+    from .fg_s3_e_quality_actor import PROTOCOL as F3
+    if settings.get('quality_online_protocol')!=PROTOCOL or settings.get('quality_f3_protocol')!=F3:
+        raise ValueError('ONLINE_EXPLICIT_F3_MODEL_PROTOCOL_REQUIRED')
+    execution_contract(settings.get('quality_online_mode'))
+
+
+def train(model,data):
+    mode=model.quality['quality_online_mode']
+    if mode=='SHADOW':raise ValueError('SHADOW_OPTIMIZER_CALL_FORBIDDEN')
+    if mode=='ONLINE_SUPERVISED':
+        from .fg_s3_e_quality_actor import train as original
+        return original(model,data)
+    raise ValueError('ONLINE_RL_TECHNICAL_IMPLEMENTATION_PENDING')

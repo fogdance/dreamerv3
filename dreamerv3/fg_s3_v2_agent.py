@@ -78,6 +78,10 @@ class _S3V2Model(S3CAgent):
         self.f1 = config.get('quality_f1_protocol') is not None
         self.f2 = config.get('quality_f2_protocol') is not None
         self.f3 = config.get('quality_f3_protocol') is not None
+        self.online = config.get('quality_online_protocol') is not None
+        if self.online:
+            from .fg_s3_e_quality_online import validate_model_settings
+            validate_model_settings(config)
         if sum((self.f1,self.f2,self.f3))>1:raise ValueError('QUALITY_EXECUTION_STAGES_MUTUALLY_EXCLUSIVE')
         if self.mode not in ('a2', 'c2', 'tutor', 'b2', 'quality_v2', 'e'):
             raise ValueError('Unknown S3-V2 mode')
@@ -453,6 +457,9 @@ class _S3V2Model(S3CAgent):
     def train(self, carry, data):
         if nj.creating():
             return Agent.train(self, carry, data)
+        if self.online:
+            from .fg_s3_e_quality_online import train
+            return train(self,data)
         if self.f3:
             from .fg_s3_e_quality_actor import train
             return train(self,data)
