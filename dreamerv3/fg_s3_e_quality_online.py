@@ -54,6 +54,8 @@ def validate_execution(raw):
     if not shadow and (not raw['updates_per_collect'] or not raw['max_consumed_batches']
                        or not 0 < raw['history_ratio'] < 1):
         raise ValueError('ONLINE_EXPLICIT_HISTORY_AND_ONLINE_BUDGET_REQUIRED')
+    if raw['collect_every']>raw['env_steps'] or raw['save_every']%raw['collect_every']:
+        raise ValueError('ONLINE_COLLECTION_AND_CHECKPOINT_BOUNDARIES_MUST_ALIGN')
     for k in ('source_run','source_checkpoint','run_dir'):
         result[k] = str(_local_path(raw[k]))
     from pathlib import Path

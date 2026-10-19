@@ -105,13 +105,19 @@ def distribution(model,feat,mask,bdims):
     return policy,raw
 
 
+def valid_l2_targets(labels,mask,first,last,terminal):
+    """One validity rule for native JAX loss and consumed-source accounting."""
+    y=labels['teacher_action']
+    return labels['teacher_valid'] & ((y==0)|(y==1)) & (mask==1).all(-1) & ~first & ~last & ~terminal
+
+
 def actor_objective(dist,labels,mask,first,last,terminal,config):
     """L2 truth; each optional component has its own actual denominator."""
     import jax
     import jax.numpy as jnp
     from .fg_s3_quality_v2 import mean,pair_identity
     y=labels['teacher_action']
-    valid=labels['teacher_valid'] & ((y==0)|(y==1)) & (mask==1).all(-1) & ~first & ~last & ~terminal
+    valid=valid_l2_targets(labels,mask,first,last,terminal)
     natural=labels['f3_natural'];auxiliary=jnp.where((~natural).any(),~natural,jnp.ones_like(natural))
     nv=valid & natural;av=valid & auxiliary
     safe_y=jnp.where(valid,y,0)
