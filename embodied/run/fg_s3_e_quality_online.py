@@ -72,8 +72,11 @@ class OnlinePolicy:
     waited = 0
     waiting = False
 
-    def __init__(self, agent):
+    def __init__(self, agent, *, exploration_rate=0., seed=0):
         from gym_trading_env.research.fg_single3_evaluation import ActorPolicy
+        if type(exploration_rate) not in (int,float) or not np.isfinite(exploration_rate) or not 0<=exploration_rate<=1:
+            raise ValueError('ONLINE_EXPLORATION_RATE_INVALID')
+        self.exploration_rate=exploration_rate;self.rng=np.random.default_rng(seed)
         self.original = ActorPolicy(agent)
 
     @property
@@ -81,4 +84,26 @@ class OnlinePolicy:
         return self.original.last_diagnostics
 
     def __call__(self, carry, obs):
-        return self.original(carry, obs)
+        from .fg_s3_dagger_policy import replace_prevact
+        carry,action,out=self.original(carry, obs)
+        explored=False
+        if self.exploration_rate:
+            if len(obs['action_mask'])!=1:raise ValueError('ONLINE_EXPLORATION_SINGLE_ACCOUNT_REQUIRED')
+            legal=np.flatnonzero(np.asarray(obs['action_mask'][0])==1)
+            if not len(legal):raise ValueError('ONLINE_REAL_MASK_EMPTY')
+            if not obs['is_last'][0] and self.rng.random()<self.exploration_rate:
+                action=dict(action=np.array([self.rng.choice(legal)],np.int32));explored=True
+                carry=replace_prevact(carry,action['action'])
+        self.original.last_diagnostics.update(explored=explored,exploration_rate=self.exploration_rate)
+        return carry,action,out
+
+    def save(self):
+        import copy
+        return dict(exploration_rate=self.exploration_rate,rng=copy.deepcopy(self.rng.bit_generator.state),
+            diagnostics=copy.deepcopy(self.original.last_diagnostics))
+
+    def load(self,state):
+        import copy
+        if state['exploration_rate']!=self.exploration_rate:raise ValueError('ONLINE_EXPLORATION_RESUME_MISMATCH')
+        self.rng.bit_generator.state=copy.deepcopy(state['rng'])
+        self.original.last_diagnostics=copy.deepcopy(state['diagnostics'])
