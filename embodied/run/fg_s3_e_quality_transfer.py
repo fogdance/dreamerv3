@@ -73,7 +73,7 @@ def transfer_parameters(agent,source,proof,*,target_stage='QUALITY_HEADS'):
     import jax
     from embodied.jax import internal
     from dreamerv3.fg_s3a_actor import parameter_digests
-    if target_stage not in ('QUALITY_HEADS','ACTOR_SUPERVISED'):raise ValueError('QUALITY_HANDOFF_TARGET_STAGE')
+    if target_stage not in ('QUALITY_HEADS','ACTOR_SUPERVISED','ACTOR_ONLINE'):raise ValueError('QUALITY_HANDOFF_TARGET_STAGE')
     fresh=agent.save_exact()
     if any(fresh['counters'].values()) or any(fresh[k] is not None for k in ('pending_sync','pending_outs','pending_mets')):
         raise ValueError('F2_HANDOFF_REQUIRES_FRESH_AGENT')
@@ -94,7 +94,7 @@ def transfer_parameters(agent,source,proof,*,target_stage='QUALITY_HEADS'):
     after=parameter_digests(agent.params);expected=parameter_digests({k:source['params'][k] for k in keys})
     if any(after[k]!=expected[k] for k in keys) or any(after[k]!=before[k] for k in after if k.startswith('opt/')):
         raise RuntimeError('F2_HANDOFF_BYTE_AUDIT_FAILED')
-    return signed(dict(protocol='F1_TO_F2_TRANSFER_RECEIPT' if target_stage=='QUALITY_HEADS' else 'F1_OR_F2_TO_F3_TRANSFER_RECEIPT',source=proof,engineering_only=proof['engineering_only'],
+    return signed(dict(protocol='F1_TO_F2_TRANSFER_RECEIPT' if target_stage=='QUALITY_HEADS' else 'F3_TO_ONLINE_TRANSFER_RECEIPT' if target_stage=='ACTOR_ONLINE' else 'F1_OR_F2_TO_F3_TRANSFER_RECEIPT',source=proof,engineering_only=proof['engineering_only'],
         foundation_status=proof['foundation_status'],nonopt_keys=sorted(keys),source_nonopt=expected,target_nonopt={k:after[k] for k in sorted(keys)},
         fresh_optimizer={k:after[k] for k in sorted(after) if k.startswith('opt/')},fresh_counters=fresh['counters'],target_seed=int(agent.config.seed),reader_stage='HEADS_VALID' if target_stage=='QUALITY_HEADS' else 'ACTOR_STRICT',
         same_run_resume=False,training_admitted=False,nonopt_identity_hash=fingerprint(expected)))

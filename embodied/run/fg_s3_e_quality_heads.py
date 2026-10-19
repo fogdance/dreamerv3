@@ -102,7 +102,7 @@ class HeadsRun:
             self._reject_batch(error)
             raise
         prefix=self.metrics_stage+'/'
-        metrics=host(metrics);updated=bool(metrics[prefix+'updated']);self.step.increment();c=self.counters.state
+        metrics=host(metrics);updated=bool(metrics[prefix+'updated']);self._consume_batch_boundary();c=self.counters.state
         c['consumed_batches']+=1;c['optimizer_updates']+=int(updated)
         c['skip_no_valid']+=int(bool(metrics[prefix+'skip_no_valid']))
         c['skip_disabled_loss']+=int(not updated and not metrics[prefix+'skip_no_valid'])
@@ -110,12 +110,17 @@ class HeadsRun:
         self._accumulate_metrics(metrics,updated)
         self.samples[0]+=int(metrics[prefix+'target_positions'])
         if int(self.agent.n_updates)!=c['optimizer_updates']:raise ValueError(self.metrics_stage.upper()+'_OPTIMIZER_COUNT_DRIFT')
-        report,save=self.schedule.advance(c['optimizer_updates']) if updated else (False,False)
+        report,save=self._schedule_update(updated)
         row={k:np.asarray(v).tolist() for k,v in metrics.items()};row[prefix+'report_boundary']=report
         self.metrics.append(row)
-        with (self.root/'updates.jsonl').open('a') as f:f.write(json.dumps(dict(local_update=c['optimizer_updates'],agent_update=int(self.agent.n_updates),consumed_batches=int(self.step),metrics=row))+'\n')
-        if save or not updated:self.cp.save()
+        with (self.root/'updates.jsonl').open('a') as f:f.write(json.dumps(dict(local_update=c['optimizer_updates'],agent_update=int(self.agent.n_updates),consumed_batches=c['consumed_batches'],metrics=row))+'\n')
+        if save or not updated:self._save_checkpoint()
         return row
+
+    def _consume_batch_boundary(self):self.step.increment()
+    def _schedule_update(self,updated):
+        return self.schedule.advance(self.counters.state['optimizer_updates']) if updated else (False,False)
+    def _save_checkpoint(self):return self.cp.save()
 
     def _accumulate_metrics(self,metrics,updated):
         c=self.counters.state

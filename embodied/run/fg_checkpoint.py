@@ -164,17 +164,21 @@ def save_replay(replay, directory):
         chunksize=replay.chunksize, online=replay.online,
         sampler=dict(indices=replay.sampler.indices.copy(), keys=replay.sampler.keys.copy(),
             rng=copy.deepcopy(replay.sampler.rng.bit_generator.state)))
+    if replay.chunk_identity is not None:
+      state['chunk_identity'] = replay.chunk_identity.save()
     return state
 
 
 def load_replay(replay, state, directory):
   from embodied.core.chunk import Chunk
   from embodied.core.selectors import Uniform
+  state = rehydrate_native_uuids(state)
   for key in ('length', 'capacity', 'chunksize', 'online'):
     if getattr(replay, key) != state[key]:
       raise ValueError(f'FG Replay structure mismatch: {key}')
   if not isinstance(replay.sampler, Uniform):
     raise ValueError('FG full checkpoints require Uniform Replay')
+  validate_replay_identity(replay,state)
   chunks = {}
   for meta in state['chunks']:
     chunk = Chunk.__new__(Chunk)
@@ -199,6 +203,35 @@ def load_replay(replay, state, directory):
   replay.sampler.rng.bit_generator.state = state['sampler']['rng']
   if replay.directory:
     replay.saved = set()
+  if replay.chunk_identity is not None:
+    replay.chunk_identity.load(state['chunk_identity'])
+
+
+def validate_replay_identity(replay,state):
+  for key in ('length','capacity','chunksize','online'):
+    if getattr(replay,key)!=state[key]:raise ValueError('FG Replay structure mismatch: '+key)
+  if ('chunk_identity' in state)!=(replay.chunk_identity is not None):
+    raise ValueError('FG Replay chunk identity protocol mismatch')
+  if replay.chunk_identity is not None:
+    replay.chunk_identity.validate_snapshot(state['chunk_identity'])
+
+
+def rehydrate_native_uuids(value):
+  """UUID caches Python's process-random bytes hash; recompute after pickle.
+
+  Preserve every 16-byte identity and native container. This is required for
+  lookup by freshly constructed UUID(stepid), not just for comparing dumps.
+  """
+  from collections import defaultdict,deque
+  if isinstance(value,elements.UUID):return elements.UUID(value.value)
+  if isinstance(value,defaultdict):
+    return defaultdict(value.default_factory,((rehydrate_native_uuids(k),rehydrate_native_uuids(v)) for k,v in value.items()))
+  if isinstance(value,dict):return {rehydrate_native_uuids(k):rehydrate_native_uuids(v) for k,v in value.items()}
+  if isinstance(value,list):return [rehydrate_native_uuids(v) for v in value]
+  if isinstance(value,tuple):return tuple(rehydrate_native_uuids(v) for v in value)
+  if isinstance(value,deque):return deque((rehydrate_native_uuids(v) for v in value),maxlen=value.maxlen)
+  if isinstance(value,(set,frozenset)):return type(value)(rehydrate_native_uuids(v) for v in value)
+  return value
 
 
 def validate_bundle(path, expected_identity=None):
@@ -224,7 +257,7 @@ def validate_bundle(path, expected_identity=None):
 
 class FullCheckpoint(elements.Checkpoint):
   def __init__(self, directory, step, identity, streams, key_steps=(), reserve_gib=10, keep_all=False,
-               *, backend='native_replay'):
+               *, backend='native_replay', strict_latest=False):
     super().__init__(directory, keep=None, step=step)
     self._directory = Path(directory)
     self._identity, self._streams = plain(identity), streams
@@ -234,10 +267,23 @@ class FullCheckpoint(elements.Checkpoint):
     if backend not in ('native_replay', 'external_immutable_course_reader'):
       raise ValueError('Unknown FG full checkpoint backend')
     self._backend = backend
+    self._strict_latest = bool(strict_latest)
 
   def latest(self):
     if not self._directory.exists():
       return None
+    if self._strict_latest:
+      nodes=sorted(self._directory.glob('step_*'),reverse=True)
+      if not nodes:
+        if any(self._directory.iterdir()):raise ValueError('No published strict FG recovery point')
+        return None
+      pointer=self._directory/'latest'
+      if not pointer.is_file() or pointer.is_symlink():raise ValueError('Strict FG latest pointer missing')
+      if pointer.read_text().strip()!=nodes[0].name:raise ValueError('Strict FG latest pointer changed')
+      if nodes[0].is_symlink():raise ValueError('Strict FG checkpoint symlink refused')
+      meta=validate_bundle(nodes[0],self._identity)
+      if meta.get('strict_latest') is not True:raise ValueError('Strict FG recovery policy mismatch')
+      return nodes[0]
     candidates = sorted((p for p in self._directory.glob('step_*') if (p / 'done').is_file()), reverse=True)
     for path in candidates:
       if self._backend == 'external_immutable_course_reader':
@@ -270,6 +316,9 @@ class FullCheckpoint(elements.Checkpoint):
       if 'replay' in self._saveables or 'course_reader' not in self._saveables:
         raise ValueError('External Reader backend cannot impersonate native Replay')
       self._saveables['course_reader'].validate_snapshot()
+    if self._strict_latest:
+      for obj in self._saveables.values():
+        if hasattr(obj,'validate_snapshot'):obj.validate_snapshot()
     self._directory.mkdir(parents=True, exist_ok=True)
     step = int(self._step)
     dest = self._directory / f'step_{step:012d}'
@@ -311,6 +360,7 @@ class FullCheckpoint(elements.Checkpoint):
           files={str(p.relative_to(temp)): file_hash(p) for p in sorted(temp.rglob('*')) if p.is_file()})
       if self._backend != 'native_replay':
         meta['backend'] = self._backend
+      if self._strict_latest:meta['strict_latest'] = True
       (temp / 'manifest.json').write_text(json.dumps(meta, sort_keys=True, indent=2))
       (temp / 'done').write_text('')
       validate_bundle(temp, self._identity)
@@ -349,6 +399,14 @@ class FullCheckpoint(elements.Checkpoint):
     meta = validate_bundle(path, self._identity)
     if meta.get('backend', 'native_replay') != self._backend:
       raise ValueError('FG full checkpoint backend mismatch')
+    if self._strict_latest:
+      if meta.get('strict_latest') is not True:raise ValueError('Strict FG recovery policy mismatch')
+      # Validate ALL external identities and committed log prefixes before
+      # restoring even the first model/optimizer/Env/Replay member.
+      for name,obj in self._saveables.items():
+        saved=pickle.loads((path/f'{name}.pkl').read_bytes())
+        if name=='replay':validate_replay_identity(obj,saved)
+        elif hasattr(obj,'validate_snapshot'):obj.validate_snapshot(saved)
     if self._backend == 'external_immutable_course_reader':
       if 'replay' in self._saveables or 'course_reader' not in self._saveables:
         raise ValueError('External Reader checkpoint registration mismatch')

@@ -412,9 +412,7 @@ class LiveRun:
         while int(self.step) < target:
             cycle_started = time.perf_counter()
             end = min(int(self.step) + s['collect_every'], target)
-            with self.stream.pause():
-                self.collector.advance(end)
-                self.step.increment(self.collector.counts['env_steps'] - int(self.step))
+            self.collect_to(end)
             if int(self.step) != end:
                 raise RuntimeError('TRAIN contract ended before the configured diagnostic budget')
             collect_seconds = time.perf_counter() - cycle_started
@@ -530,6 +528,15 @@ class LiveRun:
             result=signed(result)
         write_json(self.root/'training_receipt.json', result)
         return result
+
+    def collect_to(self,end):
+        """Original collect/prefetch boundary, reusable by explicit stages."""
+        import contextlib
+        pause=self.stream.pause() if self.stream is not None else contextlib.nullcontext()
+        with pause:
+            self.collector.advance(end)
+            self.step.increment(self.collector.counts['env_steps']-int(self.step))
+        if int(self.step)!=end:raise RuntimeError('Collector market-step boundary differs')
 
     def close(self):
         # The original Prefetch worker is a bounded daemon without a close API.

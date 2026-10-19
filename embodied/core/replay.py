@@ -15,12 +15,13 @@ class Replay:
 
   def __init__(
       self, length, capacity=None, directory=None, chunksize=1024,
-      online=False, selector=None, save_wait=False, name='unnamed', seed=0):
+      online=False, selector=None, save_wait=False, name='unnamed', seed=0, *, chunk_identity=None):
 
     self.length = length
     self.capacity = capacity
     self.chunksize = chunksize
     self.name = name
+    self.chunk_identity = chunk_identity
 
     self.sampler = selector or selectors.Uniform(seed)
 
@@ -80,7 +81,7 @@ class Replay:
       step = {k: np.asarray(v) for k, v in step.items()}
 
       if worker not in self.current:
-        chunk = chunklib.Chunk(self.chunksize)
+        chunk = self._new_chunk()
         with self.refs_lock:
           self.refs[chunk.uuid] = 1
         self.chunks[chunk.uuid] = chunk
@@ -360,7 +361,7 @@ class Replay:
 
   @elements.timer.section('complete_chunk')
   def _complete(self, chunk, worker):
-    succ = chunklib.Chunk(self.chunksize)
+    succ = self._new_chunk()
     with self.refs_lock:
       self.refs[chunk.uuid] -= 1
       self.refs[succ.uuid] = 2
@@ -368,6 +369,12 @@ class Replay:
     self.current[worker] = (succ.uuid, 0)
     chunk.succ = succ.uuid
     return succ
+
+  def _new_chunk(self):
+    chunk = chunklib.Chunk(self.chunksize)
+    if self.chunk_identity is not None:
+      chunk.uuid, chunk.time = self.chunk_identity.allocate()
+    return chunk
 
   def _numitems(self, chunks):
     chunks = [x.filename if hasattr(x, 'filename') else x for x in chunks]

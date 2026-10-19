@@ -59,7 +59,12 @@ def quality_configuration(settings,defaults):
         raise ValueError('F3_PREDICTION_Q_SOFT_RL_FORBIDDEN')
     known=set(defaults)|set(off)|{'mode','s3_v2_mode','quality_variant','quality_stage','quality_f3_protocol',
         'quality_f3_target_steps','quality_f3_burnin_steps','quality_f3_natural_lambda','quality_f3_balanced_lambda',
-        'quality_supervision_protocol','quality_gradient_every_updates'}
+        'quality_supervision_protocol','quality_gradient_every_updates','quality_online_protocol','quality_online_mode'}
+    if 'quality_online_protocol' in settings:
+        from .fg_s3_e_quality_online import validate_model_settings
+        validate_model_settings(settings)
+    elif 'quality_online_mode' in settings:
+        raise ValueError('ONLINE_EXPLICIT_MODEL_PROTOCOL_REQUIRED')
     if set(settings)-known or settings.get('quality_variant','FULL')!='FULL' or settings.get('quality_gradient_every_updates',0)!=0:
         raise ValueError('F3_UNKNOWN_CONFIGURATION')
     loss=validate_loss(dict(natural=settings.get('quality_f3_natural_lambda',1.),
@@ -100,13 +105,19 @@ def distribution(model,feat,mask,bdims):
     return policy,raw
 
 
+def valid_l2_targets(labels,mask,first,last,terminal):
+    """One validity rule for native JAX loss and consumed-source accounting."""
+    y=labels['teacher_action']
+    return labels['teacher_valid'] & ((y==0)|(y==1)) & (mask==1).all(-1) & ~first & ~last & ~terminal
+
+
 def actor_objective(dist,labels,mask,first,last,terminal,config):
     """L2 truth; each optional component has its own actual denominator."""
     import jax
     import jax.numpy as jnp
     from .fg_s3_quality_v2 import mean,pair_identity
     y=labels['teacher_action']
-    valid=labels['teacher_valid'] & ((y==0)|(y==1)) & (mask==1).all(-1) & ~first & ~last & ~terminal
+    valid=valid_l2_targets(labels,mask,first,last,terminal)
     natural=labels['f3_natural'];auxiliary=jnp.where((~natural).any(),~natural,jnp.ones_like(natural))
     nv=valid & natural;av=valid & auxiliary
     safe_y=jnp.where(valid,y,0)

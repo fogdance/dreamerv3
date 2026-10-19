@@ -35,10 +35,12 @@ def masked_joint_optimizer(optimizer, actor_active, critic_active, extra_active=
             from .fg_s3_e_quality_course_contract import ALL_GROUPS, WM_GROUPS
             from .fg_s3_e_quality_heads import GROUPS, STAGE
             from .fg_s3_e_quality_actor import GROUPS as ACTOR_GROUPS, STAGE as ACTOR_STAGE
+            from .fg_s3_e_quality_online import RL_GROUPS, RL_STAGE
             legal = tuple(allowed_prefixes)==WM_GROUPS and stage is None
             legal |= tuple(allowed_prefixes)==GROUPS and stage==STAGE
             legal |= tuple(allowed_prefixes)==ACTOR_GROUPS and stage==ACTOR_STAGE
-            expected=ACTOR_GROUPS if stage==ACTOR_STAGE else GROUPS
+            legal |= tuple(allowed_prefixes)==RL_GROUPS and stage==RL_STAGE
+            expected=RL_GROUPS if stage==RL_STAGE else ACTOR_GROUPS if stage==ACTOR_STAGE else GROUPS
             if stage is not None and set(extra_active or {})!=set(expected):
                 raise ValueError('QUALITY_DYNAMIC_MASK_OUTSIDE_ALLOWLIST')
             if not legal or any(not k.startswith(ALL_GROUPS) for k in params):
@@ -78,6 +80,10 @@ class _S3V2Model(S3CAgent):
         self.f1 = config.get('quality_f1_protocol') is not None
         self.f2 = config.get('quality_f2_protocol') is not None
         self.f3 = config.get('quality_f3_protocol') is not None
+        self.online = config.get('quality_online_protocol') is not None
+        if self.online:
+            from .fg_s3_e_quality_online import validate_model_settings
+            validate_model_settings(config)
         if sum((self.f1,self.f2,self.f3))>1:raise ValueError('QUALITY_EXECUTION_STAGES_MUTUALLY_EXCLUSIVE')
         if self.mode not in ('a2', 'c2', 'tutor', 'b2', 'quality_v2', 'e'):
             raise ValueError('Unknown S3-V2 mode')
@@ -204,6 +210,12 @@ class _S3V2Model(S3CAgent):
         inp = self.feat2tensor(repfeat)
         return self.b2_event(inp, bdims), self.b2_early(inp, bdims)
 
+    def _imagination_distribution(self, feat, mask, bdims):
+        if self.online and self.quality['quality_online_mode']=='ONLINE_RL_CONTROLLED' and not getattr(self,'_online_initializing',False):
+            from .fg_s3_e_quality_actor import distribution
+            return distribution(self,self.feat2tensor(feat),mask,bdims)[0]
+        return super()._imagination_distribution(feat,mask,bdims)
+
     def policy_distribution(self, repfeat, mask, bdims):
         if self.mode == 'quality_v2':
             from .fg_s3_quality_v2 import policy_forward
@@ -249,7 +261,13 @@ class _S3V2Model(S3CAgent):
 
     def quality_init_loss(self, carry, obs, prevact, training):
         from .fg_s3_quality_v2 import predict
-        base,aux = self.loss(carry,obs,prevact,training)
+        # Ninjax pre-runs discovery with create=True, then evaluates gradients
+        # with create=False. Keep initialization routing stable in BOTH calls;
+        # nj.creating() alone would select different parameter owners.
+        previous=getattr(self,'_online_initializing',False)
+        self._online_initializing=True
+        try:base,aux = self.loss(carry,obs,prevact,training)
+        finally:self._online_initializing=previous
         feat = self.feat2tensor(aux[2]['repfeat'])
         predictions = predict(self,feat,2)
         logits = self.quality_actor(feat,2)[self.action_key].logits
@@ -453,6 +471,9 @@ class _S3V2Model(S3CAgent):
     def train(self, carry, data):
         if nj.creating():
             return Agent.train(self, carry, data)
+        if self.online:
+            from .fg_s3_e_quality_online import train
+            return train(self,data)
         if self.f3:
             from .fg_s3_e_quality_actor import train
             return train(self,data)
