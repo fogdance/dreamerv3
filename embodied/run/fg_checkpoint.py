@@ -268,21 +268,36 @@ class FullCheckpoint(elements.Checkpoint):
       raise ValueError('Unknown FG full checkpoint backend')
     self._backend = backend
     self._strict_latest = bool(strict_latest)
+    self._strict_course = self._strict_latest and backend == 'external_immutable_course_reader'
 
   def latest(self):
     if not self._directory.exists():
       return None
     if self._strict_latest:
       nodes=sorted(self._directory.glob('step_*'),reverse=True)
+      if self._strict_course:
+        for node in nodes:
+          suffix=node.name.removeprefix('step_')
+          if not suffix.isdecimal() or node.name!=f'step_{int(suffix):012d}':
+            raise ValueError('Strict FG checkpoint node name invalid')
+        nodes.sort(key=lambda node:int(node.name[5:]),reverse=True)
       if not nodes:
         if any(self._directory.iterdir()):raise ValueError('No published strict FG recovery point')
         return None
       pointer=self._directory/'latest'
       if not pointer.is_file() or pointer.is_symlink():raise ValueError('Strict FG latest pointer missing')
-      if pointer.read_text().strip()!=nodes[0].name:raise ValueError('Strict FG latest pointer changed')
+      if pointer.read_text().strip()!=nodes[0].name:
+        if self._strict_course and pointer.read_text().strip() in {node.name for node in nodes}:
+          raise ValueError('UNPUBLISHED_NODE_REQUIRES_REVIEW: Strict FG latest pointer changed')
+        raise ValueError('Strict FG latest pointer changed')
       if nodes[0].is_symlink():raise ValueError('Strict FG checkpoint symlink refused')
       meta=validate_bundle(nodes[0],self._identity)
       if meta.get('strict_latest') is not True:raise ValueError('Strict FG recovery policy mismatch')
+      if self._strict_course:
+        if meta.get('backend') != self._backend:
+          raise ValueError('FG full checkpoint backend mismatch')
+        if type(meta['step']) is not int or meta['step']<0 or nodes[0].name!=f"step_{meta['step']:012d}":
+          raise ValueError('Strict FG checkpoint node step mismatch')
       return nodes[0]
     candidates = sorted((p for p in self._directory.glob('step_*') if (p / 'done').is_file()), reverse=True)
     for path in candidates:
@@ -319,9 +334,15 @@ class FullCheckpoint(elements.Checkpoint):
     if self._strict_latest:
       for obj in self._saveables.values():
         if hasattr(obj,'validate_snapshot'):obj.validate_snapshot()
-    self._directory.mkdir(parents=True, exist_ok=True)
     step = int(self._step)
     dest = self._directory / f'step_{step:012d}'
+    if self._strict_course and self._directory.exists():
+      published=self.latest()  # Validate the transaction before any writes.
+      if published is not None and step<int(published.name[5:]):
+        raise ValueError('Strict FG save cannot move published latest backward')
+      if dest.exists() and dest!=published:
+        raise ValueError('Strict FG save must reuse only the published latest')
+    self._directory.mkdir(parents=True, exist_ok=True)
     if dest.exists():
       meta = validate_bundle(dest, self._identity)
       if final or step in self._key_steps:
@@ -392,7 +413,12 @@ class FullCheckpoint(elements.Checkpoint):
   def load(self, path=None, keys=None):
     if keys:
       raise ValueError('FG full checkpoint does not allow partial restores')
-    selected = path or self.latest()
+    if self._strict_course:
+      selected=self.latest()
+      if path is not None and (selected is None or Path(path).absolute()!=selected.absolute()):
+        raise ValueError('Strict FG restore requires the published latest')
+    else:
+      selected = path or self.latest()
     if selected is None:
       raise ValueError('No FG full checkpoint; refusing fresh restore')
     path = Path(selected)

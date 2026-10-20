@@ -10,6 +10,7 @@ import elements
 import numpy as np
 from .fg_checkpoint import FullCheckpoint,RuntimeState,StepSchedule,host,plain
 from .fg_s3_source_admission import runtime_versions
+from .fg_s3_e_quality_online_state import JournalState
 from gym_trading_env.envs.entry_contract import fingerprint
 from gym_trading_env.research.fg_replay import digest,read_manifest,signed,write_json
 from gym_trading_env.research.fg_s3_e_quality_foundation import (
@@ -19,6 +20,20 @@ from gym_trading_env.research.fg_s3_e_quality_reader import EQualityCourseReader
 
 BACKEND='external_immutable_course_reader'
 RECOVERY_POLICY='STRICT_PUBLISHED_LATEST_V2'
+
+
+def validate_offline_journal(root, checkpoint, *, position_key='local_update'):
+    """Validate committed bytes and chronology before constructing/restoring Agent."""
+    import pickle
+    from .fg_checkpoint import validate_bundle
+    from .fg_s3c_train import validate_update_log
+    state=pickle.loads((checkpoint/'logs.pkl').read_bytes())
+    JournalState(root,('updates.jsonl',)).validate_snapshot(state)
+    step=validate_bundle(checkpoint)['step']
+    if state['updates.jsonl']['lines']!=step:
+        raise ValueError('OFFLINE_CHECKPOINT_JOURNAL_POSITION_MISMATCH')
+    validate_update_log(root,step,0,position_key=position_key)
+
 
 class CourseStream:
     """Lifecycle adapter, not another sampler or Replay."""
@@ -114,6 +129,7 @@ class FoundationRun:
             if selected is None:raise ValueError('F1_RESUME_CHECKPOINT_MISSING')
             import pickle
             self.source.validate_snapshot(pickle.loads((selected/'course_reader.pkl').read_bytes()))
+            validate_offline_journal(self.root,selected)
         self.root.mkdir(parents=True,exist_ok=resume)
         self.agent=create_agent(s,self.root/'model',controlled_small=engineering)
         if not resume:write_json(self.root/'run_identity.json',signed(dict(identity=self.identity)))
@@ -130,6 +146,7 @@ class FoundationRun:
                               reserve_gib=1 if engineering else 10,keep_all=True,backend=BACKEND,strict_latest=True)
         self.cp.course_reader=self.source;self.cp.agent=self.agent
         self.cp.step=self.step;self.cp.counters=self.counters;self.cp.runtime=self.runtime
+        self.cp.logs=JournalState(self.root,('updates.jsonl',))
         self.metrics=[];self.last_batch=None
         if resume:
             self.cp.load()

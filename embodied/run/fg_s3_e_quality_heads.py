@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import elements
 import numpy as np
 from .fg_checkpoint import FullCheckpoint,RuntimeState,StepSchedule,host,plain
-from .fg_s3_e_quality_foundation import CourseStream,BACKEND,RECOVERY_POLICY
+from .fg_s3_e_quality_foundation import CourseStream,BACKEND,RECOVERY_POLICY,JournalState,validate_offline_journal
 from .fg_s3_e_quality_transfer import inspect_f1,transfer_parameters
 from .fg_s3_source_admission import runtime_versions
 from .fg_s3c_train import reconcile_update_log
@@ -63,7 +63,9 @@ class HeadsRun:
         self.source=CourseStream(self.reader,s,adapter_cls=F2WindowAdapter)
         self.source.validate_snapshot()
         self.source.adapter.validate_support()
-        if resume:self.source.validate_snapshot(pickle.loads((selected/'course_reader.pkl').read_bytes()))
+        if resume:
+            self.source.validate_snapshot(pickle.loads((selected/'course_reader.pkl').read_bytes()))
+            validate_offline_journal(self.root,selected,position_key='consumed_batches')
         self.agent=create_agent(s,self.root/'model',controlled_small=engineering)
         if not resume:
             proof,state=inspect_f1(s,allow_engineering=engineering)
@@ -87,6 +89,7 @@ class HeadsRun:
         self.cp=FullCheckpoint(self.root/'ckpt',self.step,self.identity,[self.stream],reserve_gib=1 if engineering else 10,keep_all=True,backend=BACKEND,strict_latest=True)
         self.cp.course_reader=self.source;self.cp.agent=self.agent;self.cp.step=self.step
         self.cp.counters=self.counters;self.cp.runtime=self.runtime
+        self.cp.logs=JournalState(self.root,('updates.jsonl',))
         self.metrics=[];self.last_batch=None
         if resume:
             self.cp.load()

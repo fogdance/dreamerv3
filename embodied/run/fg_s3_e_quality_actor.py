@@ -139,7 +139,7 @@ class ActorRun(HeadsRun):
     def __init__(self,preparation,index_path,root,*,resume=False,authorize_training=False,_probe=None):
         import elements
         from .fg_checkpoint import FullCheckpoint,plain
-        from .fg_s3_e_quality_foundation import BACKEND,RECOVERY_POLICY
+        from .fg_s3_e_quality_foundation import BACKEND,RECOVERY_POLICY,validate_offline_journal
         from .fg_s3_e_quality_transfer import inspect_stage,transfer_parameters
         from .fg_s3_source_admission import runtime_versions
         from gym_trading_env.research.fg_replay import read_manifest,write_json,signed,digest
@@ -169,6 +169,7 @@ class ActorRun(HeadsRun):
         self.source=ActorStreams(preparation,self.index)
         try:
             self.source.validate_snapshot(None if selected is None else pickle.loads((selected/'course_reader.pkl').read_bytes()))
+            if selected is not None:validate_offline_journal(self.root,selected,position_key='consumed_batches')
             self.agent=create_agent(s,self.root/'model',controlled_small=engineering)
             if not resume:
                 proof,state=inspect_stage(s,allow_engineering=engineering)

@@ -116,8 +116,8 @@ class JointCounters:
             recall=s['tp']/(s['tp']+s['fn']) if s['tp']+s['fn'] else None)
 
 
-def reconcile_update_log(root, step, offset, *, position_key="local_update"):
-    """Archive an uncommitted log tail before restoring the checkpoint boundary."""
+def validate_update_log(root, step, offset, *, position_key="local_update"):
+    """Read-only chronology check shared by recovery probes and reconciliation."""
     path = root/'updates.jsonl'
     raw = path.read_bytes() if path.exists() else b''
     lines = raw.splitlines(keepends=True)
@@ -132,6 +132,13 @@ def reconcile_update_log(root, step, offset, *, position_key="local_update"):
             raise ValueError('Checkpointed update log chronology differs')
         prefix.append(lines[i])
     committed = b''.join(prefix)
+    return raw, committed
+
+
+def reconcile_update_log(root, step, offset, *, position_key="local_update"):
+    """Archive an uncommitted log tail before restoring the checkpoint boundary."""
+    path = root/'updates.jsonl'
+    raw, committed = validate_update_log(root, step, offset, position_key=position_key)
     if committed == raw:
         return
     backups = root/'recovery_logs';backups.mkdir(exist_ok=True)
