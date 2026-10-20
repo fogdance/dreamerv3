@@ -14,6 +14,8 @@ from gym_trading_env.research.fg_replay import read_manifest,write_json,signed,d
 from gym_trading_env.research.fg_s3_e_quality_heads import (
     preflight,require_training_authority,create_agent,execution_identity,F2WindowAdapter)
 from gym_trading_env.research.fg_s3_e_quality_reader import EQualityCourseReader
+from gym_trading_env.research.fg_s3_reader_versions import (VersionedStream,CheckpointSource,
+    VersionedRuntimeState,validate_checkpoint_stream,STATE_PROTOCOL,PREFETCH_PROTOCOL)
 
 _PERMITS={}
 def engineering_permit(preparation):
@@ -47,6 +49,7 @@ class HeadsRun:
             source=Path(s[src]).resolve()
             if self.root.is_relative_to(source) or source.is_relative_to(self.root):raise ValueError('F2_RUN_OVERLAPS_SOURCE')
         self.identity=plain(dict(protocol='FG_S3_E_QUALITY_F2_RUN_V1',backend=BACKEND,recovery_policy=RECOVERY_POLICY,
+            reader_stream_state_protocol=STATE_PROTOCOL,prefetch_pending_state_protocol=PREFETCH_PROTOCOL,
             preparation=preparation.receipt['identity'],
             compatibility=preparation.receipt['compatibility'],verifier_binding=preparation.receipt['verifier_binding'],
             index_sha256=digest(self.index),
@@ -60,11 +63,11 @@ class HeadsRun:
             if selected is None:raise ValueError('F2_RESUME_CHECKPOINT_MISSING')
         elif self.root.exists():raise ValueError('F2_RUN_OUTPUT_MUST_BE_NEW')
         self.reader=EQualityCourseReader.open(preparation.source,stage='HEADS_VALID',sampling_spec=s['sampling_spec'],seed=s['model_init']['seed'],index_path=self.index)
-        self.source=CourseStream(self.reader,s,adapter_cls=F2WindowAdapter)
+        self.source=VersionedStream(CourseStream(self.reader,s,adapter_cls=F2WindowAdapter))
         self.source.validate_snapshot()
-        self.source.adapter.validate_support()
+        self.source.source.adapter.validate_support()
         if resume:
-            self.source.validate_snapshot(pickle.loads((selected/'course_reader.pkl').read_bytes()))
+            validate_checkpoint_stream(self.source,selected)
             validate_offline_journal(self.root,selected,position_key='consumed_batches')
         self.agent=create_agent(s,self.root/'model',controlled_small=engineering)
         if not resume:
@@ -86,8 +89,9 @@ class HeadsRun:
         def set_carry(value):
             if value is not None:raise ValueError(self.metrics_stage.upper()+'_RANDOM_CARRY_MUST_BE_EMPTY')
         self.runtime=RuntimeState(self.schedule,SimpleNamespace(),[self.stream],lambda:None,set_carry,{},self.samples)
+        self.runtime=VersionedRuntimeState.from_runtime(self.runtime,self.source)
         self.cp=FullCheckpoint(self.root/'ckpt',self.step,self.identity,[self.stream],reserve_gib=1 if engineering else 10,keep_all=True,backend=BACKEND,strict_latest=True)
-        self.cp.course_reader=self.source;self.cp.agent=self.agent;self.cp.step=self.step
+        self.cp.course_reader=CheckpointSource(self.source);self.cp.agent=self.agent;self.cp.step=self.step
         self.cp.counters=self.counters;self.cp.runtime=self.runtime
         self.cp.logs=JournalState(self.root,('updates.jsonl',))
         self.metrics=[];self.last_batch=None

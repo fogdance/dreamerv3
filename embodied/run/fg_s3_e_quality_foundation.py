@@ -60,6 +60,7 @@ class CourseStream:
         # Called once per prefetched batch. Reader's stat guards/cache are the
         # hot path; full hashing is reserved for checkpoint save/load.
         return self.reader.state_dict()
+    def save_small(self):return self.reader.save_small()
     save_full=save
     def load(self,state):
         self.validate_snapshot(state);self.reader.load_state_dict(state)
@@ -98,6 +99,8 @@ class FoundationRun:
                      and _probe[1]==preparation.source.receipt['content_identity'])
         if not engineering:require_training_authority(preparation,authorized=authorize_training)
         self.preparation=preparation;self.settings=s=preparation.settings
+        from gym_trading_env.research.fg_s3_reader_versions import (VersionedStream,CheckpointSource,
+            VersionedRuntimeState,validate_checkpoint_stream,STATE_PROTOCOL,PREFETCH_PROTOCOL)
         from gym_trading_env.research.fg_s3_e_quality_foundation import preflight
         if preflight(s).receipt['identity']!=preparation.receipt['identity']:
             raise ValueError('F1_RESUME_IDENTITY_MISMATCH: preparation settings/content changed')
@@ -106,6 +109,7 @@ class FoundationRun:
             raise ValueError('F1_RUN_CANNOT_MODIFY_CORPUS')
         # Fail before run mkdir/model creation when a resume identity differs.
         self.identity=dict(protocol='FG_S3_E_QUALITY_F1_RUN_V1',backend=BACKEND,recovery_policy=RECOVERY_POLICY,
+            reader_stream_state_protocol=STATE_PROTOCOL,prefetch_pending_state_protocol=PREFETCH_PROTOCOL,
             preparation=preparation.receipt['identity'],
             compatibility=preparation.receipt['compatibility'],verifier_binding=preparation.receipt['verifier_binding'],
             index_sha256=digest(self.index),
@@ -125,13 +129,13 @@ class FoundationRun:
         elif self.root.exists():raise ValueError('F1_RUN_OUTPUT_MUST_BE_NEW')
         self.reader=EQualityCourseReader.open(preparation.source,stage='WM_NATURAL',
             sampling_spec=s['sampling_spec'],seed=s['model_init']['seed'],index_path=self.index)
-        self.source=CourseStream(self.reader,s);self.source.validate_snapshot()
+        self.source=VersionedStream(CourseStream(self.reader,s));self.source.validate_snapshot()
         if resume:
             probe=FullCheckpoint(self.root/'ckpt',elements.Counter(),self.identity,(),backend=BACKEND,strict_latest=True)
             selected=probe.latest()
             if selected is None:raise ValueError('F1_RESUME_CHECKPOINT_MISSING')
             import pickle
-            self.source.validate_snapshot(pickle.loads((selected/'course_reader.pkl').read_bytes()))
+            validate_checkpoint_stream(self.source,selected)
             validate_offline_journal(self.root,selected)
         self.root.mkdir(parents=True,exist_ok=resume)
         self.agent=create_agent(s,self.root/'model',controlled_small=engineering)
@@ -145,9 +149,10 @@ class FoundationRun:
             if value is not None:raise ValueError('F1_RANDOM_CARRY_MUST_BE_EMPTY')
         self.runtime=RuntimeState(self.schedule,SimpleNamespace(),[self.stream],
                                   lambda:None,set_carry,{},self.samples)
+        self.runtime=VersionedRuntimeState.from_runtime(self.runtime,self.source)
         self.cp=FullCheckpoint(self.root/'ckpt',self.step,self.identity,[self.stream],
                               reserve_gib=1 if engineering else 10,keep_all=True,backend=BACKEND,strict_latest=True)
-        self.cp.course_reader=self.source;self.cp.agent=self.agent
+        self.cp.course_reader=CheckpointSource(self.source);self.cp.agent=self.agent
         self.cp.step=self.step;self.cp.counters=self.counters;self.cp.runtime=self.runtime
         self.cp.logs=JournalState(self.root,('updates.jsonl',))
         self.metrics=[];self.last_batch=None
