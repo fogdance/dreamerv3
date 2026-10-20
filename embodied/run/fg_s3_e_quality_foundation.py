@@ -41,6 +41,9 @@ class CourseStream:
         self.reader=reader;self.adapter=adapter_cls(reader,settings)
     def __iter__(self):return self
     def __next__(self):return self.adapter.sample()[0]
+    def begin_batch(self):return self.reader.begin_batch()
+    def commit_batch(self,mark):self.reader.commit_batch(mark)
+    def rollback_batch(self,mark):self.reader.rollback_batch(mark)
     @property
     def readers(self):return (self.reader,)
     def coverage(self):return self.reader.coverage()

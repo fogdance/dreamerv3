@@ -26,6 +26,16 @@ class ActorStreams:
                 self.streams[-1].adapter.validate_support()
         except BaseException:
             self.close();raise
+        self._init_transactions()
+
+    def _init_transactions(self):
+        from gym_trading_env.research.fg_s3_reader_transactions import TransactionGroup
+        self._transactions=TransactionGroup(self,self.streams,
+            lambda:self.last_batch_audit,lambda state:setattr(self,'last_batch_audit',state))
+
+    def begin_batch(self):return self._transactions.begin()
+    def commit_batch(self,mark):self._transactions.commit(mark)
+    def rollback_batch(self,mark):self._transactions.rollback(mark)
 
     @classmethod
     def from_streams(cls,role_streams,*,identity):
@@ -38,6 +48,7 @@ class ActorStreams:
         result.roles=roles;result.streams=[stream for _,stream in role_streams]
         result._group_identity=fingerprint(identity)
         result._failed=result._closed=False;result.last_batch_audit=[]
+        result._init_transactions()
         result.validate_snapshot()
         return result
 
@@ -48,8 +59,9 @@ class ActorStreams:
     def readers(self):return [reader for stream in self.streams for reader in stream.readers]
     def __iter__(self):return self
     def __next__(self):
-        self._ensure_open();before=self.save()
-        try:
+        from gym_trading_env.research.fg_s3_reader_transactions import batch_transaction
+        self._ensure_open()
+        with batch_transaction(self):
             batches=[]
             for role,stream in zip(self.roles,self.streams):
                 data=next(stream);data['f3_natural'][...]=role=='NATURAL';batches.append(data)
@@ -59,9 +71,6 @@ class ActorStreams:
                                        for row in stream.last_batch_audit]
                 if len(self.last_batch_audit)!=len(result['stepid']):raise ValueError('F3_READER_GROUP_AUDIT_SIZE')
             return result
-        except BaseException:
-            self._rollback(before)
-            raise
 
     def save(self):
         self._ensure_open()
