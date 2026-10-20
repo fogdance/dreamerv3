@@ -139,7 +139,7 @@ class ActorRun(HeadsRun):
     def __init__(self,preparation,index_path,root,*,resume=False,authorize_training=False,_probe=None):
         import elements
         from .fg_checkpoint import FullCheckpoint,plain
-        from .fg_s3_e_quality_foundation import BACKEND
+        from .fg_s3_e_quality_foundation import BACKEND,RECOVERY_POLICY
         from .fg_s3_e_quality_transfer import inspect_stage,transfer_parameters
         from .fg_s3_source_admission import runtime_versions
         from gym_trading_env.research.fg_replay import read_manifest,write_json,signed,digest
@@ -153,7 +153,7 @@ class ActorRun(HeadsRun):
         for key in ('corpus_root','source_run'):
             source=Path(s[key]).resolve()
             if self.root.is_relative_to(source) or source.is_relative_to(self.root):raise ValueError('F3_RUN_OVERLAPS_SOURCE')
-        self.identity=plain(dict(protocol='FG_S3_E_QUALITY_F3_RUN_V1',backend=BACKEND,
+        self.identity=plain(dict(protocol='FG_S3_E_QUALITY_F3_RUN_V1',backend=BACKEND,recovery_policy=RECOVERY_POLICY,
             preparation=preparation.receipt['identity'],
             compatibility=preparation.receipt['compatibility'],verifier_binding=preparation.receipt['verifier_binding'],
             index_sha256=digest(self.index),
@@ -163,7 +163,7 @@ class ActorRun(HeadsRun):
         selected=None
         if resume:
             if read_manifest(self.root/'run_identity.json')['identity']!=self.identity:raise ValueError('F3_RESUME_IDENTITY_MISMATCH')
-            selected=FullCheckpoint(self.root/'ckpt',elements.Counter(),self.identity,(),backend=BACKEND).latest()
+            selected=FullCheckpoint(self.root/'ckpt',elements.Counter(),self.identity,(),backend=BACKEND,strict_latest=True).latest()
             if selected is None:raise ValueError('F3_RESUME_CHECKPOINT_MISSING')
         elif self.root.exists():raise ValueError('F3_RUN_OUTPUT_MUST_BE_NEW')
         self.source=ActorStreams(preparation,self.index)

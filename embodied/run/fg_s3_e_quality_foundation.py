@@ -18,6 +18,7 @@ from gym_trading_env.research.fg_s3_e_quality_supervision import inspect_source
 from gym_trading_env.research.fg_s3_e_quality_reader import EQualityCourseReader
 
 BACKEND='external_immutable_course_reader'
+RECOVERY_POLICY='STRICT_PUBLISHED_LATEST_V2'
 
 class CourseStream:
     """Lifecycle adapter, not another sampler or Replay."""
@@ -86,7 +87,7 @@ class FoundationRun:
         if self.root.is_relative_to(Path(s['corpus_root']).resolve()):
             raise ValueError('F1_RUN_CANNOT_MODIFY_CORPUS')
         # Fail before run mkdir/model creation when a resume identity differs.
-        self.identity=dict(protocol='FG_S3_E_QUALITY_F1_RUN_V1',backend=BACKEND,
+        self.identity=dict(protocol='FG_S3_E_QUALITY_F1_RUN_V1',backend=BACKEND,recovery_policy=RECOVERY_POLICY,
             preparation=preparation.receipt['identity'],
             compatibility=preparation.receipt['compatibility'],verifier_binding=preparation.receipt['verifier_binding'],
             index_sha256=digest(self.index),
@@ -108,7 +109,7 @@ class FoundationRun:
             sampling_spec=s['sampling_spec'],seed=s['model_init']['seed'],index_path=self.index)
         self.source=CourseStream(self.reader,s);self.source.validate_snapshot()
         if resume:
-            probe=FullCheckpoint(self.root/'ckpt',elements.Counter(),self.identity,(),backend=BACKEND)
+            probe=FullCheckpoint(self.root/'ckpt',elements.Counter(),self.identity,(),backend=BACKEND,strict_latest=True)
             selected=probe.latest()
             if selected is None:raise ValueError('F1_RESUME_CHECKPOINT_MISSING')
             import pickle
@@ -126,7 +127,7 @@ class FoundationRun:
         self.runtime=RuntimeState(self.schedule,SimpleNamespace(),[self.stream],
                                   lambda:None,set_carry,{},self.samples)
         self.cp=FullCheckpoint(self.root/'ckpt',self.step,self.identity,[self.stream],
-                              reserve_gib=1 if engineering else 10,keep_all=True,backend=BACKEND)
+                              reserve_gib=1 if engineering else 10,keep_all=True,backend=BACKEND,strict_latest=True)
         self.cp.course_reader=self.source;self.cp.agent=self.agent
         self.cp.step=self.step;self.cp.counters=self.counters;self.cp.runtime=self.runtime
         self.metrics=[];self.last_batch=None
