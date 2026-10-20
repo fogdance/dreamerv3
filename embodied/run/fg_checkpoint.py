@@ -52,6 +52,17 @@ def file_hash(path):
   return h.hexdigest()
 
 
+def _fsync_file(path):
+  with Path(path).open('rb') as stream:
+    os.fsync(stream.fileno())
+
+
+def _fsync_directory(path):
+  descriptor=os.open(path,os.O_RDONLY | os.O_DIRECTORY)
+  try:os.fsync(descriptor)
+  finally:os.close(descriptor)
+
+
 def learning_spec(config):
   c = plain(config)
   keys = ('agent', 'jax', 'replay', 'seed', 'experiment_seed', 'seed_protocol',
@@ -348,9 +359,14 @@ class FullCheckpoint(elements.Checkpoint):
       if final or step in self._key_steps:
         if not meta['protected']:
           meta['protected'] = True
-          tmp = dest / '.manifest.tmp'
+          # A failed final/protected update must not add an unexpected member
+          # to an already published external Reader recovery point.
+          tmp = (self._directory / ('.pending_manifest_' + uuid.uuid4().hex)
+                 if self._strict_course else dest / '.manifest.tmp')
           tmp.write_text(json.dumps(meta, sort_keys=True, indent=2))
+          if self._strict_course:_fsync_file(tmp)
           os.replace(tmp, dest / 'manifest.json')
+          if self._strict_course:_fsync_directory(dest)
       self._publish(dest)
       return
     if self._backend == 'native_replay':
@@ -385,14 +401,21 @@ class FullCheckpoint(elements.Checkpoint):
       (temp / 'manifest.json').write_text(json.dumps(meta, sort_keys=True, indent=2))
       (temp / 'done').write_text('')
       validate_bundle(temp, self._identity)
+      if self._strict_course:
+        for member in temp.rglob('*'):
+          if member.is_file():_fsync_file(member)
+        _fsync_directory(temp)
       temp.rename(dest)
+      if self._strict_course:_fsync_directory(self._directory)
     self._publish(dest)
 
   def _publish(self, dest):
     self._published = dest
     pointer = self._directory / '.latest.tmp'
     pointer.write_text(dest.name)
+    if self._strict_course:_fsync_file(pointer)
     os.replace(pointer, self._directory / 'latest')
+    if self._strict_course:_fsync_directory(self._directory)
     if self._keep_all:
       return
     regular = []

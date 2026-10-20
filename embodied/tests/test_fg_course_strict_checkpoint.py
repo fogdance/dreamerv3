@@ -128,3 +128,29 @@ def test_valid_cold_load_restores_latest_and_archives_only_uncommitted_tail(comm
     assert (root/'updates.jsonl').read_bytes()==committed_bytes
     assert [p.read_bytes() for p in (root/'recovery_logs').iterdir()]==[b'crash tail\n']
     assert cold.latest().name=='step_000000000002'
+
+
+def test_interrupted_final_protection_preserves_published_node(committed,monkeypatch):
+    """A final metadata update must not stage extra files inside a valid node."""
+    import embodied.run.fg_checkpoint as module
+    cp,_,root=committed;node=cp.latest();replace=module.os.replace
+    def crash(source,destination):
+        if Path(destination)==node/'manifest.json':raise OSError('injected final manifest interruption')
+        return replace(source,destination)
+    monkeypatch.setattr(module.os,'replace',crash)
+    with pytest.raises(OSError,match='final manifest interruption'):cp.save(final=True)
+    assert cp.latest()==node
+    cp.load()
+    assert cp.agent.value==2
+    assert list((root/'ckpt').glob('.pending_manifest_*'))
+
+
+def test_durability_barrier_failure_never_publishes_new_node(committed,monkeypatch):
+    import embodied.run.fg_checkpoint as module
+    cp,step,root=committed;published=cp.latest();step.load(3)
+    def crash(descriptor):raise OSError('injected durability barrier failure')
+    monkeypatch.setattr(module.os,'fsync',crash)
+    with pytest.raises(OSError,match='durability barrier failure'):cp.save()
+    assert cp.latest()==published and (root/'ckpt/latest').read_text()==published.name
+    assert not (root/'ckpt/step_000000000003').exists()
+    assert list((root/'ckpt').glob('.pending_*'))
