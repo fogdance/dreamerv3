@@ -79,6 +79,8 @@ class Prefetch(base.Stream):
     if getattr(self.source, 'prefetch_state_protocol', None):
       if self.started:
         raise ValueError('Restore versioned S3 prefetch before starting its worker')
+      if not self.queue.empty():
+        raise ValueError('Restore versioned S3 prefetch only with no pending batches')
       self.source.load(state)
       self.source.retain_snapshot(state)
       self.source.release_snapshot(self.state)
@@ -124,6 +126,8 @@ class Prefetch(base.Stream):
     if self.started:
       raise ValueError('Restore prefetch before starting its worker')
     if getattr(self.source, 'prefetch_state_protocol', None):
+      if not self.queue.empty():
+        raise ValueError('Restore versioned S3 prefetch only with no pending batches')
       self.source.validate_prefetch(data, amount=self.amount)
       self.source.load_full(data['source'])
       self.source.retain_snapshot(data['state'])
