@@ -87,7 +87,9 @@ class FoundationRun:
             raise ValueError('F1_RUN_CANNOT_MODIFY_CORPUS')
         # Fail before run mkdir/model creation when a resume identity differs.
         self.identity=dict(protocol='FG_S3_E_QUALITY_F1_RUN_V1',backend=BACKEND,
-            preparation=preparation.receipt['identity'],index_sha256=digest(self.index),
+            preparation=preparation.receipt['identity'],
+            compatibility=preparation.receipt['compatibility'],verifier_binding=preparation.receipt['verifier_binding'],
+            index_sha256=digest(self.index),
             index_receipt_sha256=digest(self.index.with_suffix('.json')),
             code=execution_identity(),packages=runtime_versions(),
             controlled_small=engineering,carry_rule='FRESH_PER_RANDOM_WINDOW',

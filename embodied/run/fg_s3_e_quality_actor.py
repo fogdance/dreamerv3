@@ -154,7 +154,9 @@ class ActorRun(HeadsRun):
             source=Path(s[key]).resolve()
             if self.root.is_relative_to(source) or source.is_relative_to(self.root):raise ValueError('F3_RUN_OVERLAPS_SOURCE')
         self.identity=plain(dict(protocol='FG_S3_E_QUALITY_F3_RUN_V1',backend=BACKEND,
-            preparation=preparation.receipt['identity'],index_sha256=digest(self.index),
+            preparation=preparation.receipt['identity'],
+            compatibility=preparation.receipt['compatibility'],verifier_binding=preparation.receipt['verifier_binding'],
+            index_sha256=digest(self.index),
             index_receipt_sha256=digest(self.index.with_suffix('.json')),code=execution_identity(),
             packages=runtime_versions(),controlled_small=engineering,training_admitted=not engineering,
             carry_rule='FRESH_PER_RANDOM_WINDOW',checkpoint_position='CONSUMED_BATCHES'))
