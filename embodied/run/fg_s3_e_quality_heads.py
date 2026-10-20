@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import elements
 import numpy as np
 from .fg_checkpoint import FullCheckpoint,RuntimeState,StepSchedule,host,plain
-from .fg_s3_e_quality_foundation import CourseStream,BACKEND
+from .fg_s3_e_quality_foundation import CourseStream,BACKEND,RECOVERY_POLICY,JournalState,validate_offline_journal
 from .fg_s3_e_quality_transfer import inspect_f1,transfer_parameters
 from .fg_s3_source_admission import runtime_versions
 from .fg_s3c_train import reconcile_update_log
@@ -46,14 +46,16 @@ class HeadsRun:
         for src in ('corpus_root','source_f1_run'):
             source=Path(s[src]).resolve()
             if self.root.is_relative_to(source) or source.is_relative_to(self.root):raise ValueError('F2_RUN_OVERLAPS_SOURCE')
-        self.identity=plain(dict(protocol='FG_S3_E_QUALITY_F2_RUN_V1',backend=BACKEND,
-            preparation=preparation.receipt['identity'],index_sha256=digest(self.index),
+        self.identity=plain(dict(protocol='FG_S3_E_QUALITY_F2_RUN_V1',backend=BACKEND,recovery_policy=RECOVERY_POLICY,
+            preparation=preparation.receipt['identity'],
+            compatibility=preparation.receipt['compatibility'],verifier_binding=preparation.receipt['verifier_binding'],
+            index_sha256=digest(self.index),
             index_receipt_sha256=digest(self.index.with_suffix('.json')),code=execution_identity(),
             packages=runtime_versions(),controlled_small=engineering,training_admitted=not engineering,
             carry_rule='FRESH_PER_RANDOM_WINDOW',checkpoint_position='CONSUMED_BATCHES'))
         if resume:
             if read_manifest(self.root/'run_identity.json')['identity']!=self.identity:raise ValueError('F2_RESUME_IDENTITY_MISMATCH')
-            probe=FullCheckpoint(self.root/'ckpt',elements.Counter(),self.identity,(),backend=BACKEND)
+            probe=FullCheckpoint(self.root/'ckpt',elements.Counter(),self.identity,(),backend=BACKEND,strict_latest=True)
             selected=probe.latest()
             if selected is None:raise ValueError('F2_RESUME_CHECKPOINT_MISSING')
         elif self.root.exists():raise ValueError('F2_RUN_OUTPUT_MUST_BE_NEW')
@@ -61,7 +63,9 @@ class HeadsRun:
         self.source=CourseStream(self.reader,s,adapter_cls=F2WindowAdapter)
         self.source.validate_snapshot()
         self.source.adapter.validate_support()
-        if resume:self.source.validate_snapshot(pickle.loads((selected/'course_reader.pkl').read_bytes()))
+        if resume:
+            self.source.validate_snapshot(pickle.loads((selected/'course_reader.pkl').read_bytes()))
+            validate_offline_journal(self.root,selected,position_key='consumed_batches')
         self.agent=create_agent(s,self.root/'model',controlled_small=engineering)
         if not resume:
             proof,state=inspect_f1(s,allow_engineering=engineering)
@@ -82,9 +86,10 @@ class HeadsRun:
         def set_carry(value):
             if value is not None:raise ValueError(self.metrics_stage.upper()+'_RANDOM_CARRY_MUST_BE_EMPTY')
         self.runtime=RuntimeState(self.schedule,SimpleNamespace(),[self.stream],lambda:None,set_carry,{},self.samples)
-        self.cp=FullCheckpoint(self.root/'ckpt',self.step,self.identity,[self.stream],reserve_gib=1 if engineering else 10,keep_all=True,backend=BACKEND)
+        self.cp=FullCheckpoint(self.root/'ckpt',self.step,self.identity,[self.stream],reserve_gib=1 if engineering else 10,keep_all=True,backend=BACKEND,strict_latest=True)
         self.cp.course_reader=self.source;self.cp.agent=self.agent;self.cp.step=self.step
         self.cp.counters=self.counters;self.cp.runtime=self.runtime
+        self.cp.logs=JournalState(self.root,('updates.jsonl',))
         self.metrics=[];self.last_batch=None
         if resume:
             self.cp.load()

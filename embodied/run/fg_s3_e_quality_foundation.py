@@ -10,6 +10,7 @@ import elements
 import numpy as np
 from .fg_checkpoint import FullCheckpoint,RuntimeState,StepSchedule,host,plain
 from .fg_s3_source_admission import runtime_versions
+from .fg_s3_e_quality_online_state import JournalState
 from gym_trading_env.envs.entry_contract import fingerprint
 from gym_trading_env.research.fg_replay import digest,read_manifest,signed,write_json
 from gym_trading_env.research.fg_s3_e_quality_foundation import (
@@ -18,6 +19,21 @@ from gym_trading_env.research.fg_s3_e_quality_supervision import inspect_source
 from gym_trading_env.research.fg_s3_e_quality_reader import EQualityCourseReader
 
 BACKEND='external_immutable_course_reader'
+RECOVERY_POLICY='STRICT_PUBLISHED_LATEST_V2'
+
+
+def validate_offline_journal(root, checkpoint, *, position_key='local_update'):
+    """Validate committed bytes and chronology before constructing/restoring Agent."""
+    import pickle
+    from .fg_checkpoint import validate_bundle
+    from .fg_s3c_train import validate_update_log
+    state=pickle.loads((checkpoint/'logs.pkl').read_bytes())
+    JournalState(root,('updates.jsonl',)).validate_snapshot(state)
+    step=validate_bundle(checkpoint)['step']
+    if state['updates.jsonl']['lines']!=step:
+        raise ValueError('OFFLINE_CHECKPOINT_JOURNAL_POSITION_MISMATCH')
+    validate_update_log(root,step,0,position_key=position_key)
+
 
 class CourseStream:
     """Lifecycle adapter, not another sampler or Replay."""
@@ -86,8 +102,10 @@ class FoundationRun:
         if self.root.is_relative_to(Path(s['corpus_root']).resolve()):
             raise ValueError('F1_RUN_CANNOT_MODIFY_CORPUS')
         # Fail before run mkdir/model creation when a resume identity differs.
-        self.identity=dict(protocol='FG_S3_E_QUALITY_F1_RUN_V1',backend=BACKEND,
-            preparation=preparation.receipt['identity'],index_sha256=digest(self.index),
+        self.identity=dict(protocol='FG_S3_E_QUALITY_F1_RUN_V1',backend=BACKEND,recovery_policy=RECOVERY_POLICY,
+            preparation=preparation.receipt['identity'],
+            compatibility=preparation.receipt['compatibility'],verifier_binding=preparation.receipt['verifier_binding'],
+            index_sha256=digest(self.index),
             index_receipt_sha256=digest(self.index.with_suffix('.json')),
             code=execution_identity(),packages=runtime_versions(),
             controlled_small=engineering,carry_rule='FRESH_PER_RANDOM_WINDOW',
@@ -106,11 +124,12 @@ class FoundationRun:
             sampling_spec=s['sampling_spec'],seed=s['model_init']['seed'],index_path=self.index)
         self.source=CourseStream(self.reader,s);self.source.validate_snapshot()
         if resume:
-            probe=FullCheckpoint(self.root/'ckpt',elements.Counter(),self.identity,(),backend=BACKEND)
+            probe=FullCheckpoint(self.root/'ckpt',elements.Counter(),self.identity,(),backend=BACKEND,strict_latest=True)
             selected=probe.latest()
             if selected is None:raise ValueError('F1_RESUME_CHECKPOINT_MISSING')
             import pickle
             self.source.validate_snapshot(pickle.loads((selected/'course_reader.pkl').read_bytes()))
+            validate_offline_journal(self.root,selected)
         self.root.mkdir(parents=True,exist_ok=resume)
         self.agent=create_agent(s,self.root/'model',controlled_small=engineering)
         if not resume:write_json(self.root/'run_identity.json',signed(dict(identity=self.identity)))
@@ -124,9 +143,10 @@ class FoundationRun:
         self.runtime=RuntimeState(self.schedule,SimpleNamespace(),[self.stream],
                                   lambda:None,set_carry,{},self.samples)
         self.cp=FullCheckpoint(self.root/'ckpt',self.step,self.identity,[self.stream],
-                              reserve_gib=1 if engineering else 10,keep_all=True,backend=BACKEND)
+                              reserve_gib=1 if engineering else 10,keep_all=True,backend=BACKEND,strict_latest=True)
         self.cp.course_reader=self.source;self.cp.agent=self.agent
         self.cp.step=self.step;self.cp.counters=self.counters;self.cp.runtime=self.runtime
+        self.cp.logs=JournalState(self.root,('updates.jsonl',))
         self.metrics=[];self.last_batch=None
         if resume:
             self.cp.load()

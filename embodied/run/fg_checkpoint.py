@@ -52,6 +52,17 @@ def file_hash(path):
   return h.hexdigest()
 
 
+def _fsync_file(path):
+  with Path(path).open('rb') as stream:
+    os.fsync(stream.fileno())
+
+
+def _fsync_directory(path):
+  descriptor=os.open(path,os.O_RDONLY | os.O_DIRECTORY)
+  try:os.fsync(descriptor)
+  finally:os.close(descriptor)
+
+
 def learning_spec(config):
   c = plain(config)
   keys = ('agent', 'jax', 'replay', 'seed', 'experiment_seed', 'seed_protocol',
@@ -268,21 +279,36 @@ class FullCheckpoint(elements.Checkpoint):
       raise ValueError('Unknown FG full checkpoint backend')
     self._backend = backend
     self._strict_latest = bool(strict_latest)
+    self._strict_course = self._strict_latest and backend == 'external_immutable_course_reader'
 
   def latest(self):
     if not self._directory.exists():
       return None
     if self._strict_latest:
       nodes=sorted(self._directory.glob('step_*'),reverse=True)
+      if self._strict_course:
+        for node in nodes:
+          suffix=node.name.removeprefix('step_')
+          if not suffix.isdecimal() or node.name!=f'step_{int(suffix):012d}':
+            raise ValueError('Strict FG checkpoint node name invalid')
+        nodes.sort(key=lambda node:int(node.name[5:]),reverse=True)
       if not nodes:
         if any(self._directory.iterdir()):raise ValueError('No published strict FG recovery point')
         return None
       pointer=self._directory/'latest'
       if not pointer.is_file() or pointer.is_symlink():raise ValueError('Strict FG latest pointer missing')
-      if pointer.read_text().strip()!=nodes[0].name:raise ValueError('Strict FG latest pointer changed')
+      if pointer.read_text().strip()!=nodes[0].name:
+        if self._strict_course and pointer.read_text().strip() in {node.name for node in nodes}:
+          raise ValueError('UNPUBLISHED_NODE_REQUIRES_REVIEW: Strict FG latest pointer changed')
+        raise ValueError('Strict FG latest pointer changed')
       if nodes[0].is_symlink():raise ValueError('Strict FG checkpoint symlink refused')
       meta=validate_bundle(nodes[0],self._identity)
       if meta.get('strict_latest') is not True:raise ValueError('Strict FG recovery policy mismatch')
+      if self._strict_course:
+        if meta.get('backend') != self._backend:
+          raise ValueError('FG full checkpoint backend mismatch')
+        if type(meta['step']) is not int or meta['step']<0 or nodes[0].name!=f"step_{meta['step']:012d}":
+          raise ValueError('Strict FG checkpoint node step mismatch')
       return nodes[0]
     candidates = sorted((p for p in self._directory.glob('step_*') if (p / 'done').is_file()), reverse=True)
     for path in candidates:
@@ -319,17 +345,28 @@ class FullCheckpoint(elements.Checkpoint):
     if self._strict_latest:
       for obj in self._saveables.values():
         if hasattr(obj,'validate_snapshot'):obj.validate_snapshot()
-    self._directory.mkdir(parents=True, exist_ok=True)
     step = int(self._step)
     dest = self._directory / f'step_{step:012d}'
+    if self._strict_course and self._directory.exists():
+      published=self.latest()  # Validate the transaction before any writes.
+      if published is not None and step<int(published.name[5:]):
+        raise ValueError('Strict FG save cannot move published latest backward')
+      if dest.exists() and dest!=published:
+        raise ValueError('Strict FG save must reuse only the published latest')
+    self._directory.mkdir(parents=True, exist_ok=True)
     if dest.exists():
       meta = validate_bundle(dest, self._identity)
       if final or step in self._key_steps:
         if not meta['protected']:
           meta['protected'] = True
-          tmp = dest / '.manifest.tmp'
+          # A failed final/protected update must not add an unexpected member
+          # to an already published external Reader recovery point.
+          tmp = (self._directory / ('.pending_manifest_' + uuid.uuid4().hex)
+                 if self._strict_course else dest / '.manifest.tmp')
           tmp.write_text(json.dumps(meta, sort_keys=True, indent=2))
+          if self._strict_course:_fsync_file(tmp)
           os.replace(tmp, dest / 'manifest.json')
+          if self._strict_course:_fsync_directory(dest)
       self._publish(dest)
       return
     if self._backend == 'native_replay':
@@ -364,14 +401,21 @@ class FullCheckpoint(elements.Checkpoint):
       (temp / 'manifest.json').write_text(json.dumps(meta, sort_keys=True, indent=2))
       (temp / 'done').write_text('')
       validate_bundle(temp, self._identity)
+      if self._strict_course:
+        for member in temp.rglob('*'):
+          if member.is_file():_fsync_file(member)
+        _fsync_directory(temp)
       temp.rename(dest)
+      if self._strict_course:_fsync_directory(self._directory)
     self._publish(dest)
 
   def _publish(self, dest):
     self._published = dest
     pointer = self._directory / '.latest.tmp'
     pointer.write_text(dest.name)
+    if self._strict_course:_fsync_file(pointer)
     os.replace(pointer, self._directory / 'latest')
+    if self._strict_course:_fsync_directory(self._directory)
     if self._keep_all:
       return
     regular = []
@@ -392,7 +436,12 @@ class FullCheckpoint(elements.Checkpoint):
   def load(self, path=None, keys=None):
     if keys:
       raise ValueError('FG full checkpoint does not allow partial restores')
-    selected = path or self.latest()
+    if self._strict_course:
+      selected=self.latest()
+      if path is not None and (selected is None or Path(path).absolute()!=selected.absolute()):
+        raise ValueError('Strict FG restore requires the published latest')
+    else:
+      selected = path or self.latest()
     if selected is None:
       raise ValueError('No FG full checkpoint; refusing fresh restore')
     path = Path(selected)
