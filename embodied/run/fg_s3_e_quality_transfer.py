@@ -62,9 +62,11 @@ def inspect_f1(settings,*,allow_engineering=False):
     from dreamerv3.fg_s3_e_quality_course_contract import REWARD_SCHEMA
     p=identity['preparation']
     if p['observation']!=observation_contract() or p['reward_schema']!=REWARD_SCHEMA:raise ValueError('F2_F1_REWARD_OBSERVATION_CLOCK_MISMATCH')
-    proof=dict(protocol='FG_S3_F1_SOURCE_V1',run_identity_sha256=digest(root/'run_identity.json'),
+    from dreamerv3.fg_s3_e_quality_course_contract import WM_GROUPS
+    freeze=source_freeze_evidence(root,identity,agent,WM_GROUPS)
+    proof=dict(protocol='FG_S3_F1_SOURCE_V2',run_identity_sha256=digest(root/'run_identity.json'),
         manifest_sha256=digest(node/'manifest.json'),checkpoint=str(node),run=str(root),
-        identity=identity,engineering_only=engineering,foundation_status='FOUNDATION_NOT_TRAINED' if engineering else 'FORMAL_F1_COMPLETED')
+        identity=identity,source_freeze=freeze,engineering_only=engineering,foundation_status='FOUNDATION_NOT_TRAINED' if engineering else 'FORMAL_F1_COMPLETED')
     proof['training_evidence']=dict(status='ENGINEERING_ONLY') if engineering else training_evidence(root,identity,agent)
     return proof,agent
 
@@ -109,24 +111,27 @@ def source_freeze_evidence(root,identity,final,groups):
     if a.keys()!=b.keys() or any(a[k].shape!=b[k].shape or a[k].dtype!=b[k].dtype
             or not np.isfinite(b[k]).all() or not np.isfinite(a[k]).all() for k in a):
         raise ValueError('F3_SOURCE_FULL_STATE_SCHEMA_OR_FINITE')
-    names={k.replace('_',''):k for k in a if not k.startswith('opt/')}
-    if len(names)!=sum(not k.startswith('opt/') for k in a):raise ValueError('F3_SOURCE_AMBIGUOUS_SLOT')
-    clocks={'opt/step/value','opt/state/1/0','opt/state/2/0'}
+    # Use the execution schema's exact optimizer mapping, including its
+    # configured shared counter. A suffix named "count" is not a clock permit.
+    from types import SimpleNamespace
+    import elements
+    from dreamerv3.fg_s3_e_quality_foundation import state_owners
+    config=identity['effective_model'] if 'effective_model' in identity else identity['preparation']['effective_model']
+    model=SimpleNamespace(config=elements.Config(config['agent']))
+    owners=state_owners(model,a,groups)
     frozen=[];changed=[]
     for k in a:
-        if k.startswith('opt/'):
-            if k in clocks or k.startswith(('opt/state/3/','opt/state/4/')) and k.endswith('/count'):continue
-            if not k.startswith(('opt/state/1/1/','opt/state/2/1/')) or k.split('/',4)[4] not in names:
-                raise ValueError('F3_SOURCE_UNKNOWN_OPTIMIZER_SLOT')
-            parameter=names[k.split('/',4)[4]]
-        else:parameter=k
-        if parameter.startswith(groups):
+        if owners[k]=='CLOCK':continue
+        if owners[k] is not None:
             if a[k].tobytes()!=b[k].tobytes() and not k.startswith('opt/'):changed.append(k)
         else:
             if a[k].tobytes()!=b[k].tobytes():raise ValueError('F3_SOURCE_FROZEN_STATE_CHANGED: '+k)
             frozen.append(k)
     if not changed:raise ValueError('F3_SOURCE_PARAMETERS_NOT_TRAINED')
-    return dict(initial_manifest_sha256=digest(initial/'manifest.json'),changed_parameters=changed,
+    return dict(protocol='FG_S3_SOURCE_FREEZE_EVIDENCE_V2',
+                initial_manifest_sha256=digest(initial/'manifest.json'),changed_parameters=changed,
+                changed_groups={p:sum(k.startswith(p) for k in changed) for p in groups},
+                shared_clocks=list(model.f1_shared_clocks),
                 frozen_keys=frozen,all_frozen_bytes_equal=True)
 
 
@@ -142,7 +147,6 @@ def inspect_stage(settings,*,allow_engineering=False):
         legacy={**settings,'source_f1_run':str(root),'source_f1_checkpoint':str(node)}
         proof,agent=inspect_f1(legacy,allow_engineering=allow_engineering)
         proof={**proof,'source_stage':'F1'}
-        proof['source_freeze']=source_freeze_evidence(root,proof['identity'],agent,WM_GROUPS)
         return proof,agent
     identity=read_manifest(root/'run_identity.json')['identity'];meta=validate_bundle(node,identity)
     if identity.get('protocol')!='FG_S3_E_QUALITY_F2_RUN_V1' or identity.get('backend')!='external_immutable_course_reader':
@@ -156,8 +160,9 @@ def inspect_stage(settings,*,allow_engineering=False):
             or prep['effective_model']['agent']!=plain(model_config(settings,controlled_small=engineering))['agent']):
         raise ValueError('F3_SOURCE_MODEL_OBSERVATION_OR_STAGE_MISMATCH')
     upstream,_=inspect_f1(s,allow_engineering=allow_engineering)
-    if engineering!=upstream['engineering_only'] or any(upstream[k]!=prep['source_f1'][k]
-            for k in ('manifest_sha256','run_identity_sha256')):raise ValueError('F3_SOURCE_UPSTREAM_LINEAGE_MISMATCH')
+    if engineering!=upstream['engineering_only'] or any(upstream[k]!=prep['source_f1'].get(k)
+            for k in ('protocol','manifest_sha256','run_identity_sha256','source_freeze','training_evidence')):
+        raise ValueError('F3_SOURCE_UPSTREAM_LINEAGE_MISMATCH')
     agent=pickle.loads((node/'agent.pkl').read_bytes());c=pickle.loads((node/'counters.pkl').read_bytes())
     budget=s['optimizer_updates'];consumed=c['consumed_batches']
     if (type(budget) is not int or budget<=0 or not meta['protected'] or meta['step']!=consumed
@@ -176,7 +181,7 @@ def inspect_stage(settings,*,allow_engineering=False):
                 or not np.isfinite(m['opt/loss']) or not np.isfinite(m['opt/grad_norm'])):
             raise ValueError('F3_SOURCE_UPDATE_LEDGER_INVALID')
     if count!=budget:raise ValueError('F3_SOURCE_UPDATE_COUNT_MISMATCH')
-    proof=dict(protocol='FG_S3_F2_SOURCE_V1',source_stage='F2',run=str(root),checkpoint=str(node),
+    proof=dict(protocol='FG_S3_F2_SOURCE_V2',source_stage='F2',run=str(root),checkpoint=str(node),
         run_identity_sha256=digest(root/'run_identity.json'),manifest_sha256=digest(node/'manifest.json'),
         identity=identity,engineering_only=engineering,foundation_status='FOUNDATION_NOT_TRAINED' if engineering else 'FORMAL_F2_COMPLETED',
         upstream_proof=upstream,training_evidence=dict(consumed_batches=consumed,verified_updates=count,update_log_sha256=digest(root/'updates.jsonl')),
