@@ -63,13 +63,29 @@ class Prefetch(base.Stream):
     if self.deterministic:
       # Finish the next sample before Replay.add/update can change its population.
       self._wait_ready()
-    data, self.state = result
+    data, state = result
+    if getattr(self.source, 'prefetch_state_protocol', None):
+      with self.snapshot_lock:
+        previous, self.state = self.state, state
+        self.source.release_snapshot(previous)
+    else:
+      self.state = state
     return data
 
   def save(self):
     return self.state
 
   def load(self, state):
+    if getattr(self.source, 'prefetch_state_protocol', None):
+      if self.started:
+        raise ValueError('Restore versioned S3 prefetch before starting its worker')
+      if not self.queue.empty():
+        raise ValueError('Restore versioned S3 prefetch only with no pending batches')
+      self.source.load(state)
+      self.source.retain_snapshot(state)
+      self.source.release_snapshot(self.state)
+      self.state = copy.deepcopy(state)
+      return
     if self.started:
       for _ in range(self.amount):
         self.queue.get()
@@ -100,12 +116,25 @@ class Prefetch(base.Stream):
       if any(isinstance(item, str) for item in pending):
         raise RuntimeError('Cannot snapshot a failed prefetch worker')
       source = self.source.save_full() if hasattr(self.source, 'save_full') else self._getstate()
-      return dict(source=host(source), state=host(self.state), pending=pending)
+      result = dict(source=host(source), state=host(self.state), pending=pending)
+      protocol = getattr(self.source, 'prefetch_state_protocol', None)
+      if protocol:
+        result.update(protocol=protocol, amount=self.amount)
+      return result
 
   def load_full(self, data):
     if self.started:
       raise ValueError('Restore prefetch before starting its worker')
-    self.source.load(data['source'])
+    if getattr(self.source, 'prefetch_state_protocol', None):
+      if not self.queue.empty():
+        raise ValueError('Restore versioned S3 prefetch only with no pending batches')
+      self.source.validate_prefetch(data, amount=self.amount)
+      self.source.load_full(data['source'])
+      self.source.retain_snapshot(data['state'])
+      for _, state in data['pending']:
+        self.source.retain_snapshot(state)
+    else:
+      self.source.load(data['source'])
     self.state = data['state']
     for batch, state in data['pending']:
       self.queue.put((self.restore(batch), state))

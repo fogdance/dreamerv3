@@ -26,6 +26,16 @@ class ActorStreams:
                 self.streams[-1].adapter.validate_support()
         except BaseException:
             self.close();raise
+        self._init_transactions()
+
+    def _init_transactions(self):
+        from gym_trading_env.research.fg_s3_reader_transactions import TransactionGroup
+        self._transactions=TransactionGroup(self,self.streams,
+            lambda:self.last_batch_audit,lambda state:setattr(self,'last_batch_audit',state))
+
+    def begin_batch(self):return self._transactions.begin()
+    def commit_batch(self,mark):self._transactions.commit(mark)
+    def rollback_batch(self,mark):self._transactions.rollback(mark)
 
     @classmethod
     def from_streams(cls,role_streams,*,identity):
@@ -38,6 +48,7 @@ class ActorStreams:
         result.roles=roles;result.streams=[stream for _,stream in role_streams]
         result._group_identity=fingerprint(identity)
         result._failed=result._closed=False;result.last_batch_audit=[]
+        result._init_transactions()
         result.validate_snapshot()
         return result
 
@@ -48,8 +59,9 @@ class ActorStreams:
     def readers(self):return [reader for stream in self.streams for reader in stream.readers]
     def __iter__(self):return self
     def __next__(self):
-        self._ensure_open();before=self.save()
-        try:
+        from gym_trading_env.research.fg_s3_reader_transactions import batch_transaction
+        self._ensure_open()
+        with batch_transaction(self):
             batches=[]
             for role,stream in zip(self.roles,self.streams):
                 data=next(stream);data['f3_natural'][...]=role=='NATURAL';batches.append(data)
@@ -59,13 +71,14 @@ class ActorStreams:
                                        for row in stream.last_batch_audit]
                 if len(self.last_batch_audit)!=len(result['stepid']):raise ValueError('F3_READER_GROUP_AUDIT_SIZE')
             return result
-        except BaseException:
-            self._rollback(before)
-            raise
 
     def save(self):
+        return self._snapshot(full=True)
+    def save_small(self):return self._snapshot(full=False)
+    def _snapshot(self,*,full):
         self._ensure_open()
-        state=dict(protocol='FG_S3_F3_READER_GROUP_V1',roles=list(self.roles),readers=[s.save() for s in self.streams])
+        state=dict(protocol='FG_S3_F3_READER_GROUP_V1',roles=list(self.roles),
+                   readers=[s.save() if full else s.save_small() for s in self.streams])
         if self._group_identity is not None:
             state.update(protocol='FG_S3_F3_BOUND_READER_GROUP_V1',identity=self._group_identity,
                          last_batch_audit=copy.deepcopy(self.last_batch_audit))
@@ -144,6 +157,8 @@ class ActorRun(HeadsRun):
         from .fg_s3_source_admission import runtime_versions
         from gym_trading_env.research.fg_replay import read_manifest,write_json,signed,digest
         from gym_trading_env.research.fg_s3_e_quality_actor import preflight,require_training_authority,create_agent,execution_identity
+        from gym_trading_env.research.fg_s3_reader_versions import (VersionedStream,validate_checkpoint_stream,
+            STATE_PROTOCOL,PREFETCH_PROTOCOL)
         permit=_PERMITS.get(id(preparation))
         engineering=permit is not None and permit[0] is preparation and permit[1] is _probe
         if not engineering:require_training_authority(preparation,authorized=authorize_training)
@@ -154,6 +169,7 @@ class ActorRun(HeadsRun):
             source=Path(s[key]).resolve()
             if self.root.is_relative_to(source) or source.is_relative_to(self.root):raise ValueError('F3_RUN_OVERLAPS_SOURCE')
         self.identity=plain(dict(protocol='FG_S3_E_QUALITY_F3_RUN_V1',backend=BACKEND,recovery_policy=RECOVERY_POLICY,
+            reader_stream_state_protocol=STATE_PROTOCOL,prefetch_pending_state_protocol=PREFETCH_PROTOCOL,
             preparation=preparation.receipt['identity'],
             compatibility=preparation.receipt['compatibility'],verifier_binding=preparation.receipt['verifier_binding'],
             index_sha256=digest(self.index),
@@ -166,16 +182,17 @@ class ActorRun(HeadsRun):
             selected=FullCheckpoint(self.root/'ckpt',elements.Counter(),self.identity,(),backend=BACKEND,strict_latest=True).latest()
             if selected is None:raise ValueError('F3_RESUME_CHECKPOINT_MISSING')
         elif self.root.exists():raise ValueError('F3_RUN_OUTPUT_MUST_BE_NEW')
-        self.source=ActorStreams(preparation,self.index)
+        self.source=VersionedStream(ActorStreams(preparation,self.index))
         try:
-            self.source.validate_snapshot(None if selected is None else pickle.loads((selected/'course_reader.pkl').read_bytes()))
+            self.source.validate_snapshot()
+            if selected is not None:validate_checkpoint_stream(self.source,selected)
             if selected is not None:validate_offline_journal(self.root,selected,position_key='consumed_batches')
             self.agent=create_agent(s,self.root/'model',controlled_small=engineering)
             if not resume:
                 proof,state=inspect_stage(s,allow_engineering=engineering)
                 receipt=transfer_parameters(self.agent,state,proof,target_stage='ACTOR_SUPERVISED')
                 receipt.pop('content_hash');receipt.update(f3_run_identity=self.identity,
-                    reader_seeds=[s['model_init']['seed']+i for i in range(len(self.source.streams))],
+                    reader_seeds=[s['model_init']['seed']+i for i in range(len(self.source.source.streams))],
                     sampling_spec=s['sampling_spec'],aux_sampling_spec=s['aux_sampling_spec'])
                 self.root.mkdir(parents=True)
                 write_json(self.root/'run_identity.json',signed(dict(identity=self.identity)))
