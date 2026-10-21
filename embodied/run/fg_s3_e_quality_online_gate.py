@@ -11,9 +11,9 @@ _REVIEWS={}
 
 
 class OnlineGates:
-    protocol='FG_S3_E_QUALITY_ONLINE_GATES_V1'
+    protocol='FG_S3_E_QUALITY_ONLINE_GATES_V2'
 
-    def __init__(self,identity,mask_policy,*,wm_policy=None):
+    def __init__(self,identity,mask_policy,*,wm_policy=None,collection_root=None):
         import elements
         from .action_mask_warmup import ActionMaskWarmup
         from .fg_s3_gate import gate_policy
@@ -33,14 +33,28 @@ class OnlineGates:
         self.ready=dict.fromkeys(NAMES,False);self.evidence={};self.samples=set()
         self.exposure=dict(updates=0,add=0,wait=0,rejections=0)
         self.wm_identity=None;self.formal_admitted=False
+        self.collection_root=collection_root;self.run_identity=identity
 
-    def collection(self,collector,reconciliation):
+    def collection(self,collector,evidence):
+        from gym_trading_env.research.fg_s3_e_quality_online_evidence import (
+            require_account_execution,portable_account_report,prefix_identity)
+        report=require_account_execution(evidence);receipt=report['receipt']
         legal=all(not r['action'] or r['legal_add'] for r in collector.rows)
         teacher_free=not collector.teacher_enabled and collector.policy.beta==0 and not collector.query_seconds
-        good=bool(collector.counts['env_steps'] and legal and teacher_free and reconciliation.get('status')=='PASS')
+        good=bool(collector.counts['env_steps'] and legal and teacher_free
+            and receipt['run_identity']==self.run_identity and receipt['prefix']==prefix_identity(collector)
+            and receipt['reconciliation']['status']=='PASS')
         self.ready['COLLECTION_VALID']=good
-        self.evidence['collection']=dict(legal=legal,teacher_free=teacher_free,reconciliation=copy.deepcopy(reconciliation))
+        if good:
+            self.evidence['collection']=portable_account_report(evidence,self.collection_root)
         return good
+
+    def collection_advanced(self,market_step):
+        current=self.evidence.get('collection',{}).get('receipt',{}).get('verified_through_market_step',-1)
+        self.ready['COLLECTION_VALID']=bool(current==market_step)
+
+    def collection_through(self):
+        return self.evidence.get('collection',{}).get('receipt',{}).get('verified_through_market_step',0)
 
     def supervised(self,metrics,*,frozen_equal):
         import numpy as np
@@ -133,6 +147,9 @@ class OnlineGates:
             raise ValueError('ONLINE_GATE_MISSING_EVIDENCE')
         if self.wm_identity is not None and state.get('wm_identity')!=self.wm_identity:
             raise ValueError('ONLINE_GATE_WM_IDENTITY_CHANGED')
+        if 'collection' in state['evidence']:
+            from gym_trading_env.research.fg_s3_e_quality_online_evidence import validate_account_report
+            validate_account_report(state['evidence']['collection'],self.collection_root,self.run_identity)
     def load(self,state):
         self.validate_snapshot(state);self.ready=copy.deepcopy(state['ready']);self.evidence=copy.deepcopy(state['evidence'])
         self.mask.load(state['mask']);self.samples=set(map(tuple,state['samples']));self.exposure=copy.deepcopy(state['exposure'])
@@ -142,4 +159,6 @@ class OnlineGates:
         return dict(protocol=self.protocol,ready=copy.deepcopy(self.ready),blockers=[k for k,v in self.ready.items() if not v],
             mask_policy=copy.deepcopy(self.policy),wm_policy=copy.deepcopy(self.wm_policy),
             formal_rl_admitted=self.formal_admitted and all(self.ready.values()),unique_calibration_owner_steps=len(self.samples),
+            collection_verified_through_market_step=self.collection_through(),
+            collection_status=self.evidence.get('collection',{}).get('receipt',{}).get('collection_status','NOT_VERIFIED'),
             prediction_q_decision_fusion=False)

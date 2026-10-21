@@ -45,7 +45,7 @@ class OnlineCounters(ActorCounters):
 
 class OnlineRun(ActorRun,LiveRun):
     """Existing HeadsRun.update + LiveRun.collect_to, one Agent/optimizer/CP."""
-    protocol='FG_S3_E_QUALITY_ONLINE_RUN_V1'
+    protocol='FG_S3_E_QUALITY_ONLINE_RUN_V2'
 
     def __init__(self,spec,factory,source,history=None,*,resume=False,authorized=False,
                  native_preparation=None,_probe=None,_test_location=None,wm_policy=None,initial_state=None,
@@ -119,7 +119,10 @@ class OnlineRun(ActorRun,LiveRun):
             self.root.mkdir(parents=True,exist_ok=True)
             write_json(self.root/'run_identity.json',signed(dict(identity=self.identity)))
             write_json(self.root/'source_to_online_transfer.json',transfer)
-        self.gates=OnlineGates(fingerprint(self.identity),formal_mask_policy(self.settings),wm_policy=wm_policy)
+        self.gates=OnlineGates(fingerprint(self.identity),formal_mask_policy(self.settings),
+            wm_policy=wm_policy,collection_root=self.root)
+        from gym_trading_env.research.fg_s3_e_quality_online_evidence import FinalAccountState
+        self.account_verification=FinalAccountState(self.root,fingerprint(self.identity))
         self.native_preparation=native_preparation;self.authorized=authorized
         self.source_bindings=copy.deepcopy(source_bindings)
         self.native_audit=copy.deepcopy(native_audit)
@@ -156,7 +159,9 @@ class OnlineRun(ActorRun,LiveRun):
         self.cp.runtime=self.runtime;self.cp.logs=JournalState(self.root,('updates.jsonl','cycles.jsonl'))
         self.cp.phase=self.phase
         self.cp.source_exposures=self.source_exposures
+        self.cp.account_verification=self.account_verification
         if resume:
+            self._validate_account_checkpoint(selected)
             self.cp.load()
             if (int(self.step)!=self.collector.counts['env_steps'] or int(self.consumed_step)!=self.counters.state['consumed_batches']
                     or int(self.agent.n_updates)!=self.counters.state['optimizer_updates']):
@@ -171,10 +176,30 @@ class OnlineRun(ActorRun,LiveRun):
         if self.counters.state['consumed_batches']>=self.spec['max_consumed_batches']:
             raise ValueError('ONLINE_EXPLICIT_CONSUMPTION_BUDGET_EXHAUSTED')
 
-    def _save_checkpoint(self):
+    def _save_checkpoint(self,*,final=False):
         pause=self.stream.pause() if self.stream is not None else contextlib.nullcontext()
         with pause,self.collector.commit_lock:
-            self.transaction.increment();self.cp.save()
+            self.transaction.increment();self.cp.save(final=final)
+
+    def _validate_account_checkpoint(self,node):
+        """Cross-member prefix checks before restoring Agent or optimizer state."""
+        from gym_trading_env.research.fg_s3_e_quality_online_evidence import prefix_rows_digest
+        load=lambda name:pickle.loads((node/(name+'.pkl')).read_bytes())
+        gates=load('gates');collector=load('collector');market=int(load('market_step'))
+        account=load('account_verification')
+        self.gates.validate_snapshot(gates);self.account_verification.validate_snapshot(account)
+        report=gates['evidence'].get('collection')
+        if report is not None:
+            r=report['receipt'];prefix=r['prefix'];through=r['verified_through_market_step']
+            if (through>market or prefix['rows']>len(collector['rows'])
+                    or prefix_rows_digest(collector['rows'][:prefix['rows']])!=prefix['rows_sha256']
+                    or gates['ready']['COLLECTION_VALID'] and through!=market):
+                raise ValueError('ONLINE_CHECKPOINT_ACCOUNT_PREFIX_MISMATCH')
+        if account['status']=='VERIFIED':
+            final=account['final_evidence']
+            if (report!=final or market!=self.spec['env_steps']
+                    or final['receipt']['verified_through_market_step']!=market):
+                raise ValueError('ONLINE_CHECKPOINT_FINAL_ACCOUNT_RANGE_MISMATCH')
 
     def _accumulate_metrics(self,metrics,updated):
         from dreamerv3.fg_s3a_actor import parameter_digests
@@ -220,15 +245,62 @@ class OnlineRun(ActorRun,LiveRun):
             if save:self._save_checkpoint()
             return count
 
-    def verify_collection(self):
-        from gym_trading_env.research.fg_replay import reconcile_trace,E_QUALITY_SCHEMA
-        from gym_trading_env.research.fg_single3_evaluation import embodied_runtime
-        out=self.root/'collection_checks'/f'step_{int(self.step):012d}'
-        self.collector.snapshot_trace(out,dict(protocol=self.protocol,scope='NATIVE_ACCOUNT_INTEGRITY_ONLY'))
-        proof=reconcile_trace(out,Path(__file__).resolve().parents[3]/'dreamerv3',
-            env_factory=self.factory,schema=E_QUALITY_SCHEMA,runtime_factory=embodied_runtime)
-        if not self.gates.collection(self.collector,proof):raise ValueError('ONLINE_COLLECTION_GATE_CLOSED')
-        return proof
+    def collect_to(self,end):
+        super().collect_to(end)
+        self.gates.collection_advanced(int(self.step))
+
+    def verify_collection(self,*,final=False):
+        from gym_trading_env.envs.entry_contract import fingerprint
+        from gym_trading_env.research.fg_s3_e_quality_online_evidence import verify_account
+        out=self.account_verification.allocate(int(self.step),final)
+        evidence=verify_account(self.collector,self.factory,out,run_identity=fingerprint(self.identity),
+            source_identity=fingerprint(self.identity['live_source']),verifier_identity=self.identity['code'],
+            market_step=int(self.step),final=final)
+        if not self.gates.collection(self.collector,evidence):raise ValueError('ONLINE_COLLECTION_GATE_CLOSED')
+        return copy.deepcopy(evidence.report['receipt']['reconciliation'])
+
+    def _final_account_commit(self):
+        state=self.account_verification.state
+        if state['status']=='VERIFIED':
+            self.account_verification.validate_snapshot()
+            return
+        state.update(status='VERIFYING',error=None)
+        try:
+            self.verify_collection(final=True)
+            state.update(status='VERIFIED',final_evidence=copy.deepcopy(self.gates.evidence['collection']))
+            # A new transaction is essential: FullCheckpoint reuses an existing
+            # node at the same sequence number without reserializing its members.
+            self._save_checkpoint(final=True)
+        except Exception as error:
+            state.update(status='NO_GO',final_evidence=None,error=str(error))
+            self.gates.ready['COLLECTION_VALID']=False
+            self._save_checkpoint(final=False)
+            raise
+        self._publish_completion()
+
+    def _publish_completion(self):
+        from gym_trading_env.research.fg_replay import digest,signed,read_manifest
+        node=self.cp.latest()
+        receipt=signed(dict(protocol='FG_S3_E_QUALITY_ONLINE_COMPLETION_V1',
+            run_identity=self.account_verification.identity,transaction=int(self.transaction),
+            checkpoint_manifest_sha256=digest(node/'manifest.json'),
+            result=self.result(),full_account_evidence=self.account_verification.state['final_evidence']))
+        path=self.root/'completion'/f'transaction_{int(self.transaction):012d}.json'
+        path.parent.mkdir(exist_ok=True)
+        if path.exists():
+            if read_manifest(path)!=receipt:raise ValueError('ONLINE_COMPLETION_RECEIPT_CHANGED')
+            return path
+        with path.open('x') as stream:json.dump(receipt,stream,sort_keys=True,indent=2);stream.write('\n')
+        return path
+
+    def publish_result(self,result):
+        """Every invocation retains its own receipt; never overwrite old results."""
+        import uuid
+        from gym_trading_env.research.fg_replay import signed
+        path=self.root/'results'/f'transaction_{int(self.transaction):012d}_{uuid.uuid4().hex}.json'
+        path.parent.mkdir(exist_ok=True)
+        with path.open('x') as stream:json.dump(signed(result),stream,sort_keys=True,indent=2);stream.write('\n')
+        return path
 
     def run_to(self,target=None,*,_stop_after_publications=None):
         s=self.spec;target=s['env_steps'] if target is None else target
@@ -242,7 +314,7 @@ class OnlineRun(ActorRun,LiveRun):
             if phase['stage']=='IDLE':phase.update(stage='COLLECT',end=min(int(self.step)+s['collect_every'],target),updates_done=0)
             if phase['stage']=='COLLECT':
                 self.collect_to(phase['end'])
-                if not self.gates.ready['COLLECTION_VALID']:self.verify_collection()
+                if not self.gates.collection_through():self.verify_collection()
                 phase['stage']='PUBLISH'
             if phase['stage']=='PUBLISH':
                 if self.publisher is not None:
@@ -271,16 +343,29 @@ class OnlineRun(ActorRun,LiveRun):
                         rl_updates=self.counters.state['rl_updates']),sort_keys=True)+'\n')
                 phase.update(stage='IDLE',end=int(self.step),updates_done=0)
                 if save or int(self.step)==target:self._save_checkpoint()
-        self.cp.save(final=target==s['env_steps'])
+        if target==s['env_steps']:
+            if self.mode=='ONLINE_RL_CONTROLLED' and not self.counters.state['rl_updates']:
+                self._save_checkpoint(final=False)
+            else:
+                self._final_account_commit()
+                self._publish_completion()  # Also completes a commit-before-receipt crash.
         return self.result()
 
     def result(self):
         complete=int(self.step)==self.spec['env_steps'] and self.phase.state['stage']=='IDLE'
-        return dict(protocol=self.protocol,status=('ONLINE_ENGINEERING_' if self.identity['controlled_small'] else 'ONLINE_RUN_')+('COMPLETE' if complete else 'PARTIAL'),
+        verified=complete and self.account_verification.state['status']=='VERIFIED'
+        if verified:
+            status={'SHADOW':'SHADOW_COMPLETE_VERIFIED','ONLINE_SUPERVISED':'ONLINE_BC_COMPLETE_VERIFIED',
+                'ONLINE_RL_CONTROLLED':'RL_COMPLETE_VERIFIED'}[self.mode]
+        elif self.account_verification.state['status']=='NO_GO':status='COMPLETE_BUT_UNVERIFIED/NO_GO'
+        elif complete and self.mode=='ONLINE_RL_CONTROLLED':status='AWAIT_OPERATOR_REVIEW'
+        else:status='ONLINE_PARTIAL'
+        return dict(protocol=self.protocol,status=status,
             execution_mode=self.mode,env_steps=int(self.step),counters=self.counters.save(),
             gate=self.gates.report(),phase=self.phase.save(),source_exposures=self.source_exposures.save(),checkpoint=str(self.cp.latest()),
             training_admitted=self.identity['training_admitted'],real_TRAIN_updates=0 if self.identity['controlled_small'] else int(self.agent.n_updates),
-            formal_rl_admitted=self.gates.report()['formal_rl_admitted'],research_admitted=False)
+            formal_rl_admitted=self.gates.report()['formal_rl_admitted'],research_admitted=False,
+            account_verification=self.account_verification.save())
 
     def close(self):
         if self.stream is not None:
