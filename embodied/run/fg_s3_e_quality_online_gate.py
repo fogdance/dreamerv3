@@ -87,6 +87,11 @@ class OnlineGates:
     def numeric(self,probe):
         from .fg_s3_e_quality_online_probe import require_numeric_probe
         record=require_numeric_probe(probe)
+        context=record.get('context') or {}
+        if self.ready['WM_VALID_FOR_RL'] and (context.get('run_identity')!=self.run_identity
+                or context.get('wm_identity')!=self.wm_identity
+                or context.get('mask_identity')!=fingerprint(self.policy)):
+            raise ValueError('ONLINE_NUMERIC_PROBE_WM_OR_RUN_MISMATCH')
         metrics=record['metrics']
         good=self._numeric_valid(metrics,actor_changed=record['actor_changed'],
             value_changed=record['value_changed'],frozen_equal=record['frozen_equal'])

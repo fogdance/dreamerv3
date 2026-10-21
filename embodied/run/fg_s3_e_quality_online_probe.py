@@ -30,7 +30,10 @@ def state_digest(value):
             h.update(b'array'+str(x.dtype).encode()+repr(x.shape).encode());h.update(x.tobytes())
         elif isinstance(x,np.generic):visit(np.asarray(x))
         elif isinstance(x,dict):
-            h.update(b'dict')
+            h.update((type(x).__module__+'.'+type(x).__qualname__).encode()+b':dict')
+            if hasattr(x,'default_factory'):
+                factory=x.default_factory
+                visit(None if factory is None else factory.__module__+'.'+factory.__qualname__)
             for key in sorted(x,key=lambda k:(type(k).__name__,str(k))):visit(key);visit(x[key])
         elif isinstance(x,(list,tuple,deque)):
             h.update(type(x).__name__.encode()+str(len(x)).encode())

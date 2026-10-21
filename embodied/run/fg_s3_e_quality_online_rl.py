@@ -13,6 +13,22 @@ STAGES={'DISABLED','DEV_NUMERIC_PROBE','WARMUP','WM_CALIBRATING','RL_PROBING',
     'RL_BLOCKED','AWAIT_OPERATOR_REVIEW','RL_ACTIVE','FINAL_VERIFY','COMPLETE_VERIFIED'}
 
 
+def validate_frozen_online_state(initial,final,config,groups,*,updated):
+    """Reuse R6's exact slot owner parser; compare protected initial Run bytes."""
+    from types import SimpleNamespace
+    import numpy as np
+    from dreamerv3.fg_s3_e_quality_foundation import state_owners
+    if (initial.keys()!=final.keys() or any(initial[k].shape!=final[k].shape
+            or initial[k].dtype!=final[k].dtype or not np.isfinite(initial[k]).all()
+            or not np.isfinite(final[k]).all() for k in initial)):
+        raise ValueError('ONLINE_FROZEN_FULL_STATE_SCHEMA_OR_FINITE_CHANGED')
+    owners=state_owners(SimpleNamespace(config=config),initial,groups)
+    for key in initial:
+        if owners[key] is not None and (owners[key]!='CLOCK' or updated):continue
+        if initial[key].tobytes()!=final[key].tobytes():
+            raise ValueError('ONLINE_FROZEN_INITIAL_PARAMETER_OR_SLOT_CHANGED: '+key)
+
+
 def validate_rl_policy(policy,spec):
     if policy is None and spec['execution_mode']!='ONLINE_RL_CONTROLLED':return None
     if (type(policy) is not dict or set(policy)!=POLICY_FIELDS
@@ -139,7 +155,8 @@ def perform_admission(run):
                         natural=[i for i,row in enumerate(audit) if row['role']=='NATURAL']
                         causal={k:v[natural] for k,v in data.items()}
                         owners=[fingerprint(dict(corpus_id=audit[i]['corpus_id'],
-                            source_identity=audit[i]['source_identity'],account_owner=audit[i]['rows'][-1]['owner'])) for i in natural]
+                            source_identity=audit[i]['source_identity'],contract=audit[i]['contract'],
+                            policy=audit[i]['policy'],segment=audit[i]['segment'])) for i in natural]
                         record=calibration(run.agent,causal,source_identity=fingerprint(dict(
                             source_mix=history.identity,role='NATURAL',scope='CERTIFIED_TRAIN_WINDOWS_NOT_MARKET_FREQUENCY')),
                             horizon=policy['calibration_horizon'],seed=policy['calibration_seed']+number,source_step_owners=owners)

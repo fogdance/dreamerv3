@@ -220,6 +220,8 @@ class OnlineRun(ActorRun,LiveRun):
         from dreamerv3.fg_s3a_actor import parameter_digests
         from dreamerv3.fg_s3_e_quality_course_contract import WM_GROUPS
         from gym_trading_env.envs.entry_contract import fingerprint
+        from .fg_s3_e_quality_online_rl import validate_frozen_online_state
+        from .fg_checkpoint import validate_bundle
         load=lambda name:pickle.loads((node/(name+'.pkl')).read_bytes())
         lifecycle=load('rl_lifecycle');self.rl_lifecycle.validate_snapshot(lifecycle)
         gates=load('gates');counters=load('counters');agent=load('agent');logs=load('logs')
@@ -239,6 +241,13 @@ class OnlineRun(ActorRun,LiveRun):
         if (len(rows)!=counters['consumed_batches'] or updates!=counters['optimizer_updates']
                 or updates!=agent['counters']['updates'] or rl!=counters['rl_updates'] or bc!=counters['bc_updates']):
             raise ValueError('ONLINE_CHECKPOINT_RL_OR_BC_COUNTER_MISMATCH')
+        initial=self.root/'ckpt/step_000000000001'
+        validate_bundle(initial,self.identity)
+        first=pickle.loads((initial/'agent.pkl').read_bytes())
+        groups=() if self.mode=='SHADOW' else ('quality_actor/',)
+        if rl>0:groups+=('val/','slowval/','slowval_count/','retnorm/','valnorm/','advnorm/','avail_actor_gate/')
+        validate_frozen_online_state(first['params'],agent['params'],self.agent.model.config,
+            groups,updated=updates>0)
         if lifecycle['stage'] in ('AWAIT_OPERATOR_REVIEW','RL_ACTIVE','FINAL_VERIFY','COMPLETE_VERIFIED'):
             technical=lifecycle['technical']
             if (technical['evidence_hash']!=fingerprint({k:v for k,v in technical.items() if k!='evidence_hash'})
@@ -375,6 +384,7 @@ class OnlineRun(ActorRun,LiveRun):
             return
         state.update(status='VERIFYING',error=None)
         try:
+            self._validate_final_publication()
             self.verify_collection(final=True)
             state.update(status='VERIFIED',final_evidence=copy.deepcopy(self.gates.evidence['collection']))
             if self.rl_lifecycle.state['stage']=='FINAL_VERIFY':
@@ -390,6 +400,19 @@ class OnlineRun(ActorRun,LiveRun):
             self._save_checkpoint(final=False)
             raise
         self._publish_completion()
+
+    def _validate_final_publication(self):
+        if self.publisher is None:return  # SHADOW has no teacher publication.
+        if self.publisher.strict is None or self.publisher.blockers:
+            raise ValueError('ONLINE_FINAL_SUPERVISION_UNAVAILABLE')
+        for row in self.collector.rows[:-1]:
+            entry=self.publisher.ledger.get(row['stepid'])
+            if (entry is None or entry['status'] not in ('CERTIFIED','INVALID')
+                    or type(entry['publication_seq']) is not int or entry['publication_seq']<=0):
+                raise ValueError('ONLINE_FINAL_LEGAL_SIDECAR_NOT_PUBLISHED')
+        # The final unexecuted decision stays PENDING/invalid by the existing
+        # publication contract. It is not silently labeled WAIT.
+        self.publisher.validate_snapshot()
 
     def _publish_completion(self):
         from gym_trading_env.research.fg_replay import digest,signed,read_manifest
