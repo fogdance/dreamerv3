@@ -22,6 +22,61 @@ BACKEND='external_immutable_course_reader'
 RECOVERY_POLICY='STRICT_PUBLISHED_LATEST_V2'
 
 
+def restored_run_identity(root, protocol, source, index, *, engineering):
+    """Use the original Run owner; current code/configuration is not that owner."""
+    identity=read_manifest(Path(root)/'run_identity.json')['identity']
+    if identity.get('protocol')!=protocol or identity.get('backend')!=BACKEND:
+        raise ValueError('OFFLINE_RESUME_RUN_STAGE_OR_BACKEND_MISMATCH')
+    if identity.get('controlled_small') is not engineering:
+        raise ValueError('OFFLINE_RESUME_TRAINING_AUTHORITY_MISMATCH')
+    if identity['preparation']['source']!=source.receipt['content_identity']:
+        raise ValueError('OFFLINE_RESUME_SOURCE_CHANGED')
+    if (identity['index_sha256']!=digest(index) or
+            identity['index_receipt_sha256']!=digest(Path(index).with_suffix('.json'))):
+        raise ValueError('OFFLINE_RESUME_INDEX_CHANGED')
+    return identity
+
+
+def validate_restore_agent(agent, checkpoint):
+    """Check actual serialized state before Agent.load mutates counters/arrays.
+
+    This is a storage/layout check, not a comparison of training definitions.
+    Optimizer slots live in params and are checked with the model parameters.
+    """
+    import pickle
+    saved=pickle.loads((Path(checkpoint)/'agent.pkl').read_bytes())
+    expected=agent.save_exact()
+    if saved.keys()!=expected.keys() or saved['counters'].keys()!=expected['counters'].keys():
+        raise ValueError('OFFLINE_RESTORE_AGENT_MEMBERS_MISMATCH')
+    def arrays(current, stored, name):
+        if isinstance(current,dict):
+            if not isinstance(stored,dict) or current.keys()!=stored.keys():
+                raise ValueError('OFFLINE_RESTORE_PARAMETER_KEYS_MISMATCH: '+name)
+            for key in current:arrays(current[key],stored[key],name+'/'+key)
+        elif current is None:
+            if stored is not None:raise ValueError('OFFLINE_RESTORE_STATE_MISMATCH: '+name)
+        elif (not hasattr(stored,'shape') or current.shape!=stored.shape or current.dtype!=stored.dtype):
+            raise ValueError('OFFLINE_RESTORE_PARAMETER_SHAPE_OR_DTYPE_MISMATCH: '+name)
+    arrays(expected['params'],saved['params'],'params')
+    arrays(expected['policy_params'],saved['policy_params'],'policy_params')
+    if saved['pending_sync'] is not None:
+        arrays(expected['policy_params'],saved['pending_sync'],'pending_sync')
+    if any(type(value) not in (int,np.int32,np.int64) or value<0 for value in saved['counters'].values()):
+        raise ValueError('OFFLINE_RESTORE_AGENT_COUNTER_INVALID')
+
+
+def restore_reader_binding(source, checkpoint):
+    """Retain the CP's reference owner, including its original adapter settings.
+
+    The caller has validated the bundle against the original Run. Source/Index,
+    Reader snapshots, graph links and queued batch hashes are still validated
+    by validate_checkpoint_stream and FullCheckpoint before any state loads.
+    """
+    import pickle
+    state=pickle.loads((Path(checkpoint)/'course_reader.pkl').read_bytes())
+    source.binding=state['reader_ref']['binding']
+
+
 def validate_offline_journal(root, checkpoint, *, position_key='local_update'):
     """Validate committed bytes and chronology before constructing/restoring Agent."""
     import pickle
@@ -101,44 +156,41 @@ class FoundationRun:
         self.preparation=preparation;self.settings=s=preparation.settings
         from gym_trading_env.research.fg_s3_reader_versions import (VersionedStream,CheckpointSource,
             VersionedRuntimeState,validate_checkpoint_stream,STATE_PROTOCOL,PREFETCH_PROTOCOL)
-        from gym_trading_env.research.fg_s3_e_quality_foundation import preflight
-        if preflight(s).receipt['identity']!=preparation.receipt['identity']:
-            raise ValueError('F1_RESUME_IDENTITY_MISMATCH: preparation settings/content changed')
         self.root=Path(root).resolve();self.index=Path(index_path).resolve()
         if self.root.is_relative_to(Path(s['corpus_root']).resolve()):
             raise ValueError('F1_RUN_CANNOT_MODIFY_CORPUS')
-        # Fail before run mkdir/model creation when a resume identity differs.
-        self.identity=dict(protocol='FG_S3_E_QUALITY_F1_RUN_V1',backend=BACKEND,recovery_policy=RECOVERY_POLICY,
-            reader_stream_state_protocol=STATE_PROTOCOL,prefetch_pending_state_protocol=PREFETCH_PROTOCOL,
-            preparation=preparation.receipt['identity'],
-            compatibility=preparation.receipt['compatibility'],verifier_binding=preparation.receipt['verifier_binding'],
-            index_sha256=digest(self.index),
-            index_receipt_sha256=digest(self.index.with_suffix('.json')),
-            code=execution_identity(),packages=runtime_versions(),
-            controlled_small=engineering,carry_rule='FRESH_PER_RANDOM_WINDOW',
-            training_admitted=not engineering)
-        from gym_trading_env.research.fg_s3_e_quality_foundation import model_config
-        from dreamerv3.fg_s3_e_quality_foundation import model_extensions
-        self.identity['effective_model']=model_config(s,controlled_small=engineering)
-        self.identity['model_extension']=model_extensions(s['target_steps'],s['burnin_steps'])
-        self.identity=plain(self.identity)
+        selected=None
         if resume:
-            saved=read_manifest(self.root/'run_identity.json')['identity']
-            if saved!=self.identity:raise ValueError('F1_RESUME_IDENTITY_MISMATCH')
+            self.identity=restored_run_identity(self.root,'FG_S3_E_QUALITY_F1_RUN_V1',
+                preparation.source,self.index,engineering=engineering)
             if not (self.root/'ckpt').is_dir():raise ValueError('F1_RESUME_CHECKPOINT_MISSING')
-        elif self.root.exists():raise ValueError('F1_RUN_OUTPUT_MUST_BE_NEW')
+            probe=FullCheckpoint(self.root/'ckpt',elements.Counter(),self.identity,(),backend=BACKEND,strict_latest=True)
+            selected=probe.latest()
+            if selected is None:raise ValueError('F1_RESUME_CHECKPOINT_MISSING')
+        else:
+            if self.root.exists():raise ValueError('F1_RUN_OUTPUT_MUST_BE_NEW')
+            self.identity=dict(protocol='FG_S3_E_QUALITY_F1_RUN_V1',backend=BACKEND,recovery_policy=RECOVERY_POLICY,
+                reader_stream_state_protocol=STATE_PROTOCOL,prefetch_pending_state_protocol=PREFETCH_PROTOCOL,
+                preparation=preparation.receipt['identity'],
+                compatibility=preparation.receipt['compatibility'],verifier_binding=preparation.receipt['verifier_binding'],
+                index_sha256=digest(self.index),index_receipt_sha256=digest(self.index.with_suffix('.json')),
+                code=execution_identity(),packages=runtime_versions(),controlled_small=engineering,
+                carry_rule='FRESH_PER_RANDOM_WINDOW',training_admitted=not engineering)
+            from gym_trading_env.research.fg_s3_e_quality_foundation import model_config
+            from dreamerv3.fg_s3_e_quality_foundation import model_extensions
+            self.identity['effective_model']=model_config(s,controlled_small=engineering)
+            self.identity['model_extension']=model_extensions(s['target_steps'],s['burnin_steps'])
+            self.identity=plain(self.identity)
         self.reader=EQualityCourseReader.open(preparation.source,stage='WM_NATURAL',
             sampling_spec=s['sampling_spec'],seed=s['model_init']['seed'],index_path=self.index)
         self.source=VersionedStream(CourseStream(self.reader,s));self.source.validate_snapshot()
         if resume:
-            probe=FullCheckpoint(self.root/'ckpt',elements.Counter(),self.identity,(),backend=BACKEND,strict_latest=True)
-            selected=probe.latest()
-            if selected is None:raise ValueError('F1_RESUME_CHECKPOINT_MISSING')
-            import pickle
+            restore_reader_binding(self.source,selected)
             validate_checkpoint_stream(self.source,selected)
             validate_offline_journal(self.root,selected)
         self.root.mkdir(parents=True,exist_ok=resume)
         self.agent=create_agent(s,self.root/'model',controlled_small=engineering)
+        if resume:validate_restore_agent(self.agent,selected)
         if not resume:write_json(self.root/'run_identity.json',signed(dict(identity=self.identity)))
         self.stream=self.agent.stream(self.source)
         self.step=elements.Counter();self.counters=Counters();self.samples=[0]

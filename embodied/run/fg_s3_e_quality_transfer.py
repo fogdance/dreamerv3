@@ -36,7 +36,7 @@ def training_evidence(root,identity,agent):
     return dict(update_log_sha256=digest(log),initial_manifest_sha256=digest(initial/'manifest.json'),
         verified_updates=budget,changed_wm_keys=changed)
 
-def inspect_f1(settings,*,allow_engineering=False):
+def inspect_f1(settings,*,allow_engineering=False,_check_target=True):
     root=Path(settings['source_f1_run']);node=Path(settings['source_f1_checkpoint'])
     if not node.is_relative_to(root/'ckpt'):raise ValueError('F2_F1_NODE_OUTSIDE_RUN')
     identity=read_manifest(root/'run_identity.json')['identity']
@@ -56,7 +56,7 @@ def inspect_f1(settings,*,allow_engineering=False):
             or counters['consumed_batches']!=budget):raise ValueError('F2_F1_NOT_COMPLETED')
     if int(np.asarray(agent['params']['opt/step/value']))!=budget:raise ValueError('F2_F1_OPTIMIZER_COUNT_MISMATCH')
     from gym_trading_env.research.fg_s3_e_quality_heads import model_config
-    if identity['effective_model']['agent']!=plain(model_config(settings,controlled_small=engineering))['agent']:
+    if _check_target and identity['effective_model']['agent']!=plain(model_config(settings,controlled_small=engineering))['agent']:
         raise ValueError('F2_F1_MODEL_ARCHITECTURE_MISMATCH')
     from gym_trading_env.research.fg_s3_e_observation import observation_contract
     from dreamerv3.fg_s3_e_quality_course_contract import REWARD_SCHEMA
@@ -135,8 +135,8 @@ def source_freeze_evidence(root,identity,final,groups):
                 frozen_keys=frozen,all_frozen_bytes_equal=True)
 
 
-def inspect_stage(settings,*,allow_engineering=False):
-    """F1 or F2 source for a new F3 run; never a same-run resume."""
+def inspect_stage(settings,*,allow_engineering=False,_check_target=True):
+    """Verify source evidence; target-model matching applies to a new Run only."""
     from gym_trading_env.research.fg_s3_e_quality_actor import model_config
     from gym_trading_env.research.fg_s3_e_observation import observation_contract
     from dreamerv3.fg_s3_e_quality_course_contract import WM_GROUPS
@@ -145,7 +145,7 @@ def inspect_stage(settings,*,allow_engineering=False):
     if stage not in ('F1','F2') or not node.is_relative_to(root/'ckpt'):raise ValueError('F3_SOURCE_STAGE_OR_NODE_INVALID')
     if stage=='F1':
         legacy={**settings,'source_f1_run':str(root),'source_f1_checkpoint':str(node)}
-        proof,agent=inspect_f1(legacy,allow_engineering=allow_engineering)
+        proof,agent=inspect_f1(legacy,allow_engineering=allow_engineering,_check_target=_check_target)
         proof={**proof,'source_stage':'F1'}
         return proof,agent
     identity=read_manifest(root/'run_identity.json')['identity'];meta=validate_bundle(node,identity)
@@ -157,9 +157,9 @@ def inspect_stage(settings,*,allow_engineering=False):
     prep=identity['preparation'];s=prep['settings']
     if (prep.get('protocol')!='FG_S3_E_QUALITY_HEADS_V1' or s['stage']!='QUALITY_HEADS'
             or prep['execution_contract']!=execution_contract() or prep['observation']!=observation_contract()
-            or prep['effective_model']['agent']!=plain(model_config(settings,controlled_small=engineering))['agent']):
+            or (_check_target and prep['effective_model']['agent']!=plain(model_config(settings,controlled_small=engineering))['agent'])):
         raise ValueError('F3_SOURCE_MODEL_OBSERVATION_OR_STAGE_MISMATCH')
-    upstream,_=inspect_f1(s,allow_engineering=allow_engineering)
+    upstream,_=inspect_f1(s,allow_engineering=allow_engineering,_check_target=_check_target)
     if engineering!=upstream['engineering_only'] or any(upstream[k]!=prep['source_f1'].get(k)
             for k in ('protocol','manifest_sha256','run_identity_sha256','source_freeze','training_evidence')):
         raise ValueError('F3_SOURCE_UPSTREAM_LINEAGE_MISMATCH')

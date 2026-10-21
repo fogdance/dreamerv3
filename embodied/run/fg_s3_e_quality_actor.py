@@ -152,7 +152,8 @@ class ActorRun(HeadsRun):
     def __init__(self,preparation,index_path,root,*,resume=False,authorize_training=False,_probe=None):
         import elements
         from .fg_checkpoint import FullCheckpoint,plain
-        from .fg_s3_e_quality_foundation import BACKEND,RECOVERY_POLICY,validate_offline_journal
+        from .fg_s3_e_quality_foundation import (BACKEND,RECOVERY_POLICY,validate_offline_journal,
+            restored_run_identity,validate_restore_agent,restore_reader_binding)
         from .fg_s3_e_quality_transfer import inspect_stage,transfer_parameters
         from .fg_s3_source_admission import runtime_versions
         from gym_trading_env.research.fg_replay import read_manifest,write_json,signed,digest
@@ -163,31 +164,33 @@ class ActorRun(HeadsRun):
         engineering=permit is not None and permit[0] is preparation and permit[1] is _probe
         if not engineering:require_training_authority(preparation,authorized=authorize_training)
         self.preparation=preparation;self.settings=s=preparation.settings
-        if preflight(s).receipt['identity']!=preparation.receipt['identity']:raise ValueError('F3_RESUME_IDENTITY_MISMATCH')
         self.root=Path(root).resolve();self.index=Path(index_path).resolve()
         for key in ('corpus_root','source_run'):
             source=Path(s[key]).resolve()
             if self.root.is_relative_to(source) or source.is_relative_to(self.root):raise ValueError('F3_RUN_OVERLAPS_SOURCE')
-        self.identity=plain(dict(protocol='FG_S3_E_QUALITY_F3_RUN_V1',backend=BACKEND,recovery_policy=RECOVERY_POLICY,
-            reader_stream_state_protocol=STATE_PROTOCOL,prefetch_pending_state_protocol=PREFETCH_PROTOCOL,
-            preparation=preparation.receipt['identity'],
-            compatibility=preparation.receipt['compatibility'],verifier_binding=preparation.receipt['verifier_binding'],
-            index_sha256=digest(self.index),
-            index_receipt_sha256=digest(self.index.with_suffix('.json')),code=execution_identity(),
-            packages=runtime_versions(),controlled_small=engineering,training_admitted=not engineering,
-            carry_rule='FRESH_PER_RANDOM_WINDOW',checkpoint_position='CONSUMED_BATCHES'))
         selected=None
         if resume:
-            if read_manifest(self.root/'run_identity.json')['identity']!=self.identity:raise ValueError('F3_RESUME_IDENTITY_MISMATCH')
+            self.identity=restored_run_identity(self.root,'FG_S3_E_QUALITY_F3_RUN_V1',
+                preparation.source,self.index,engineering=engineering)
             selected=FullCheckpoint(self.root/'ckpt',elements.Counter(),self.identity,(),backend=BACKEND,strict_latest=True).latest()
             if selected is None:raise ValueError('F3_RESUME_CHECKPOINT_MISSING')
-        elif self.root.exists():raise ValueError('F3_RUN_OUTPUT_MUST_BE_NEW')
+        else:
+            if self.root.exists():raise ValueError('F3_RUN_OUTPUT_MUST_BE_NEW')
+            self.identity=plain(dict(protocol='FG_S3_E_QUALITY_F3_RUN_V1',backend=BACKEND,recovery_policy=RECOVERY_POLICY,
+                reader_stream_state_protocol=STATE_PROTOCOL,prefetch_pending_state_protocol=PREFETCH_PROTOCOL,
+                preparation=preparation.receipt['identity'],
+                compatibility=preparation.receipt['compatibility'],verifier_binding=preparation.receipt['verifier_binding'],
+                index_sha256=digest(self.index),index_receipt_sha256=digest(self.index.with_suffix('.json')),
+                code=execution_identity(),packages=runtime_versions(),controlled_small=engineering,training_admitted=not engineering,
+                carry_rule='FRESH_PER_RANDOM_WINDOW',checkpoint_position='CONSUMED_BATCHES'))
         self.source=VersionedStream(ActorStreams(preparation,self.index))
         try:
             self.source.validate_snapshot()
+            if selected is not None:restore_reader_binding(self.source,selected)
             if selected is not None:validate_checkpoint_stream(self.source,selected)
             if selected is not None:validate_offline_journal(self.root,selected,position_key='consumed_batches')
             self.agent=create_agent(s,self.root/'model',controlled_small=engineering)
+            if resume:validate_restore_agent(self.agent,selected)
             if not resume:
                 proof,state=inspect_stage(s,allow_engineering=engineering)
                 receipt=transfer_parameters(self.agent,state,proof,target_stage='ACTOR_SUPERVISED')
