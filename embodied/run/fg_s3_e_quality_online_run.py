@@ -49,7 +49,7 @@ class OnlineRun(ActorRun,LiveRun):
 
     def __init__(self,spec,factory,source,history=None,*,resume=False,authorized=False,
                  native_preparation=None,_probe=None,_test_location=None,wm_policy=None,initial_state=None,
-                 rl_review=None):
+                 rl_review=None,source_bindings=None,native_audit=None):
         from dreamerv3.fg_s3_e_quality_online import validate_execution,execution_contract
         from dreamerv3.fg_s3a_actor import parameter_digests
         from gym_trading_env.envs.entry_contract import fingerprint
@@ -66,6 +66,9 @@ class OnlineRun(ActorRun,LiveRun):
         engineering=permit is not None and permit[:2]==(fingerprint(s),proof['manifest_sha256'])
         if permit is not None and not engineering:raise ValueError('ONLINE_ENGINEERING_PERMIT_IDENTITY_MISMATCH')
         if not engineering and self.mode!='SHADOW':require_training_authority(native_preparation,authorized=authorized)
+        if not engineering:
+            from gym_trading_env.research.fg_s3_e_quality_online_admission import require_native_audit
+            require_native_audit(native_audit,source_bindings)
         if _test_location is not None and not engineering:raise ValueError('ONLINE_TEST_RELOCATION_FORBIDDEN')
         if source.get('fold')!='TRAIN':raise ValueError('ONLINE_TRAIN_SOURCE_REQUIRED')
         if self.mode!='SHADOW' and history is None:raise ValueError('ONLINE_HISTORICAL_READER_REQUIRED')
@@ -99,6 +102,7 @@ class OnlineRun(ActorRun,LiveRun):
             source_manifest=proof['manifest_sha256'],source_run_identity=proof['run_identity_sha256'],
             course=proof['identity']['preparation']['course'],source_nonopt=fingerprint({k:v for k,v in parameter_digests(state['params']).items() if not k.startswith('opt/')}),
             history=None if history is None else history.identity_hash,live_source=copy.deepcopy(source),
+            source_bindings=copy.deepcopy(source_bindings),
             env_config_hash=env.config_hash,e_identity=env.e_observation_identity,
             initial_account=None if initial_state is None else fingerprint(initial_state),
             chunksize=chunksize,code=execution_identity(),packages=runtime_versions(),
@@ -117,6 +121,8 @@ class OnlineRun(ActorRun,LiveRun):
             write_json(self.root/'source_to_online_transfer.json',transfer)
         self.gates=OnlineGates(fingerprint(self.identity),formal_mask_policy(self.settings),wm_policy=wm_policy)
         self.native_preparation=native_preparation;self.authorized=authorized
+        self.source_bindings=copy.deepcopy(source_bindings)
+        self.native_audit=copy.deepcopy(native_audit)
         self.rl_review=rl_review
         self.factory=factory
         chunk_identity=ChunkIdentity(fingerprint(self.identity))
