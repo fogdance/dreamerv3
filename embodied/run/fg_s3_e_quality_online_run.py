@@ -179,7 +179,8 @@ class OnlineRun(ActorRun,LiveRun):
             if (int(self.step)!=self.collector.counts['env_steps'] or int(self.consumed_step)!=self.counters.state['consumed_batches']
                     or int(self.agent.n_updates)!=self.counters.state['optimizer_updates']):
                 raise ValueError('ONLINE_RESTORED_COUNTER_MISMATCH')
-        else:self._save_checkpoint()
+        self.gates.evidence['source_native']=None if native_audit is None else copy.deepcopy(native_audit.report)
+        if not resume:self._save_checkpoint()
 
     def _consume_batch_boundary(self):
         self.consumed_step.increment();self.phase.state['updates_done']+=1
@@ -201,6 +202,8 @@ class OnlineRun(ActorRun,LiveRun):
         gates=load('gates');collector=load('collector');market=int(load('market_step'))
         account=load('account_verification')
         self.gates.validate_snapshot(gates);self.account_verification.validate_snapshot(account)
+        from gym_trading_env.research.fg_s3_e_quality_online_admission import validate_native_audit_report
+        validate_native_audit_report(gates['evidence'].get('source_native'),self.source_bindings)
         report=gates['evidence'].get('collection')
         if report is not None:
             r=report['receipt'];prefix=r['prefix'];through=r['verified_through_market_step']
@@ -383,6 +386,7 @@ class OnlineRun(ActorRun,LiveRun):
             self.account_verification.validate_snapshot()
             return
         state.update(status='VERIFYING',error=None)
+        previous_rl_stage=self.rl_lifecycle.state['stage']
         try:
             self._validate_final_publication()
             self.verify_collection(final=True)
@@ -395,8 +399,11 @@ class OnlineRun(ActorRun,LiveRun):
         except Exception as error:
             state.update(status='NO_GO',final_evidence=None,error=str(error))
             self.gates.ready['COLLECTION_VALID']=False
-            if self.rl_lifecycle.state['stage']=='FINAL_VERIFY':
-                self.rl_lifecycle.transition('RL_BLOCKED',reason=str(error))
+            # An uncommitted terminal transition is rolled back with the
+            # failed account/CP transaction. Final verification can be retried
+            # without inventing another optimizer or authorization step.
+            self.rl_lifecycle.state['stage']=previous_rl_stage
+            if previous_rl_stage=='FINAL_VERIFY':self.rl_lifecycle.state['reason']=str(error)
             self._save_checkpoint(final=False)
             raise
         self._publish_completion()
@@ -513,7 +520,9 @@ class OnlineRun(ActorRun,LiveRun):
             training_admitted=self.identity['training_admitted'],real_TRAIN_updates=0 if self.identity['controlled_small'] else int(self.agent.n_updates),
             formal_rl_admitted=self.gates.report()['formal_rl_admitted'],research_admitted=False,
             account_verification=self.account_verification.save(),rl_lifecycle=self.rl_lifecycle.save(),
-            live_process_rl_authorized=self.gates.report()['formal_rl_admitted'])
+            live_process_rl_authorized=self.gates.report()['formal_rl_admitted'],
+            native_source_audit=copy.deepcopy(self.gates.evidence.get('source_native')),
+            update_counter_semantics='BC/RL count active loss components and may overlap; optimizer_updates counts invocations')
 
     def close(self):
         if self.stream is not None:
