@@ -424,10 +424,19 @@ class OnlineRun(ActorRun,LiveRun):
     def _publish_completion(self):
         from gym_trading_env.research.fg_replay import digest,signed,read_manifest
         node=self.cp.latest()
+        result=self.result()
+        # A completion seals committed facts, not a process-local permission or
+        # the fresh source audit of a later read-only resume invocation.
+        committed_gates=pickle.loads((node/'gates.pkl').read_bytes())
+        result['native_source_audit']=copy.deepcopy(committed_gates['evidence'].get('source_native'))
+        result['formal_rl_admitted']=False
+        result['live_process_rl_authorized']=False
+        result['gate']['formal_rl_admitted']=False
         receipt=signed(dict(protocol='FG_S3_E_QUALITY_ONLINE_COMPLETION_V1',
             run_identity=self.account_verification.identity,transaction=int(self.transaction),
             checkpoint_manifest_sha256=digest(node/'manifest.json'),
-            result=self.result(),full_account_evidence=self.account_verification.state['final_evidence']))
+            result=result,authority_scope='DURABLE_FACTS_NOT_PROCESS_PERMISSION',
+            full_account_evidence=self.account_verification.state['final_evidence']))
         path=self.root/'completion'/f'transaction_{int(self.transaction):012d}.json'
         path.parent.mkdir(exist_ok=True)
         if path.exists():
