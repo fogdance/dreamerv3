@@ -65,3 +65,43 @@ class RLAdmissionState:
     def load(self,state):self.validate_snapshot(state);self.state=copy.deepcopy(state)
 
 
+def fork_history(history,*,seed):
+    """Open the same WP03 source descriptors with independent Reader/scheduler RNG."""
+    from gym_trading_env.research.fg_s3_e_quality_multi_actor import MultiCorpusF3Stream
+    natural=history.role_streams['NATURAL'].stream
+    sources=[dict(corpus_id=name,admission=reader.admission,index_path=reader.index_path)
+        for name,reader in natural.readers.items()]
+    identity=history.identity
+    specs={row['corpus_id']:row['sampling_spec'] for row in natural.identity['sources']}
+    weights={row['corpus_id']:row['weight'] for row in natural.identity['sources']}
+    aux=None
+    if 'AUXILIARY' in history.role_streams:
+        aux={row['corpus_id']:row['sampling_spec']
+            for row in history.role_streams['AUXILIARY'].stream.identity['sources']}
+    return MultiCorpusF3Stream.open(sources,settings=identity['settings'],
+        per_source_sampling_spec=specs,source_mix_weights=weights,seed=seed,
+        aux_per_source_sampling_spec=aux,cache_bytes=1<<20)
+
+
+def capture_live(run,directory):
+    """Reuse the FullCheckpoint Replay snapshot, without restoring or consuming it."""
+    import random
+    import numpy as np
+    from .fg_checkpoint import save_replay,host
+    from .fg_s3_e_quality_online_probe import state_digest
+    directory=Path(directory);directory.mkdir(parents=True,exist_ok=False)
+    state=dict(agent=run.agent.save_exact(),runtime=run.runtime.save(),collector=run.collector.save(),
+        driver=run.collector.driver.save(),publisher=None if run.publisher is None else run.publisher.save(),
+        source=None if run.source is None else run.source.save_full(),counters=run.counters.save(),
+        phase=run.phase.save(),gates=run.gates.save(),source_exposures=run.source_exposures.save(),
+        account=run.collector.env.export_state(),account_verification=run.account_verification.save(),
+        lifecycle=run.rl_lifecycle.save(),market_step=int(run.step),transaction=int(run.transaction),
+        consumed_step=int(run.consumed_step),python_rng=random.getstate(),numpy_rng=np.random.get_state(),
+        replay=save_replay(run.collector.replay,directory/'replay'))
+    state['replay_files']={p.name:__import__('hashlib').sha256(p.read_bytes()).hexdigest()
+        for p in sorted((directory/'replay').iterdir())}
+    return {name:state_digest(host(value)) for name,value in state.items()}
+
+
+class LiveStateChanged(RuntimeError):
+    """Keep the pre-probe CP; never publish an unproven live mutation."""
