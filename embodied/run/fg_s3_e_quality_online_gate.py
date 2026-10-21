@@ -11,7 +11,7 @@ _REVIEWS={}
 
 
 class OnlineGates:
-    protocol='FG_S3_E_QUALITY_ONLINE_GATES_V2'
+    protocol='FG_S3_E_QUALITY_ONLINE_GATES_V3'
 
     def __init__(self,identity,mask_policy,*,wm_policy=None,collection_root=None):
         import elements
@@ -74,7 +74,8 @@ class OnlineGates:
             self.ready['WM_VALID_FOR_RL']=False;self.formal_admitted=False
             raise ValueError('ONLINE_CALIBRATION_MODEL_IDENTITY_CHANGED')
         self.wm_identity=r['wm_identity']
-        self.samples.update((r['source_identity'],x) for x in r['native_stepids'])
+        self.samples.update(map(tuple,r['native_owner_steps']) if 'native_owner_steps' in r
+            else ((r['source_identity'],x) for x in r['native_stepids']))
         self.mask.update(r['metrics'],len(self.samples),allow_activation=False)
         good=bool(self.wm_policy is not None and r['finite'] and
             r['reward_mae']<=self.wm_policy['max_reward_mae'] and r['continue_mae']<=self.wm_policy['max_continue_mae']
@@ -83,17 +84,46 @@ class OnlineGates:
         self.evidence['calibration']=r
         return good
 
-    def numeric(self,metrics,*,actor_changed,value_changed,frozen_equal):
-        import numpy as np
-        good=bool(metrics.get('f4/rl_active',False) and metrics['f3/finite'] and metrics['f3/updated']
-            and np.isfinite(metrics['opt/grad_norm']) and np.isfinite(metrics['f4/value_loss'])
-            and metrics['f4/imag_invalid']==0 and actor_changed and value_changed and frozen_equal)
+    def numeric(self,probe):
+        from .fg_s3_e_quality_online_probe import require_numeric_probe
+        record=require_numeric_probe(probe)
+        context=record.get('context') or {}
+        if self.ready['WM_VALID_FOR_RL'] and (context.get('run_identity')!=self.run_identity
+                or context.get('wm_identity')!=self.wm_identity
+                or context.get('mask_identity')!=fingerprint(self.policy)):
+            raise ValueError('ONLINE_NUMERIC_PROBE_WM_OR_RUN_MISMATCH')
+        metrics=record['metrics']
+        good=self._numeric_valid(metrics,actor_changed=record['actor_changed'],
+            value_changed=record['value_changed'],frozen_equal=record['frozen_equal'])
         self.ready['RL_NUMERIC_READY']=good
-        self.evidence['numeric']=dict(ready=good,actor_changed=actor_changed,value_changed=value_changed,
-            frozen_equal=frozen_equal,formal_admission=False)
+        self.evidence['numeric']={key:copy.deepcopy(record[key]) for key in (
+            'protocol','source_agent_sha256','batch_sha256','context','code','input_sha256',
+            'candidate_report_sha256','actual_candidate_updates','actor_changed','value_changed',
+            'frozen_equal','ready','metrics','before','after','candidate_discarded','live_rl_updates')}
         return good
 
-    def review_rl(self,preparation,path,approved_sha256,*,authorized=False):
+    @staticmethod
+    def _numeric_valid(metrics,*,actor_changed,value_changed,frozen_equal):
+        import numpy as np
+        return bool(metrics.get('f4/rl_active',False) and metrics['f3/finite'] and metrics['f3/updated']
+            and np.isfinite(metrics['opt/grad_norm']) and np.isfinite(metrics['f4/value_loss'])
+            and metrics['f4/imag_invalid']==0 and actor_changed and value_changed and frozen_equal)
+
+    def observe_rl(self,metrics,*,frozen_equal):
+        # Monitoring a live update cannot bootstrap technical readiness.
+        if not self._numeric_valid(metrics,actor_changed=True,value_changed=True,frozen_equal=frozen_equal):
+            self.ready['RL_NUMERIC_READY']=False;self.formal_admitted=False
+            raise ValueError('ONLINE_LIVE_RL_NUMERIC_OR_OWNER_VIOLATION')
+
+    def reset_technical(self):
+        import elements
+        from .action_mask_warmup import ActionMaskWarmup
+        self.mask=ActionMaskWarmup.for_single3_1m(elements.Config(self.policy['config']),False)
+        self.samples.clear();self.wm_identity=None;self.formal_admitted=False
+        for key,name in (('WM_VALID_FOR_RL','calibration'),('RL_NUMERIC_READY','numeric')):
+            self.ready[key]=False;self.evidence.pop(name,None)
+
+    def review_rl(self,preparation,path,approved_sha256,*,authorized=False,expected_contract=None):
         """Explicit operator-reviewed digest, independent of technical Gates.
 
         A file saying PASS is not authority. The caller must supply its reviewed
@@ -101,43 +131,68 @@ class OnlineGates:
         This method does not produce approvals or alter the technical thresholds.
         """
         import json
+        import re
         from gym_trading_env.research.fg_replay import digest
         from gym_trading_env.research.fg_s3_e_quality_course_preflight import _local_path
         from gym_trading_env.research.fg_s3_e_quality_actor import require_training_authority
         if authorized is not True:raise ValueError('ONLINE_SEPARATE_RL_AUTHORIZATION_REQUIRED')
         require_training_authority(preparation,authorized=True)
-        if not all(self.ready.values()):raise ValueError('ONLINE_RL_GATE_CLOSED')
+        if (not all(self.ready[k] for k in ('SUPERVISED_STABLE','WM_VALID_FOR_RL','RL_NUMERIC_READY'))
+                or self.collection_through()<=0):raise ValueError('ONLINE_RL_GATE_CLOSED')
+        if expected_contract is None:raise ValueError('ONLINE_SEALED_REVIEW_CONTRACT_REQUIRED')
         path=_local_path(path)
-        if (not isinstance(approved_sha256,str) or len(approved_sha256)!=64
+        if (not isinstance(approved_sha256,str) or re.fullmatch('[0-9a-f]{64}',approved_sha256) is None
                 or digest(path)!=approved_sha256):raise ValueError('ONLINE_REVIEWED_RL_DIGEST_REQUIRED')
-        expected=dict(protocol='FG_S3_E_QUALITY_FORMAL_RL_REVIEW_V1',verdict='APPROVED_FOR_FORMAL_RL',
-            gate_identity=self.identity,evidence_hash=fingerprint(self.evidence),wm_identity=self.wm_identity,
-            f3_preparation_identity=fingerprint(preparation.receipt))
-        if json.loads(path.read_text())!=expected:raise ValueError('ONLINE_RL_REVIEW_BINDING_MISMATCH')
-        token=object();_REVIEWS[token]=(self,expected,approved_sha256)
+        review=json.loads(path.read_text())
+        fields={'protocol','verdict','reviewer_role','review_id','packet_path','packet_sha256','review_contract'}
+        if (type(review) is not dict or set(review)!=fields
+                or review['protocol']!='FG_S3_E_QUALITY_FORMAL_RL_REVIEW_V2'
+                or review['verdict']!='APPROVED_FOR_CONTROLLED_RL'
+                or review['reviewer_role']!='RESEARCH_OPERATOR'
+                or not isinstance(review['review_id'],str) or not review['review_id'].strip()
+                or review['review_contract']!=expected_contract):
+            raise ValueError('ONLINE_RL_REVIEW_BINDING_MISMATCH')
+        packet_path=_local_path(review['packet_path'])
+        if digest(packet_path)!=review['packet_sha256']:raise ValueError('ONLINE_RL_REVIEW_PACKET_CHANGED')
+        packet=json.loads(packet_path.read_text())
+        if (packet.get('protocol')!='FG_S3_E_QUALITY_RL_REVIEW_PACKET_V1'
+                or packet.get('status')!='AWAIT_OPERATOR_REVIEW'
+                or packet.get('review_contract')!=expected_contract):
+            raise ValueError('ONLINE_RL_REVIEW_PACKET_BINDING_MISMATCH')
+        token=object();_REVIEWS[token]=(self,copy.deepcopy(expected_contract),approved_sha256,
+            dict(path=str(path),packet_path=str(packet_path),packet_sha256=review['packet_sha256']))
         return token
 
     def require_rl(self,preparation,*,authorized=False,review=None):
         from gym_trading_env.research.fg_s3_e_quality_actor import require_training_authority
-        blockers=[key for key,value in self.ready.items() if not value]
+        blockers=[key for key in ('SUPERVISED_STABLE','WM_VALID_FOR_RL','RL_NUMERIC_READY') if not self.ready[key]]
+        if self.collection_through()<=0:blockers.append('COLLECTION_PREFIX_VERIFIED')
         if blockers:raise ValueError('ONLINE_RL_GATE_CLOSED: '+','.join(blockers))
         # Reuse the in-process native proof/authorization mechanism, not a
         # JSON "PASS" or the old bundled ONLINE_ADAPT flags.
         require_training_authority(preparation,authorized=authorized)
         reviewed=_REVIEWS.get(review)
-        # The review seals the evidence at review time. New finite update
-        # counters do not invalidate it; current technical readiness, frozen WM,
-        # exact Run identity and native F3 authority are still checked each time.
+        # The approved prefix remains a prefix after native collection grows;
+        # current COLLECTION_VALID stays false until another actual reconcile.
+        # The explicit review permits guarded native continuation and requires
+        # final full-account verification. It never certifies an unverified tail.
         if (not reviewed or reviewed[0] is not self or reviewed[1]['wm_identity']!=self.wm_identity
-                or reviewed[1]['f3_preparation_identity']!=fingerprint(preparation.receipt)):
+                or reviewed[1]['gate_identity']!=self.identity
+                or reviewed[1]['mask_identity']!=fingerprint(self.policy)):
             self.formal_admitted=False
             raise ValueError('ONLINE_INDEPENDENT_RL_RESEARCH_REVIEW_REQUIRED')
+        from gym_trading_env.research.fg_replay import digest
+        from gym_trading_env.research.fg_s3_e_quality_course_preflight import _local_path
+        if (digest(_local_path(reviewed[3]['path']))!=reviewed[2]
+                or digest(_local_path(reviewed[3]['packet_path']))!=reviewed[3]['packet_sha256']):
+            self.formal_admitted=False
+            raise ValueError('ONLINE_EXTERNAL_RL_REVIEW_CHANGED_DURING_RUN')
         self.formal_admitted=True
 
     def save(self):
         return copy.deepcopy(dict(protocol=self.protocol,identity=self.identity,ready=self.ready,
             evidence=self.evidence,mask=self.mask.save(),samples=sorted(self.samples),exposure=self.exposure,
-            wm_identity=self.wm_identity,formal_admitted=self.formal_admitted))
+            wm_identity=self.wm_identity,formal_admitted=False))
     def validate_snapshot(self,state=None):
         if state is None:state=self.save()
         if state.get('protocol')!=self.protocol or state.get('identity')!=self.identity or set(state.get('ready',{}))!=set(NAMES):
@@ -153,12 +208,13 @@ class OnlineGates:
     def load(self,state):
         self.validate_snapshot(state);self.ready=copy.deepcopy(state['ready']);self.evidence=copy.deepcopy(state['evidence'])
         self.mask.load(state['mask']);self.samples=set(map(tuple,state['samples']));self.exposure=copy.deepcopy(state['exposure'])
-        self.wm_identity=state['wm_identity'];self.formal_admitted=state['formal_admitted']
+        self.wm_identity=state['wm_identity'];self.formal_admitted=False
 
     def report(self):
         return dict(protocol=self.protocol,ready=copy.deepcopy(self.ready),blockers=[k for k,v in self.ready.items() if not v],
             mask_policy=copy.deepcopy(self.policy),wm_policy=copy.deepcopy(self.wm_policy),
-            formal_rl_admitted=self.formal_admitted and all(self.ready.values()),unique_calibration_owner_steps=len(self.samples),
+            formal_rl_admitted=self.formal_admitted and all(self.ready[k] for k in (
+                'SUPERVISED_STABLE','WM_VALID_FOR_RL','RL_NUMERIC_READY')),unique_calibration_owner_steps=len(self.samples),
             collection_verified_through_market_step=self.collection_through(),
             collection_status=self.evidence.get('collection',{}).get('receipt',{}).get('collection_status','NOT_VERIFIED'),
             prediction_q_decision_fusion=False)

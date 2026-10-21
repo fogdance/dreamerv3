@@ -40,18 +40,19 @@ def engineering_permit(spec,*,numeric_rl=False):
 class OnlineCounters(ActorCounters):
     def __init__(self):
         super().__init__()
-        self.state.update(cycles=0,warmup_cycles=0,rl_updates=0)
+        self.state.update(cycles=0,warmup_cycles=0,rl_updates=0,bc_updates=0)
 
 
 class OnlineRun(ActorRun,LiveRun):
     """Existing HeadsRun.update + LiveRun.collect_to, one Agent/optimizer/CP."""
-    protocol='FG_S3_E_QUALITY_ONLINE_RUN_V2'
+    protocol='FG_S3_E_QUALITY_ONLINE_RUN_V3'
 
     def __init__(self,spec,factory,source,history=None,*,resume=False,authorized=False,
                  native_preparation=None,_probe=None,_test_location=None,wm_policy=None,initial_state=None,
-                 rl_review=None,source_bindings=None,native_audit=None):
+                 rl_review=None,source_bindings=None,native_audit=None,rl_policy=None):
         from dreamerv3.fg_s3_e_quality_online import validate_execution,execution_contract
         from dreamerv3.fg_s3a_actor import parameter_digests
+        from dreamerv3.fg_s3_e_quality_course_contract import WM_GROUPS
         from gym_trading_env.envs.entry_contract import fingerprint
         from gym_trading_env.research.fg_replay import read_manifest,write_json,signed
         from gym_trading_env.research.fg_s3_e_quality_actor import create_agent,require_training_authority
@@ -64,6 +65,10 @@ class OnlineRun(ActorRun,LiveRun):
         s=validate_execution(spec);self.spec=s;self.mode=s['execution_mode']
         permit=_PERMITS.get(_probe);proof,state=inspect_f3(s,allow_engineering=permit is not None)
         engineering=permit is not None and permit[:2]==(fingerprint(s),proof['manifest_sha256'])
+        numeric_probe=bool(engineering and permit[2])
+        from .fg_s3_e_quality_online_rl import validate_rl_policy,RLAdmissionState
+        if not numeric_probe:rl_policy=validate_rl_policy(rl_policy,s)
+        elif rl_policy is not None:raise ValueError('ONLINE_DEV_NUMERIC_PROBE_HAS_NO_FORMAL_RL_POLICY')
         if permit is not None and not engineering:raise ValueError('ONLINE_ENGINEERING_PERMIT_IDENTITY_MISMATCH')
         if not engineering and self.mode!='SHADOW':require_training_authority(native_preparation,authorized=authorized)
         if not engineering:
@@ -87,6 +92,8 @@ class OnlineRun(ActorRun,LiveRun):
                             or source.get('scope')!='BUILTIN_SYNTHETIC_ONLY'):
             env.close();raise ValueError('ONLINE_BUILTIN_SYNTHETIC_ENV_REQUIRED')
         self.settings=copy.deepcopy(proof['identity']['preparation']['settings'])
+        if rl_policy is not None and rl_policy['calibration_horizon']>=self.settings['target_steps']:
+            env.close();raise ValueError('ONLINE_CALIBRATION_HORIZON_INVALID')
         self.settings['model_init']['seed']=s['model_seed'];self.settings['device']='cpu'
         geometry={k:self.settings[k] for k in ('batch_size','burnin_steps','target_steps')}
         if history is not None:
@@ -97,12 +104,15 @@ class OnlineRun(ActorRun,LiveRun):
             self.settings['aux_sampling_spec']=None  # Effective Agent batch; Reader roles have their own frozen identity.
         cycles=math.ceil(s['env_steps']/s['collect_every'])
         self.settings.update(optimizer_updates=max(1,cycles*s['updates_per_collect']),max_consumed_batches=s['max_consumed_batches'])
+        mask_policy=formal_mask_policy(self.settings)
         chunksize=32 if engineering else 1024
         self.identity=dict(protocol=self.protocol,spec=s,execution_contract=execution_contract(self.mode),
             source_manifest=proof['manifest_sha256'],source_run_identity=proof['run_identity_sha256'],
+            frozen_wm_identity=fingerprint({k:v for k,v in parameter_digests(state['params']).items() if k.startswith(WM_GROUPS)}),
             course=proof['identity']['preparation']['course'],source_nonopt=fingerprint({k:v for k,v in parameter_digests(state['params']).items() if not k.startswith('opt/')}),
             history=None if history is None else history.identity_hash,live_source=copy.deepcopy(source),
-            source_bindings=copy.deepcopy(source_bindings),
+            source_bindings=copy.deepcopy(source_bindings),rl_admission_policy=copy.deepcopy(rl_policy),
+            online_settings=copy.deepcopy(self.settings),mask_policy=mask_policy,wm_policy=copy.deepcopy(wm_policy),
             env_config_hash=env.config_hash,e_identity=env.e_observation_identity,
             initial_account=None if initial_state is None else fingerprint(initial_state),
             chunksize=chunksize,code=execution_identity(),packages=runtime_versions(),
@@ -123,6 +133,7 @@ class OnlineRun(ActorRun,LiveRun):
             wm_policy=wm_policy,collection_root=self.root)
         from gym_trading_env.research.fg_s3_e_quality_online_evidence import FinalAccountState
         self.account_verification=FinalAccountState(self.root,fingerprint(self.identity))
+        self.rl_lifecycle=RLAdmissionState(fingerprint(self.identity),rl_policy,numeric_probe=numeric_probe)
         self.native_preparation=native_preparation;self.authorized=authorized
         self.source_bindings=copy.deepcopy(source_bindings)
         self.native_audit=copy.deepcopy(native_audit)
@@ -156,17 +167,20 @@ class OnlineRun(ActorRun,LiveRun):
         if self.source is not None:self.cp.course_reader=self.source
         self.cp.agent=self.agent;self.cp.step=self.transaction;self.cp.market_step=self.step
         self.cp.consumed_step=self.consumed_step;self.cp.counters=self.counters;self.cp.gates=self.gates
-        self.cp.runtime=self.runtime;self.cp.logs=JournalState(self.root,('updates.jsonl','cycles.jsonl'))
+        self.cp.runtime=self.runtime;self.cp.logs=JournalState(self.root,('updates.jsonl','cycles.jsonl','rl_authorizations.jsonl'))
         self.cp.phase=self.phase
         self.cp.source_exposures=self.source_exposures
         self.cp.account_verification=self.account_verification
+        self.cp.rl_lifecycle=self.rl_lifecycle
         if resume:
             self._validate_account_checkpoint(selected)
+            self._validate_rl_checkpoint(selected)
             self.cp.load()
             if (int(self.step)!=self.collector.counts['env_steps'] or int(self.consumed_step)!=self.counters.state['consumed_batches']
                     or int(self.agent.n_updates)!=self.counters.state['optimizer_updates']):
                 raise ValueError('ONLINE_RESTORED_COUNTER_MISMATCH')
-        else:self._save_checkpoint()
+        self.gates.evidence['source_native']=None if native_audit is None else copy.deepcopy(native_audit.report)
+        if not resume:self._save_checkpoint()
 
     def _consume_batch_boundary(self):
         self.consumed_step.increment();self.phase.state['updates_done']+=1
@@ -188,6 +202,8 @@ class OnlineRun(ActorRun,LiveRun):
         gates=load('gates');collector=load('collector');market=int(load('market_step'))
         account=load('account_verification')
         self.gates.validate_snapshot(gates);self.account_verification.validate_snapshot(account)
+        from gym_trading_env.research.fg_s3_e_quality_online_admission import validate_native_audit_report
+        validate_native_audit_report(gates['evidence'].get('source_native'),self.source_bindings)
         report=gates['evidence'].get('collection')
         if report is not None:
             r=report['receipt'];prefix=r['prefix'];through=r['verified_through_market_step']
@@ -200,6 +216,50 @@ class OnlineRun(ActorRun,LiveRun):
             if (report!=final or market!=self.spec['env_steps']
                     or final['receipt']['verified_through_market_step']!=market):
                 raise ValueError('ONLINE_CHECKPOINT_FINAL_ACCOUNT_RANGE_MISMATCH')
+
+    def _validate_rl_checkpoint(self,node):
+        """Validate saved technical identities and actual RL ledger before Agent load."""
+        import math
+        from dreamerv3.fg_s3a_actor import parameter_digests
+        from dreamerv3.fg_s3_e_quality_course_contract import WM_GROUPS
+        from gym_trading_env.envs.entry_contract import fingerprint
+        from .fg_s3_e_quality_online_rl import validate_frozen_online_state
+        from .fg_checkpoint import validate_bundle
+        load=lambda name:pickle.loads((node/(name+'.pkl')).read_bytes())
+        lifecycle=load('rl_lifecycle');self.rl_lifecycle.validate_snapshot(lifecycle)
+        gates=load('gates');counters=load('counters');agent=load('agent');logs=load('logs')
+        self.cp._saveables['logs'].validate_snapshot(logs)
+        size=logs['updates.jsonl']['bytes']
+        rows=[json.loads(line) for line in (self.root/'updates.jsonl').read_bytes()[:size].splitlines()] if size else []
+        updates=rl=bc=0
+        for number,row in enumerate(rows,1):
+            metrics=row['metrics'];updates+=int(bool(metrics['f3/updated']))
+            rl+=int(bool(metrics.get('f4/rl_active')) and bool(metrics['f3/updated']))
+            bc+=int(bool(metrics.get('f3/active')) and bool(metrics['f3/updated']))
+            if (row['consumed_batches']!=number or row['local_update']!=updates
+                    or row['agent_update']!=updates or metrics['opt/updates']!=updates
+                    or not metrics['f3/finite'] or not math.isfinite(metrics['opt/loss'])
+                    or not math.isfinite(metrics['opt/grad_norm'])):
+                raise ValueError('ONLINE_CHECKPOINT_UPDATE_LEDGER_INVALID')
+        if (len(rows)!=counters['consumed_batches'] or updates!=counters['optimizer_updates']
+                or updates!=agent['counters']['updates'] or rl!=counters['rl_updates'] or bc!=counters['bc_updates']):
+            raise ValueError('ONLINE_CHECKPOINT_RL_OR_BC_COUNTER_MISMATCH')
+        initial=self.root/'ckpt/step_000000000001'
+        validate_bundle(initial,self.identity)
+        first=pickle.loads((initial/'agent.pkl').read_bytes())
+        groups=() if self.mode=='SHADOW' else ('quality_actor/',)
+        if rl>0:groups+=('val/','slowval/','slowval_count/','retnorm/','valnorm/','advnorm/','avail_actor_gate/')
+        validate_frozen_online_state(first['params'],agent['params'],self.agent.model.config,
+            groups,updated=updates>0)
+        if lifecycle['stage'] in ('AWAIT_OPERATOR_REVIEW','RL_ACTIVE','FINAL_VERIFY','COMPLETE_VERIFIED'):
+            technical=lifecycle['technical']
+            if (technical['evidence_hash']!=fingerprint({k:v for k,v in technical.items() if k!='evidence_hash'})
+                    or technical['numeric_evidence']!=gates['evidence']['numeric']
+                    or fingerprint({k:v for k,v in parameter_digests(agent['params']).items()
+                        if k.startswith(WM_GROUPS)})!=gates['wm_identity']):
+                raise ValueError('ONLINE_CHECKPOINT_RL_TECHNICAL_OR_WM_CHANGED')
+            if lifecycle['stage']=='COMPLETE_VERIFIED' and rl<=0:
+                raise ValueError('ONLINE_RL_COMPLETION_REQUIRES_ACTUAL_UPDATES')
 
     def _accumulate_metrics(self,metrics,updated):
         from dreamerv3.fg_s3a_actor import parameter_digests
@@ -214,10 +274,10 @@ class OnlineRun(ActorRun,LiveRun):
         frozen=all(before[k]==after[k] for k in before if not permitted(k))
         if not frozen:raise RuntimeError('ONLINE_FROZEN_PARAMETER_OR_SLOT_CHANGED')
         self.gates.supervised(metrics,frozen_equal=frozen)
+        self.counters.state['bc_updates']+=int(updated and bool(metrics.get('f3/active',False)))
         if rl:
             self.counters.state['rl_updates']+=int(updated)
-            self.gates.numeric(metrics,actor_changed=any(before[k]!=after[k] for k in before if k.startswith('quality_actor/')),
-                value_changed=any(before[k]!=after[k] for k in before if k.startswith('val/')),frozen_equal=frozen)
+            self.gates.observe_rl(metrics,frozen_equal=frozen)
         audit=self.stream.state.get('last_batch_audit',[])
         self.source_exposures.add(audit,self.last_batch,1+self.settings['burnin_steps'])
         for row in audit:
@@ -228,7 +288,68 @@ class OnlineRun(ActorRun,LiveRun):
     def update(self):
         from dreamerv3.fg_s3a_actor import parameter_digests
         self._before_update=parameter_digests(self.agent.params)
+        if self.mode=='ONLINE_RL_CONTROLLED' and not self.identity['numeric_probe']:
+            if int(self.step)>self.rl_lifecycle.policy['warmup_env_steps']:
+                self._require_live_rl(self._before_update)
+            elif self.agent.get_avail_actor_enabled():
+                raise ValueError('ONLINE_RL_FORBIDDEN_DURING_BC_WARMUP')
         return HeadsRun.update(self)
+
+    def _require_live_rl(self,digests=None):
+        from dreamerv3.fg_s3a_actor import parameter_digests
+        from dreamerv3.fg_s3_e_quality_course_contract import WM_GROUPS
+        from gym_trading_env.envs.entry_contract import fingerprint
+        if self.rl_lifecycle.state['stage']!='RL_ACTIVE':raise ValueError('ONLINE_RL_LIFECYCLE_NOT_AUTHORIZED')
+        digests=parameter_digests(self.agent.params) if digests is None else digests
+        if (fingerprint({k:v for k,v in digests.items() if k.startswith(WM_GROUPS)})!=self.gates.wm_identity
+                or fingerprint({k:v for k,v in digests.items() if k.startswith(WM_GROUPS)})!=self.identity['frozen_wm_identity']
+                or self.source_bindings!=self.identity['source_bindings']
+                or self.source.history.identity_hash!=self.identity['history']
+                or int(self.step)>self.spec['env_steps']
+                or int(self.agent.n_updates)>self.settings['optimizer_updates']
+                or self.counters.state['consumed_batches']>self.spec['max_consumed_batches']):
+            self.gates.formal_admitted=False
+            raise ValueError('ONLINE_RL_WM_IDENTITY_OR_REVIEW_SCOPE_CHANGED')
+        self.gates.require_rl(self.native_preparation,authorized=self.authorized,review=self.rl_review)
+
+    def _assert_frozen_wm(self):
+        from dreamerv3.fg_s3a_actor import parameter_digests
+        from dreamerv3.fg_s3_e_quality_course_contract import WM_GROUPS
+        from gym_trading_env.envs.entry_contract import fingerprint
+        actual=fingerprint({k:v for k,v in parameter_digests(self.agent.params).items() if k.startswith(WM_GROUPS)})
+        if actual!=self.identity['frozen_wm_identity']:
+            raise RuntimeError('ONLINE_FROZEN_WM_REPLACED_REQUIRES_ORIGINAL_SAFE_CHECKPOINT')
+
+    def reauthorize_rl(self,path,sha256,*,authorize_rl=False):
+        from .fg_s3_e_quality_online_rl import review_contract
+        from gym_trading_env.envs.entry_contract import fingerprint
+        if self.mode!='ONLINE_RL_CONTROLLED' or self.identity['numeric_probe']:
+            raise ValueError('ONLINE_REVIEW_REQUIRES_FORMAL_CONTROLLED_RL_LIFECYCLE')
+        if self.rl_lifecycle.state['stage'] not in ('AWAIT_OPERATOR_REVIEW','RL_ACTIVE'):
+            raise ValueError('ONLINE_REVIEW_REQUIRES_COMPLETED_TECHNICAL_EVIDENCE')
+        contract=review_contract(self)
+        self.rl_review=self.gates.review_rl(self.native_preparation,path,sha256,
+            authorized=authorize_rl,expected_contract=contract)
+        if self.rl_lifecycle.state['stage']=='AWAIT_OPERATOR_REVIEW':self.rl_lifecycle.transition('RL_ACTIVE')
+        self.rl_lifecycle.state['last_review_sha256']=sha256
+        self._require_live_rl()
+        event=dict(protocol='FG_S3_E_QUALITY_RL_AUTHORIZATION_EVENT_V1',
+            reviewed_sha256=sha256,review_contract_hash=fingerprint(contract),
+            authorized_at_market_step=int(self.step),authorized_at_consumed_batches=self.counters.state['consumed_batches'],
+            optimizer_updates=int(self.agent.n_updates),cold_process_revalidated=True)
+        with (self.root/'rl_authorizations.jsonl').open('a') as stream:
+            stream.write(json.dumps(event,sort_keys=True)+'\n')
+        self._save_checkpoint()
+
+    def _rl_boundary(self):
+        if self.mode!='ONLINE_RL_CONTROLLED' or self.identity['numeric_probe']:return False
+        if int(self.step)<self.rl_lifecycle.policy['warmup_env_steps']:return False
+        stage=self.rl_lifecycle.state['stage']
+        if stage in ('WARMUP','WM_CALIBRATING','RL_PROBING','RL_BLOCKED'):
+            from .fg_s3_e_quality_online_rl import perform_admission
+            perform_admission(self)
+            return True
+        return stage=='AWAIT_OPERATOR_REVIEW' or stage=='RL_ACTIVE' and self.rl_review is None
 
     def _reject_batch(self,error):
         self.consumed_step.increment();self.phase.state['updates_done']+=1;c=self.counters.state
@@ -265,18 +386,40 @@ class OnlineRun(ActorRun,LiveRun):
             self.account_verification.validate_snapshot()
             return
         state.update(status='VERIFYING',error=None)
+        previous_rl_stage=self.rl_lifecycle.state['stage']
         try:
+            self._validate_final_publication()
             self.verify_collection(final=True)
             state.update(status='VERIFIED',final_evidence=copy.deepcopy(self.gates.evidence['collection']))
+            if self.rl_lifecycle.state['stage']=='FINAL_VERIFY':
+                self.rl_lifecycle.transition('COMPLETE_VERIFIED')
             # A new transaction is essential: FullCheckpoint reuses an existing
             # node at the same sequence number without reserializing its members.
             self._save_checkpoint(final=True)
         except Exception as error:
             state.update(status='NO_GO',final_evidence=None,error=str(error))
             self.gates.ready['COLLECTION_VALID']=False
+            # An uncommitted terminal transition is rolled back with the
+            # failed account/CP transaction. Final verification can be retried
+            # without inventing another optimizer or authorization step.
+            self.rl_lifecycle.state['stage']=previous_rl_stage
+            if previous_rl_stage=='FINAL_VERIFY':self.rl_lifecycle.state['reason']=str(error)
             self._save_checkpoint(final=False)
             raise
         self._publish_completion()
+
+    def _validate_final_publication(self):
+        if self.publisher is None:return  # SHADOW has no teacher publication.
+        if self.publisher.strict is None or self.publisher.blockers:
+            raise ValueError('ONLINE_FINAL_SUPERVISION_UNAVAILABLE')
+        for row in self.collector.rows[:-1]:
+            entry=self.publisher.ledger.get(row['stepid'])
+            if (entry is None or entry['status'] not in ('CERTIFIED','INVALID')
+                    or type(entry['publication_seq']) is not int or entry['publication_seq']<=0):
+                raise ValueError('ONLINE_FINAL_LEGAL_SIDECAR_NOT_PUBLISHED')
+        # The final unexecuted decision stays PENDING/invalid by the existing
+        # publication contract. It is not silently labeled WAIT.
+        self.publisher.validate_snapshot()
 
     def _publish_completion(self):
         from gym_trading_env.research.fg_replay import digest,signed,read_manifest
@@ -310,6 +453,7 @@ class OnlineRun(ActorRun,LiveRun):
         if _stop_after_publications is not None and not self.identity['controlled_small']:
             raise ValueError('ONLINE_PUBLICATION_INTERRUPT_PROBE_FORBIDDEN')
         phase=self.phase.state
+        if phase['stage']=='IDLE' and self._rl_boundary():return self.result()
         while int(self.step)<target or phase['stage']!='IDLE':
             if phase['stage']=='IDLE':phase.update(stage='COLLECT',end=min(int(self.step)+s['collect_every'],target),updates_done=0)
             if phase['stage']=='COLLECT':
@@ -326,10 +470,14 @@ class OnlineRun(ActorRun,LiveRun):
                 if self.publisher is not None and self.source.online._eligible():
                     if self.mode=='ONLINE_RL_CONTROLLED':
                         if self.identity['numeric_probe']:self.agent.set_avail_actor_enabled(True)
+                        elif int(self.step)<=self.rl_lifecycle.policy['warmup_env_steps']:
+                            self.agent.set_avail_actor_enabled(False)
                         else:
-                            try:self.gates.require_rl(self.native_preparation,authorized=self.authorized,review=self.rl_review)
-                            except ValueError:self.agent.set_avail_actor_enabled(False)
-                            else:self.agent.set_avail_actor_enabled(True)
+                            try:self._require_live_rl()
+                            except ValueError as error:
+                                self.rl_lifecycle.transition('RL_BLOCKED',reason=str(error))
+                                self._save_checkpoint();return self.result()
+                            self.agent.set_avail_actor_enabled(True)
                     while phase['updates_done']<s['updates_per_collect']:self.update()
                     self.agent.sync_policy_from_train()
                 elif self.publisher is not None:self.counters.state['warmup_cycles']+=1
@@ -343,10 +491,12 @@ class OnlineRun(ActorRun,LiveRun):
                         rl_updates=self.counters.state['rl_updates']),sort_keys=True)+'\n')
                 phase.update(stage='IDLE',end=int(self.step),updates_done=0)
                 if save or int(self.step)==target:self._save_checkpoint()
+                if self._rl_boundary():return self.result()
         if target==s['env_steps']:
             if self.mode=='ONLINE_RL_CONTROLLED' and not self.counters.state['rl_updates']:
                 self._save_checkpoint(final=False)
             else:
+                if self.rl_lifecycle.state['stage']=='RL_ACTIVE':self.rl_lifecycle.transition('FINAL_VERIFY')
                 self._final_account_commit()
                 self._publish_completion()  # Also completes a commit-before-receipt crash.
         return self.result()
@@ -354,7 +504,11 @@ class OnlineRun(ActorRun,LiveRun):
     def result(self):
         complete=int(self.step)==self.spec['env_steps'] and self.phase.state['stage']=='IDLE'
         verified=complete and self.account_verification.state['status']=='VERIFIED'
-        if verified:
+        lifecycle=self.rl_lifecycle.state['stage']
+        if lifecycle=='RL_BLOCKED':status='RL_BLOCKED'
+        elif lifecycle=='AWAIT_OPERATOR_REVIEW' or lifecycle=='RL_ACTIVE' and self.rl_review is None:
+            status='AWAIT_OPERATOR_REVIEW'
+        elif verified:
             status={'SHADOW':'SHADOW_COMPLETE_VERIFIED','ONLINE_SUPERVISED':'ONLINE_BC_COMPLETE_VERIFIED',
                 'ONLINE_RL_CONTROLLED':'RL_COMPLETE_VERIFIED'}[self.mode]
         elif self.account_verification.state['status']=='NO_GO':status='COMPLETE_BUT_UNVERIFIED/NO_GO'
@@ -365,7 +519,10 @@ class OnlineRun(ActorRun,LiveRun):
             gate=self.gates.report(),phase=self.phase.save(),source_exposures=self.source_exposures.save(),checkpoint=str(self.cp.latest()),
             training_admitted=self.identity['training_admitted'],real_TRAIN_updates=0 if self.identity['controlled_small'] else int(self.agent.n_updates),
             formal_rl_admitted=self.gates.report()['formal_rl_admitted'],research_admitted=False,
-            account_verification=self.account_verification.save())
+            account_verification=self.account_verification.save(),rl_lifecycle=self.rl_lifecycle.save(),
+            live_process_rl_authorized=self.gates.report()['formal_rl_admitted'],
+            native_source_audit=copy.deepcopy(self.gates.evidence.get('source_native')),
+            update_counter_semantics='BC/RL count active loss components and may overlap; optimizer_updates counts invocations')
 
     def close(self):
         if self.stream is not None:
