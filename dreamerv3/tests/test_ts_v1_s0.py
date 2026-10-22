@@ -10,6 +10,7 @@ import ninjax as nj
 import numpy as np
 import pytest
 
+from dreamerv3.thinking_student import labels
 from dreamerv3.thinking_student import run as ts_run
 from dreamerv3.thinking_student import transfer
 from dreamerv3.thinking_student.student import GROUPS, make_agent
@@ -126,6 +127,7 @@ def test_l1_update_save_resume(agent, factory, tmp_path):
   data = stack(rows)
   data['action'] = np.zeros((1, T), np.int32)
   data['account_valid'] = np.ones((1, T), np.float32)
+  data.update(labels.empty_labels((1, T)))
   before = {k: np.asarray(v).copy() for k, v in agent.params.items()}
   from embodied.jax import internal
   for i in range(2):  # the first update runs at lr 0 (linear warmup start)

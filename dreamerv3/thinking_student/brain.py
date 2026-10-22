@@ -11,17 +11,14 @@ import ninjax as nj
 
 import embodied.jax
 import embodied.jax.nets as nn
+import optax
+
+from .labels import MAE_HORIZONS, NBINS, OUTCOME_BINS, OUTCOME_CLASSES, RISK_FLAGS
 
 sg = jax.lax.stop_gradient
 f32 = jnp.float32
-
-# Market-minute bin edges for the first TP/SL termination; anything later is
-# the survival class (still open at the last edge, or right-censored).
-OUTCOME_BINS = (5, 15, 30, 60, 120, 240, 480)
-OUTCOME_CLASSES = 2 * len(OUTCOME_BINS) + 1
-RISK_FLAGS = ('early10_5', 'early10_15')
-MAE_HORIZONS = ('mae_15', 'mae_60', 'mae_full')
 WAIT, ADD = 0, 1
+QUICK_TP_BINS = sum(edge <= 15 for edge in OUTCOME_BINS)
 
 
 def add_legal(position_state, action_mask):
@@ -74,7 +71,6 @@ class OutcomeBrain(nj.Module):
     quality = f32(self.sub('quality', nn.Linear, 1)(h))[..., 0]
     latent = jnp.tanh(f32(self.sub('latent', nn.Linear, self.evidence)(h)))
     probs = jax.nn.softmax(event_logits, -1)
-    nbins = len(OUTCOME_BINS)
     stats = jnp.concatenate([
         probs, jax.nn.sigmoid(risk_logits), mae, quality[..., None]], -1)
     valid = f32(legal)
@@ -82,9 +78,61 @@ class OutcomeBrain(nj.Module):
     return dict(
         event_logits=event_logits, risk_logits=risk_logits, mae=mae,
         quality=quality, valid=valid, evidence=evidence,
-        p_tp=probs[..., :nbins].sum(-1) * valid,
-        p_sl=probs[..., nbins:2 * nbins].sum(-1) * valid,
+        p_tp=probs[..., :NBINS].sum(-1) * valid,
+        p_tp_15=probs[..., :QUICK_TP_BINS].sum(-1) * valid,
+        p_sl=probs[..., NBINS:2 * NBINS].sum(-1) * valid,
         p_open=probs[..., -1] * valid)
+
+
+def masked_mean(x, mask):
+  return (x * mask).sum() / jnp.maximum(mask.sum(), 1.)
+
+
+def outcome_loss(out, data, weight):
+  """L_outcome on teacher labels; only legal-ADD states with valid labels count.
+
+  Event term: discrete-time competing-risk likelihood. The label lists every
+  class consistent with the native trace (one class for an observed TP/SL,
+  the later bins plus survival for a censored trade), so the NLL is
+  -log sum(p[allowed]) and a trade with no informative age contributes 0.
+  """
+  valid = data['outcome_valid'] * weight * out['valid']
+  logp = jax.nn.log_softmax(out['event_logits'], -1)
+  allowed = (data['outcome_allowed'] > 0.5) | (valid[..., None] <= 0)
+  nll = -jax.nn.logsumexp(jnp.where(allowed, logp, -jnp.inf), -1)
+  risk_mask = data['outcome_risk_valid'] * valid[..., None]
+  risk = optax.sigmoid_binary_cross_entropy(
+      out['risk_logits'], data['outcome_risk'])
+  mae_mask = data['outcome_mae_valid'] * valid[..., None]
+  quality_mask = data['outcome_quality_valid'] * valid
+  losses = {
+      'outcome_event': masked_mean(nll, valid),
+      'outcome_risk': masked_mean(risk, risk_mask),
+      'outcome_mae': masked_mean(jnp.square(out['mae'] - data['outcome_mae']), mae_mask),
+      'outcome_quality': masked_mean(
+          jnp.square(out['quality'] - data['outcome_quality']), quality_mask),
+  }
+  labelled = data['outcome_valid'] * weight
+  # Rows whose first termination was observed as a TP or an SL.
+  observed = valid * (data['outcome_allowed'].sum(-1) == 1)
+  tp = observed * data['outcome_allowed'][..., :NBINS].sum(-1)
+  sl = observed * data['outcome_allowed'][..., NBINS:2 * NBINS].sum(-1)
+  metrics = {
+      'outcome/labels': valid.sum(),
+      'outcome/label_not_legal': (labelled * (1. - out['valid'])).sum(),
+      'outcome/label_tp': masked_mean(tp, valid),
+      'outcome/label_sl': masked_mean(sl, valid),
+      'outcome/p_tp': masked_mean(out['p_tp'], valid),
+      'outcome/p_tp_15': masked_mean(out['p_tp_15'], valid),
+      'outcome/p_sl': masked_mean(out['p_sl'], valid),
+      'outcome/p_tp_on_tp': masked_mean(out['p_tp'], tp),
+      'outcome/p_tp_on_sl': masked_mean(out['p_tp'], sl),
+      # Denominators of the masked means, so evaluations can pool batches.
+      'outcome/n_risk': risk_mask.sum(), 'outcome/n_mae': mae_mask.sum(),
+      'outcome/n_quality': quality_mask.sum(), 'outcome/n_tp': tp.sum(),
+      'outcome/n_sl': sl.sum(),
+  }
+  return losses, metrics
 
 
 class ValueBrain(nj.Module):

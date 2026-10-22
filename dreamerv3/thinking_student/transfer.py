@@ -1,9 +1,11 @@
-"""Inherit F1 market weights into the Thinking Student (C2 4.1).
+"""Inherit earlier weights into the Thinking Student (C2 4.1).
 
-Only parameters whose meaning survives the new architecture are copied:
-the market encoder (with the account/mask input rows removed), the market
-RSSM (its action slot now always sees zeros) and the market decoder head.
-Everything else keeps its fresh initialization and is listed as such.
+`inherit_f1`: only parameters whose meaning survives the new architecture are
+copied: the market encoder (with the account/mask input rows removed), the
+market RSSM (its action slot now always sees zeros) and the market decoder
+head. `inherit_student`: an earlier Thinking Student checkpoint whose
+parameter tree has since changed. Everything not copied keeps its fresh
+initialization and is listed as such; nothing is reset silently.
 """
 import pickle
 from pathlib import Path
@@ -53,6 +55,50 @@ def plan(source, target):
       break
   initialized = sorted(k for k in target if k not in values and not k.startswith('opt'))
   return values, sorted(reused), sorted(sliced), initialized
+
+
+def checkpoint_file(path):
+  """A run folder (its latest checkpoint), a checkpoint folder, or a file."""
+  path = Path(path)
+  pointer = path / 'ckpt' / 'latest'
+  if pointer.exists():
+    path = path / 'ckpt' / pointer.read_text().strip()
+  return path / 'agent.pkl' if path.is_dir() else path
+
+
+def inherit_student(agent, source_path, log=print):
+  """Continue from a Thinking Student checkpoint with another parameter tree.
+
+  Keys with the same shape and dtype are copied together with the update
+  counters. Reshaped keys (e.g. a widened Outcome head and the layers that
+  read its evidence) and new keys (e.g. a new stage optimizer) keep their
+  fresh initialization; keys the model no longer has are dropped.
+  """
+  file = checkpoint_file(source_path)
+  with file.open('rb') as f:
+    data = pickle.load(f)
+  source, target = data['params'], agent.params
+  values, reused, reshaped = {}, [], []
+  for key in sorted(source.keys() & target.keys()):
+    old, new = np.asarray(source[key]), target[key]
+    if old.shape == tuple(new.shape) and old.dtype == new.dtype:
+      values[key] = old
+      reused.append(key)
+    else:
+      reshaped.append(f'{key}: {old.shape} -> {tuple(new.shape)}')
+  lists = dict(source=str(file), reused=reused, reshaped=reshaped,
+               initialized=sorted(target.keys() - source.keys()),
+               dropped=sorted(source.keys() - target.keys()))
+  current = agent.save()
+  current['params'].update(values)
+  current['counters'] = data['counters']
+  agent.load(current)
+  log(f'Inherit {file}: reused={len(reused)} reshaped={len(reshaped)} '
+      f'initialized={len(lists["initialized"])} dropped={len(lists["dropped"])}')
+  for name in ('reshaped', 'initialized', 'dropped'):
+    for key in lists[name]:
+      log(f'  {name}: {key}')
+  return lists
 
 
 def inherit_f1(agent, source_path, log=print):

@@ -17,6 +17,7 @@ import embodied.jax.nets as nn
 
 from .. import rssm
 from . import brain
+from . import labels
 from . import market
 from .config import action_space, make_config, observation_space
 
@@ -32,8 +33,20 @@ GROUPS = {
     'value': ('value',),
     'decision': ('decision',),
 }
-# S0 implements L1 only; L2-L6 optimizers arrive with their supervision (S1-S4).
-STAGE_GROUPS = {'L1': ('market', 'account')}
+
+
+def stage_groups(ts):
+  """A6 2.2: the groups each stage optimizer may update. L_outcome adapts
+  SharedFusion only when the config declares it; L3-L5 arrive in S2-S4."""
+  return {'L1': ('market', 'account'),
+          'L2': ('outcome', 'fusion') if ts.l2_fusion else ('outcome',)}
+
+
+def warm(reset, burnin):
+  """1 once the market state has observed `burnin` steps since its last reset."""
+  idx = jnp.arange(reset.shape[1])
+  last = jax.lax.cummax(jnp.where(reset, idx, -burnin), axis=1)
+  return f32(idx - last >= burnin)
 
 
 class AccountAux(nj.Module):
@@ -74,9 +87,15 @@ class StudentModel(embodied.jax.Agent):
         value=self.value, decision=self.decision)
     self.group_modules = {
         g: [modules[n] for n in names] for g, names in GROUPS.items()}
-    l1 = [m for g in STAGE_GROUPS['L1'] for m in self.group_modules[g]]
-    self.opt_l1 = embodied.jax.Optimizer(
-        l1, _make_opt(**config.opt), summary_depth=1, name='opt_l1')
+    self.stage_groups = stage_groups(ts)
+    if ts.stage not in self.stage_groups:
+      raise ValueError(f'Unknown training stage {ts.stage}')
+    # Each stage keeps its own optimizer state over its own groups (A6 2.1).
+    self.opts = {
+        stage: embodied.jax.Optimizer(
+            [m for g in groups for m in self.group_modules[g]],
+            _make_opt(**config.opt), summary_depth=1, name=f'opt_{stage.lower()}')
+        for stage, groups in self.stage_groups.items()}
     self.scales = dict(ts.loss_scales)
 
   @property
@@ -89,8 +108,12 @@ class StudentModel(embodied.jax.Agent):
 
   @property
   def ext_space(self):
-    # 0 for corpus records written before account_native existed.
-    return {'account_valid': elements.Space(np.float32, ())}
+    # account_valid: 0 where the corpus could not reconstruct account_native.
+    # outcome_*: TRAIN teacher facts for L_outcome, never a policy input.
+    spaces = {'account_valid': elements.Space(np.float32, ())}
+    spaces.update({k: elements.Space(np.float32, shape)
+                   for k, shape in labels.LABEL_SPACE.items()})
+    return spaces
 
   def init_policy(self, batch_size):
     return {'market': self.market_dyn.initial(batch_size)}
@@ -137,13 +160,30 @@ class StudentModel(embodied.jax.Agent):
                                       logits=t['decision']['logits']).items()}
     return carry, {'action': action}, out
 
-  # ---- S0 learning: L_market + L_account (A6 L1) ----
+  # ---- learning: one optimizer step of the configured A6 stage ----
 
   def train(self, carry, data):
-    metrics, (carry, mets) = self.opt_l1(
-        self.l1_loss, carry, data, training=True, has_aux=True)
-    metrics.update(mets)
+    stage = self.config.ts.stage
+    if nj.creating():
+      # Create every stage optimizer at init so all checkpoints share one
+      # parameter tree and a run can switch stages without reshaping it.
+      for other in self.opts:
+        if other != stage:
+          self._update(other, carry, data)
+    carry, metrics = self._update(stage, carry, data)
     return carry, {}, metrics
+
+  def _update(self, stage, carry, data):
+    lossfn = getattr(self, f'{stage.lower()}_loss')
+    metrics, (carry, mets) = self.opts[stage](
+        lossfn, carry, data, training=True, has_aux=True)
+    metrics.update(mets)
+    return carry, metrics
+
+  def report(self, carry, data):
+    lossfn = getattr(self, f'{self.config.ts.stage.lower()}_loss')
+    _, (carry, mets) = lossfn(carry, data, training=False)
+    return carry, mets
 
   def l1_loss(self, carry, data, training):
     reset = data['is_first']
@@ -179,9 +219,24 @@ class StudentModel(embodied.jax.Agent):
     mets['brain/outcome_valid'] = t['outcome']['valid'].mean()
     return loss, ({'market': mcarry}, mets)
 
-  def report(self, carry, data):
-    _, (carry, mets) = self.l1_loss(carry, data, training=False)
-    return carry, mets
+  def l2_loss(self, carry, data, training):
+    """L_outcome (A6 L2) on Native ADD facts. Market and Account are frozen:
+    their outputs enter Fusion as stopped inputs, as in the policy forward."""
+    reset = data['is_first']
+    tokens = self.market_enc(data, reset, training)
+    mcarry, _, feat = self.market_dyn.observe(
+        carry['market'], tokens, reset, training)
+    account = self.account_enc(
+        data['position_state'], data['account_native'], data['action_mask'],
+        data['account_valid'])
+    state = self.fusion(sg(market.feat2tensor(feat)), sg(account))
+    legal = brain.add_legal(data['position_state'], data['action_mask'])
+    out = self.outcome(state, legal)
+    weight = warm(reset, self.config.ts.outcome_burnin)
+    losses, mets = brain.outcome_loss(out, data, weight)
+    loss = sum(self.scales[k] * v for k, v in losses.items())
+    mets.update({f'loss/{k}': v for k, v in losses.items()})
+    return loss, ({'market': mcarry}, mets)
 
 
 def answer_sheet(t, dist):
@@ -198,6 +253,7 @@ def answer_sheet(t, dist):
       'answer/reason_pref': d['reason_pref'],
       'answer/outcome_valid': o['valid'],
       'answer/p_tp': o['p_tp'],
+      'answer/p_tp_15': o['p_tp_15'],
       'answer/p_sl': o['p_sl'],
       'answer/p_open': o['p_open'],
       'answer/quality': o['quality'] * o['valid'],

@@ -20,7 +20,12 @@ TS_DEFAULTS = {
     'value': {'units': 1024, 'layers': 2},
     'decision': {'units': 1024, 'layers': 2, 'alpha_min': 0.1, 'alpha_max': 1.0,
                  'beta_q': 1.0, 'kappa_q': 1.0, 'clip_q': 3.0, 'clip_d': 5.0},
-    'loss_scales': {'dyn': 1.0, 'rep': 0.1, 'rec': 1.0, 'account': 1.0},
+    # Training stage (A6) whose optimizer `train` steps. L2 adapts SharedFusion
+    # only when declared; burn-in rows after a market reset carry no L_outcome.
+    'stage': 'L1', 'l2_fusion': True, 'outcome_burnin': 16,
+    'loss_scales': {'dyn': 1.0, 'rep': 0.1, 'rec': 1.0, 'account': 1.0,
+                    'outcome_event': 1.0, 'outcome_risk': 1.0,
+                    'outcome_mae': 1.0, 'outcome_quality': 1.0},
 }
 
 SMALL = {
@@ -32,6 +37,7 @@ SMALL = {
     'agent.ts.account.units': 16, 'agent.ts.fusion.units': 16,
     'agent.ts.outcome.units': 16, 'agent.ts.outcome.evidence': 4,
     'agent.ts.value.units': 16, 'agent.ts.decision.units': 16,
+    'agent.ts.outcome_burnin': 2,
 }
 
 

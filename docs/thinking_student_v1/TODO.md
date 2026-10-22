@@ -23,14 +23,16 @@
 - [x] 提交 dreamerv3 仓库
 
 ## S1 — Outcome Brain 真实学习
-- [ ] 把 teacher 的 `trade_facts` 映射为 `OUTCOME_BINS` 竞争风险标签（RIGHT_CENSORED 只走生存项）
-- [ ] `L_outcome`：竞争风险 NLL、右删失、MAE、early10、Quality
-- [ ] `opt_l2`：只训练 outcome 组，可选加 fusion 适配；Market/Account 冻结
-- [ ] 把 corpus 标签（teacher_sidecar 的 L1 facts）接入训练批次
-- [ ] 最小验证：TP、SL、删失三例的语义，1 次梯度更新，ckpt 继承
-- [ ] 真实 FG809 短训，并写记录
+- [x] 把 teacher 的 `trade_facts` 映射为 `OUTCOME_BINS` 竞争风险标签（RIGHT_CENSORED 和 OTHER_EXIT 只走生存项；`labels.py`，3 项语义测试通过）
+- [x] `L_outcome`：竞争风险 NLL、右删失、MAE、early10、Quality（`brain.outcome_loss`，NLL 为 −log Σp[允许类]；无信息行损失和梯度都为 0；共 5 项测试通过）
+- [x] `opt_l2`：只训练 outcome 组，可选加 fusion 适配；Market/Account 冻结（`ts.stage` 选择阶段；初始化时建好全部阶段优化器；`ts.l2_fusion` 声明 Fusion 适配；测试证实一次 L2 更新只改 outcome（+fusion）和 `opt_l2`，S0+S1 共 12 passed）
+- [x] 把 corpus 标签（teacher_sidecar 的 L1 facts）接入训练批次（`corpus.py`：按 stepid 对齐，标签只允许出现在合法空仓 ADD 上，否则报错；空仓行精确补 `account_native`；采样按标签数加权；以每个策略最后 2 个 chunk 作留出集。6 个策略的标签：P0 28240、P4 22754、P3 832、P2_low 505、P2_mid 121、P1 53；首次解析 55 s，缓存后 1 s）
+- [x] 最小验证：TP、SL、删失三例的语义，1 次梯度更新，ckpt 继承（新 ckpt 严格恢复时带着训练后的 Outcome 继续推理；结构变化的旧 ckpt 用 `transfer.inherit_student` / `--init-from` 继承，逐项列出 reused/reshaped/initialized/dropped，并写入 `inherit.json`；S0+S1+env/obs 共 23 passed）
+- [x] 真实 FG809 短训，并写记录（R2 从 S0 ckpt 继承：reshaped 5、initialized 42（均为 opt_l2）；GPU 上 3000 次 L2 更新；留出集事件 NLL 2.587→2.151（最好）/2.183（最终），常数答案为 2.208；TP 行 / SL 行的 p_tp 为 0.757 / 0.576；从新 ckpt 跑 1000 步 rollout；共享回归 20 passed；`S1_RECORD_20261022.md`）
+- [x] 提交 dreamerv3 仓库（gym 在 S1 无改动）
 
 ## S2 — 首个自主学生 π0
+- [ ] corpus 持仓行补算 `account_native`：沿原始动作重放 Native，消除训练与推理的账户输入偏差（S1 只能精确补算空仓行）
 - [ ] `L_policy_demo`（严格 L2 示范）加自然 WAIT/ADD 样本；`opt_l3` 只更新 decision 组
 - [ ] 自主 Native 采集：答卷、行为策略、执行动作落盘
 - [ ] 冻结完整 π0 快照

@@ -1,7 +1,8 @@
-"""Thinking Student V1 runner: autonomous Native rollout, L1 training, resume.
+"""Thinking Student V1 runner: autonomous Native rollout, staged training, resume.
 
   python -m dreamerv3.thinking_student.run rollout --run DIR --corpus DIR ...
   python -m dreamerv3.thinking_student.run train-market --run DIR --corpus DIR ...
+  python -m dreamerv3.thinking_student.run train-outcome --run DIR --corpus DIR ...
 
 A run directory holds `ckpt/<step>/agent.pkl` and a `latest` pointer. Loading
 never checks code or data hashes (C2); shape mismatches fail loudly instead
@@ -15,6 +16,7 @@ from pathlib import Path
 import numpy as np
 
 from .config import observation_space
+from .corpus import CorpusWindows
 from .student import make_agent
 
 POLICY_OBS = tuple(observation_space())
@@ -50,11 +52,20 @@ def resume(agent, run):
   return folder
 
 
-def build(run, preset, device, init_f1=None, **kwargs):
+def build(run, preset, device, init_f1=None, init_from=None, **kwargs):
+  """Resume the run strictly; a fresh run may start from F1 market weights
+  or from another Thinking Student checkpoint (`init_from`, listed changes)."""
+  if init_f1 and init_from:
+    raise ValueError('Choose one of init_f1 and init_from')
   agent = make_agent(Path(run) / 'logdir', preset=preset, device=device, **kwargs)
   folder = resume(agent, run)
   if folder is not None:
     print(f'Resumed {folder}')
+  elif init_from:
+    from .transfer import inherit_student
+    lists = inherit_student(agent, init_from)
+    Path(run).mkdir(parents=True, exist_ok=True)
+    (Path(run) / 'inherit.json').write_text(json.dumps(lists, indent=1))
   elif init_f1:
     from .transfer import inherit_f1
     inherit_f1(agent, init_f1)
@@ -102,61 +113,86 @@ def rollout(agent, env, steps, mode='train', carry=None, record=None, seed=0,
   return carry, rows
 
 
-# ---- L1 market/account training on natural corpus sequences ----
+# ---- staged training on natural corpus sequences ----
 
-class CorpusWindows:
-  """Random T-step windows inside one replay chunk of the P0-P4 corpus."""
-
-  def __init__(self, corpus, policies=None, seed=0):
-    root = Path(corpus) / 'policies'
-    names = policies or sorted(p.name for p in root.iterdir() if p.is_dir())
-    self.files = [f for n in names for f in sorted((root / n / 'replay').glob('*.npz'))]
-    if not self.files:
-      raise FileNotFoundError(f'No replay chunks under {root}')
-    self.rng = np.random.default_rng(seed)
-    self.cache = {}
-
-  def _chunk(self, path):
-    if path not in self.cache:
-      if len(self.cache) > 16:
-        self.cache.pop(next(iter(self.cache)))
-      with np.load(path) as d:
-        self.cache[path] = {k: d[k] for k in d.files}
-    return self.cache[path]
-
-  def sample(self, batch, length):
-    rows = []
-    for _ in range(batch):
-      chunk = self._chunk(self.files[self.rng.integers(len(self.files))])
-      n = len(chunk['reward'])
-      start = int(self.rng.integers(0, n - length + 1))
-      rows.append({k: chunk[k][start:start + length]
-                   for k in (*POLICY_OBS, 'action') if k in chunk})
-    data = {k: np.stack([r[k] for r in rows]) for k in rows[0]}
-    data['is_first'] = data['is_first'].copy()
-    data['is_first'][:, 0] = True
-    # Corpus predates account_native; mark it invalid instead of inventing it.
-    data['account_native'] = np.zeros((batch, length, 10), np.float32)
-    data['account_valid'] = np.zeros((batch, length), np.float32)
-    return data
+LOG_KEYS = {
+    'L1': ('opt_l1/loss', 'loss/dyn', 'loss/market_seq_e_shared',
+           'loss/account_can_add', 'brain/p_add', 'brain/delta_q_abs'),
+    'L2': ('opt_l2/loss', 'loss/outcome_event', 'loss/outcome_risk',
+           'loss/outcome_mae', 'loss/outcome_quality', 'outcome/labels',
+           'outcome/p_tp_on_tp', 'outcome/p_tp_on_sl'),
+}
 
 
-def train_market(agent, windows, updates, log_every=10):
+def _device(agent, data, counter):
   from embodied.jax import internal
-  mets = {}
+  data = internal.device_put(data, agent.train_sharded)
+  data['seed'] = agent._seeds(counter, agent.train_mirrored)
+  return data
+
+
+def train_stage(agent, windows, updates, log_every=10, on_update=None):
+  """`updates` optimizer steps of the configured A6 stage on corpus windows."""
+  stage, mets = agent.config.ts.stage, {}
   for i in range(updates):
     data = windows.sample(agent.config.batch_size, agent.config.batch_length)
-    data = internal.device_put(data, agent.train_sharded)
-    data['seed'] = agent._seeds(int(agent.n_batches), agent.train_mirrored)
+    data = _device(agent, data, int(agent.n_batches))
     agent.n_batches.increment()
-    carry = agent.init_train(agent.config.batch_size)
-    _, _, mets = agent.train(carry, data)
+    _, _, mets = agent.train(agent.init_train(agent.config.batch_size), data)
     if (i + 1) % log_every == 0 or i == updates - 1:
-      keys = ('opt_l1/loss', 'loss/dyn', 'loss/market_seq_e_shared',
-              'loss/account_can_add', 'brain/p_add', 'brain/delta_q_abs')
       print(f'update {int(agent.n_updates)}', {
-          k: round(float(mets[k]), 4) for k in keys if k in mets})
+          k: round(float(mets[k]), 4) for k in LOG_KEYS[stage] if k in mets})
+    if on_update:
+      on_update(i + 1)
   return mets
+
+
+# Denominator of each pooled L2 metric; the rest average over labelled rows.
+POOL = {'loss/outcome_risk': 'outcome/n_risk', 'loss/outcome_mae': 'outcome/n_mae',
+        'loss/outcome_quality': 'outcome/n_quality',
+        'outcome/p_tp_on_tp': 'outcome/n_tp', 'outcome/p_tp_on_sl': 'outcome/n_sl'}
+
+
+def evaluate(agent, windows, constant=None):
+  """L2 report pooled over every held-out window. `constant` (a class
+  distribution) is scored on exactly the rows the Outcome Brain is scored on."""
+  from .student import warm
+  B, T = agent.config.batch_size, agent.config.batch_length
+  sums, weights, batches = {}, {}, 0
+
+  def pool(key, value, weight):
+    sums[key] = sums.get(key, 0.) + weight * float(value)
+    weights[key] = weights.get(key, 0.) + weight
+
+  for i, data in enumerate(windows.batches(B, T)):
+    if constant is not None:
+      w = np.asarray(warm(data['is_first'], agent.config.ts.outcome_burnin))
+      w = w * data['outcome_valid']
+      nll = -np.log((data['outcome_allowed'] * constant).sum(-1) + (w == 0))
+      pool('constant/outcome_event', (nll * w).sum() / max(w.sum(), 1.), w.sum())
+    _, mets = agent.report(agent.init_report(B), _device(agent, data, i))
+    batches += 1
+    for k, v in mets.items():
+      if not k.startswith(('loss/', 'outcome/')) or k.startswith('outcome/n_'):
+        continue
+      if k in ('outcome/labels', 'outcome/label_not_legal'):
+        sums[k] = sums.get(k, 0.) + float(v)
+      else:
+        pool(k, v, float(mets[POOL.get(k, 'outcome/labels')]))
+  out = {k: round(v / max(weights[k], 1.), 5) if k in weights else int(v)
+         for k, v in sorted(sums.items())}
+  return {'updates': int(agent.n_updates), 'batches': batches, **out}
+
+
+def constant_answer(train):
+  """Add-one smoothed class frequencies of the observed train outcomes: the
+  best Outcome answer that ignores the state, as a reference to beat."""
+  fit = np.concatenate([
+      train.labels[name]['outcome_allowed'][lo:hi][
+          train.labels[name]['outcome_valid'][lo:hi] > 0]
+      for name, _, lo, hi in train.chunks])
+  observed = fit[fit.sum(-1) == 1]
+  return (observed.sum(0) + 1.) / (len(observed) + fit.shape[-1])
 
 
 def corpus_env(corpus):
@@ -177,11 +213,16 @@ def corpus_env(corpus):
 
 def main(argv=None):
   parser = argparse.ArgumentParser()
-  parser.add_argument('command', choices=['rollout', 'train-market'])
+  parser.add_argument('command', choices=['rollout', 'train-market', 'train-outcome'])
   parser.add_argument('--run', required=True)
   parser.add_argument('--preset', default='size12m')
   parser.add_argument('--device', default='cpu')
   parser.add_argument('--init-f1', default=None)
+  parser.add_argument('--init-from', default=None,
+                      help='earlier Thinking Student run or checkpoint (listed inheritance)')
+  parser.add_argument('--label-cache', default=None)
+  parser.add_argument('--log-every', type=int, default=10)
+  parser.add_argument('--eval-every', type=int, default=0)
   parser.add_argument('--steps', type=int, default=200)
   parser.add_argument('--mode', default='train', choices=['train', 'eval'])
   parser.add_argument('--corpus', default=None)
@@ -191,11 +232,36 @@ def main(argv=None):
   parser.add_argument('--fixture', default=None,
                       help='synthetic native env folder (engineering smoke only)')
   args = parser.parse_args(argv)
-  agent = build(args.run, args.preset, args.device, args.init_f1,
-                batch_size=args.batch_size, batch_length=args.batch_length)
+  stage = {'train-market': 'L1', 'train-outcome': 'L2'}.get(args.command, 'L1')
+  agent = build(args.run, args.preset, args.device, args.init_f1, args.init_from,
+                batch_size=args.batch_size, batch_length=args.batch_length,
+                updates={'agent.ts.stage': stage})
   if args.command == 'train-market':
-    train_market(agent, CorpusWindows(args.corpus), args.updates)
+    windows = CorpusWindows(args.corpus, labels=False)
+    train_stage(agent, windows, args.updates, args.log_every)
     print('Saved', save(agent, args.run))
+  elif args.command == 'train-outcome':
+    cache = args.label_cache or Path(args.run) / 'label_cache'
+    train = CorpusWindows(args.corpus, cache=cache, split='train')
+    held = CorpusWindows(args.corpus, cache=cache, split='eval')
+    constant = constant_answer(train)
+    report = {'train_chunks': len(train.chunks), 'eval_chunks': len(held.chunks),
+              'constant_answer': constant.round(5).tolist(), 'eval': []}
+
+    def checkpoint(done=None):
+      if done is None or (args.eval_every and done % args.eval_every == 0
+                          and done != args.updates):
+        report['eval'].append(evaluate(agent, held, constant))
+        print('eval', report['eval'][-1])
+
+    checkpoint()
+    report['last_train'] = {k: float(v) for k, v in train_stage(
+        agent, train, args.updates, args.log_every, checkpoint).items()
+        if k.startswith(LOG_KEYS['L2'])}
+    checkpoint()
+    folder = save(agent, args.run)
+    (folder / 'train_outcome.json').write_text(json.dumps(report, indent=1))
+    print('Saved', folder)
   else:
     options = None
     if args.fixture:
