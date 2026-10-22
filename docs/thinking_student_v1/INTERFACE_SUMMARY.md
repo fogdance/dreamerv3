@@ -13,17 +13,17 @@
 | Native Execution | Native 状态、合法动作、下一段市场 | 下一账户状态、交易记录、Reward |
 | Teacher Annotation | 学生答卷、原始账户快照、TRAIN 未来、冻结 π_k | ADD 事实、同策略 CF 价值、严格 L2 参考 |
 | Learning Update | 学生经验、成熟有效反馈、来源/版本 | 分目标更新、下一版完整学生 |
-| Independent Exam | 冻结完整学生、封存行情、Native 账户 | 无教师参与的完整交易轨迹 |
+| Independent Exam | 冻结完整学生、DEV（VALIDATION）或合成行情、Native 账户；封存 TEST 只用于用户授权的最终评价 | 无教师参与的完整交易轨迹 |
 
 ## B1 教学题（一题六部分）
 1. **Question**：因果 Obs、Native 账户、Mask、时钟、决策前状态、策略版本。只有同一账户初态才算同一题。
-2. **Student Answer**：事前 Outcome、Q、动作分布、提议动作、实际执行动作、是否探索。
+2. **Student Answer**：事前 Outcome、Q、动作分布、π 的提议动作、μ(a|s)、实际执行动作、是否探索。
 3. **Student Experience**：主账户的真实 Native 经历。主账户只执行学生动作，老师永不改写。
 4. **Teacher Evidence**：
    - ADD 后果：TP/SL 首次事件、时间、右删失、MAE、early10、Quality。
    - 同初态 ADD/WAIT 双分支：后续使用同一冻结完整 π_k，同 Reward，同评价范围。
    - 独立的严格 L2 Oracle。
-5. **Learning Feedback**：分别进入 `L_outcome`、`L_q_cf`、`L_reason`、`L_policy_*`，不合并成单一 Reward。
+5. **Learning Feedback**：分别进入 `L_outcome`、`L_q_real`、`L_q_cf`、`L_reason`、`L_policy_demo`，不合并成单一 Reward；CF 偏好不再给 Actor 加第二份 Loss。
 6. **Validity & Provenance**：每类反馈各自带 `(valid, ready_at, source)`。来源取值为 `STUDENT_EXECUTED_NATIVE`、`VERIFIED_CF_NATIVE`、`HINDSIGHT_ORACLE_TEACHING`、`NATURAL_CORPUS`、`MODEL_IMAGINED`。
 
 其他规则：
@@ -43,6 +43,13 @@
 - 非法 ADD（持仓中或 mask=0）时，Outcome 不输出预测，只输出有效位 0。
 - 模型升级后，RSSM 记忆要用新模型从合法历史重建，或按真实边界初始化。
 - 学到的参数必须真的进入正式动作路径；训练、采集、考试走同一个 `student.policy`。
+
+## 执行模式与策略改进（A1/A5/A6，2026-10-22 更新）
+- 正式策略 π_k 为确定性 `DETERMINISTIC_MASKED_ARGMAX`：ADD 合法且 z>0 才 ADD，否则 WAIT，z==0 时 WAIT。S2 自主轨迹、S3 CF 续行、S5 考试用同一规则；MaskedSoftmax 只给概率与诊断。
+- 探索另设行为策略 μ（ε 或温度采样），记录 π 提议、μ(a|s)、实际动作、探索标记和快照。μ 轨迹不能直接当作 `Q^{π_k}` 的回报。
+- 策略改进只有一条路：学生 Native 经验 / 有效 CF → `Q^{π_k}` → ΔQ 锚点 → 新完整 π_{k+1}。V1 不启用 `L_policy_pref`、`L_align`、`L_policy_rl`。
+- 双路径残差是 L3 用合法示范训练的行为先验。π0 的 `β_Q` 不贡献动作，Q 有了监督后逐步启用。`Q→Reasoning` 的输入在 S4 前保持中性（零初始化），之后刷新先验时使用中性 Q 锚点的教学视图。
+- 冻结快照 `policies/<name>/policy.json` 记录推理设备和计算精度（S2 的 π0 为 cuda / bf16）。bf16 与 f32 在 z≈0 附近可能翻转动作，所以 CF 续行和考试都按快照记录的设备加载（`run.load_policy`）。
 
 ## F-01（门控梯度）
 - 门控 `g_alpha` 的输入使用 `SG(e_t)` 和 `SG(q_t)`。Reasoning 与 ΔQ 锚点同样使用 SG。

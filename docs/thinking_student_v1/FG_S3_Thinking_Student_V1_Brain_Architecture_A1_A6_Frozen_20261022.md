@@ -45,7 +45,11 @@ flowchart TB
 
 ### A1. 同一个完整学生与唯一动作出口
 
-所有前向业务路径复用同一个 `student.policy(obs, recurrent_state, execution_mode)` 语义；训练采样/自主模拟/想象训练若使用/冻结考试不得悄悄改为「纯直觉Actor」或「纯Q argmax」。采样与贪心选择是**同一动作分布**的不同执行方式，须显式记录。老师永远不是推理路径中的函数调用。
+所有前向业务路径复用同一个 `student.policy(obs, recurrent_state, execution_mode)`；自主模拟、教师反事实续行及冻结考试不得悄悄改为「纯直觉Actor」或「纯Q argmax」。老师永远不是推理路径中的函数调用。
+
+**V1正式目标策略 `π_k` 采用确定性 `DETERMINISTIC_MASKED_ARGMAX`**：空仓ADD合法且 `z_t > 0` 才执行ADD；否则WAIT；`z_t == 0` 时WAIT。S2学生正式自主轨迹、S3同策略反事实续行、S5独立考试使用完全相同的行动选择规则。`MaskedSoftmax([0,z_t])` 仍用于产生策略概率、教学和诊断，**不意味着正式动作按概率采样**。
+
+训练数据采集如需随机探索，另外定义行为策略 `μ`（可为ε探索或温度采样），记录目标策略提议动作、`μ(a|s)`、实际执行动作、是否探索和策略快照身份；这类轨迹不得不经离策略处理直接当作 `Q^{π_k}` 的完整回报。S2不得为了避免全WAIT而修改Reward或强制ADD占比；可以使用类别平衡/成对示范监督并记录实际ADD行为，作为非阻断诊断。
 
 ### A2. 两个世界、两个编码器
 
@@ -88,7 +92,7 @@ Q^{\pi}(s,a) = \mathbb{E}_{\mathcal I_t,a_t=a,\pi}\left[\sum_{k\ge0}\gamma^{T_k}
 \begin{aligned}
 d_t &= f_D(s_t), \\
 r_t &= f_R(s_t,\operatorname{SG}(e_t),\operatorname{SG}(q_t)),\\
-\alpha_t &= \alpha_{\min}+(\alpha_{\max}-\alpha_{\min})\sigma(g_\alpha(s_t,e_t,q_t)), \quad 0<\alpha_{\min}<\alpha_{\max},\\
+\alpha_t &= \alpha_{\min}+(\alpha_{\max}-\alpha_{\min})\sigma(g_\alpha(s_t,\operatorname{SG}(e_t),\operatorname{SG}(q_t))), \quad 0<\alpha_{\min}<\alpha_{\max},\\
 h_t &= \operatorname{LN}(d_t+\alpha_t W_Rr_t),\\
 \Delta\widetilde Q_t &= \operatorname{clip}\left(\frac{\operatorname{SG}(Q_{ADD}-Q_{WAIT})}{\kappa_Q},-C_Q,C_Q\right),\\
 z_t &= \underbrace{\beta_Q\Delta\widetilde Q_t}_{\text{价值锚点}}+\underbrace{C_D\tanh(f_H(h_t))}_{\text{有界决策修正}},\\
@@ -99,8 +103,10 @@ z_t &= \underbrace{\beta_Q\Delta\widetilde Q_t}_{\text{价值锚点}}+\underbrac
 - 两条路径提供**特征/思考证据**，并无独立动作执行权；Value输出不是最终动作，不采用独立`argmax(Q)`。
 - Q差为有界、固定正权重的决策价值锚点；直觉与Reasoning通过有界残差补充近似价值模型不能准确反映的部分。它不能凭空引入与官方Reward冲突的第二套收益函数。
 - 非零门控及显式锚点只保证**代码路径可达**；不能证明模型一定学会利用Outcome或Q。保留Reasoning辅助监督与参数梯度/输入敏感性工程检查，但不强制每笔决策都因改变F2而变动。
-- Actor类Loss的基础梯度**不穿过F2或Q预测器**；它们分别接受真实后果和价值监督，避免把后果概率扭成动作偏好。
+- Actor类Loss的基础梯度**不穿过F2或Q预测器**（包括Reasoning、Gate与显式Q锚点的所有输入路径）；它们分别接受真实后果和价值监督，避免把后果概率扭成动作偏好。
 - `beta_Q, alpha bounds, C_Q, C_D, kappa_Q`的取值属于实现配置，不在本文件规定具体数字；它们应有一致的单位/数值合同且在策略快照中记录。
+- **价值信息只作一次明确的策略改进驱动：** V1的策略条件 Native 回报与反事实差距用于训练Q，Q通过显式锚点改进动作；同一份`ΔG_CF`不再作为Actor侧另一个偏好/对齐Loss去放大`ΔQ`。双路径残差作为合法老师示范形成的**行为先验**，不是又一套Q值估计器。
+- **S2→S3的输入过渡：** S2的Q尚未训练，`Q→Reasoning`的投影/贡献初始化为零或等价中性状态，避免S3出现未经训练的随机Q特征突然改变行为先验。S3先通过显式价值锚点使用已受监督的Q；只有在S4存在独立合法示范监督时，才逐步学习Reasoning对Q上下文的使用。不得仅因Q数值改变就让未训练的随机Reasoning连接主导动作。
 
 ## 2. A6 冻结的学习机制
 
@@ -112,9 +118,9 @@ z_t &= \underbrace{\beta_Q\Delta\widetilde Q_t}_{\text{价值锚点}}+\underbrac
 |---|---|---|---|---|
 | L1 基础市场/账户 | 因果市场序列、Native账户操作样本 | Market Encoder/RSSM、Account Encoder；必要的初始联合表征 | 学生状态基础 | 市场动态无学生动作因果输入；账户学的是规则状态，不替代Native事实 |
 | L2 入场后果 | Native合法ADD的TP/SL/风险/质量事实，含右删失 | Outcome及其明确声明的SharedFusion适配部分 | 可预测的OutcomeEvidence | 市场与账户底层基础参数暂冻结；Loss语义尊重竞争事件与删失 |
-| L3 初始自主策略 | 合法教师示范、有效偏好、丰富WAIT/ADD轨迹 | Intuition、Reasoning、Integrator、Final Head | 完整学生策略π₀ | 两个Q输出初始相同，ΔQ=0，非第二套临时Actor；不要求盈利或100%模仿 |
+| L3 初始自主策略 | 合法严格教师示范、自然WAIT/ADD与Outcome证据 | Intuition、Reasoning、Integrator、Final Head | 确定性正式学生策略π₀及其行为先验 | Q中性、β_Q不贡献动作；用示范Loss训练先验，不以自然样本类别占比强迫全部WAIT；不要求固定ADD率或盈利 |
 | L4 策略价值 | 冻结完整π_k的Native自主账户回报、同初态ADD/WAIT反事实 | Value Backbone、Q头与目标值估计副本 | Q^{π_k}_ADD、Q^{π_k}_WAIT | 不以Oracle最优Q取代策略条件Q；不把截断当作终止 |
-| L5 思考/策略改进 | 老师合法动作与偏好、价值一致性、学生Native策略回报 | Reasoning、直觉、门控、Integrator、Final Head | 完整新策略π_{k+1} | Outcome和Q预测含义由各自Loss维护；Actor梯度不到F2/Q |
+| L5 思考/策略改进 | 已学的行为先验、更新后的策略条件Q；必要时独立合法示范刷新先验 | Q价值锚点作用于完整Actor；只有示范/独立辅助目标才更新Reasoning、Intuition、Integrator、Final Head | 完整新策略π_{k+1} | Native回报经Q再影响动作，不额外叠加CF偏好Loss；Actor梯度不到F2/Q |
 | L6 自主实习/迭代 | 自主Native账户、到期反馈、自然教材与专项补课 | 分时段重新执行L1/L2/L4/L5允许的参数更新 | 继续学习的完整学生 | 主账户不得由老师动作接管；更新时间和策略版本可追溯 |
 
 **关键的启动环：** L3时并不是「没有Value Brain」。整个模型已经包含它，但初始`Q_ADD == Q_WAIT`（中性初始化），价值锚点暂为0。L3仍可从Outcome/市场和老师监督学会形成合法策略π₀。L4评估冻结π₀，更新Q的预测；由于Q进入正式策略前向，更新后行为会变化，因此需要**把新完整策略重新编号、收集和评估**，不能继续把原π₀标签冒充新策略真值。
@@ -128,11 +134,9 @@ z_t &= \underbrace{\beta_Q\Delta\widetilde Q_t}_{\text{价值锚点}}+\underbrac
 | `L_outcome` | TP/SL竞争事件似然、删失、生存、风险及质量 | Outcome；明确指定时可训练Fusion适配 | 不更新Q、Actor；初期不更新Market基础 |
 | `L_q_real` | 学生实际Native连续回报/有效TD目标 | Value及其目标副本训练逻辑 | 不借Q损失随意修改Outcome概率及Actor |
 | `L_q_cf` | 冻结π_k下双分支合法原生回报/差距 | Value | 教师不替学生执行主账户；后验单样本不视为确定概率 |
-| `L_reason` | 有效历史偏好及其差距/等级的辅助比较教学 | Structured Reasoning的辅助预测与共享Reasoning层 | 不更新教师标签、Outcome/Q或市场基础 |
+| `L_reason` | 独立的合法L2示范/Outcome证据的辅助理解（不能直接复制`ΔQ`或`ΔG_CF`作为额外决策价值） | Structured Reasoning辅助头与共享Reasoning层 | 不修改Outcome/Q或市场基础；不将辅助头变成第二个Actor |
 | `L_policy_demo` | L2动作示范，仅有效教师数据 | Intuition / Reasoning / Gate / Integrator / Final Head | 不以Oracle Q覆盖学生Q；不经Actor损失扭曲Outcome/Q |
-| `L_policy_pref` | 相同初始状态、同策略双分支的偏好 | 同决策参数组 | 不混淆严格Oracle与策略条件比较 |
-| `L_policy_rl` | 学生自主执行的Native原生回报、适当Actor/critic学习 | 同决策参数组（critic单独通过自己的Q目标学习） | 不把教师未执行的分支直接伪装成学生已执行的on-policy动作 |
-| `L_align` | 在有效、可信价值样本上保持策略与Q软一致 | 同决策参数组 | 不把Actor强制变成永远`argmax(Q)`；不修改Q网络本身 |
+| **V1不启用Actor侧`L_policy_pref`、`L_align`或未定义的直接`L_policy_rl`** | CF比较只监督Q，学生自主回报经`L_q_real`更新Q，再由价值锚点改变完整Actor行为 | 不新增直接决策Loss | 避免同一价值信号在Q与残差中反复强化；未来若研究独立Actor-Critic，另立明确算法合同 |
 
 **SG规则：** 基础V1中，Value读取的Outcome、Reasoning读取的Outcome/Q、Final Head的Q锚点对策略损失使用`stop_gradient`。这是一项**按Loss来源定义的梯度边界**，并不冻结Outcome与Q自身的监督训练，也不禁止共享市场表征在明确的L1刷新周期内更新。
 
@@ -142,9 +146,10 @@ z_t &= \underbrace{\beta_Q\Delta\widetilde Q_t}_{\text{价值锚点}}+\underbrac
 
 - **Outcome：** 事件类型与首次触达时间的负对数似然；右删失使用「截止观察时仍存活」概率，路径风险与Quality按Native统计和有效位监督。不能简单把“未观察到TP”标成SL。
 - **Q：** 合法且版本匹配的Native回报/TD目标，外加双分支`Q_ADD-Q_WAIT`与`G_ADD-G_WAIT`的成对监督。后验回报是单条历史样本，不是无噪声真值。
-- **Reasoning：** 老师认可的有效动作优劣及边际强弱的辅助目标；其输出**仅为教学/诊断**，不作为第二个执行Actor。
-- **Final Actor：** 明确分源的教师动作监督、比较偏好、使用真实学生账户产生的策略回报信号；可加入有限价值一致性辅助项。
-- **权重原则：** 首批实施所有已纳入核心设计的监督通路均必须能实际开启并有可证明的参数更新；权重数值留给训练配置。不得以「待证明提升盈利」为由永久省略F2→Value/Reasoning→Actor的前向链路。
+- **Reasoning：** 用合法的老师示范/Outcome证据训练辅助理解能力，输出只作教学/诊断；不以同一`ΔG_CF`再次监督一个复制Q差的隐含价值头，也不作为第二个执行Actor。
+- **Final Actor：** L3使用`L_policy_demo`训练有界直觉/思考残差，形成行为先验。L4/L5的原生经验与合法CF先训练Q，再借由`β_Q·ΔQ̃`更新完整决策；在没有独立新增的示范信号时，**不强制为了更新Actor参数而增加第二份价值偏好Loss**。若需要刷新行为先验，使用独立L2示范，并在先验训练视图中中性化Q锚点，避免把Q信号反向学入残差。Q在Reasoning中仅作为停止梯度的决策上下文，不得新增`sign(ΔQ)`的残差监督。
+- **策略改进：** 基础V1只有一条价值驱动改进通路`学生Native经验/有效CF → Q^{π_k} → ΔQ锚点 → 新完整π_{k+1}`。`β_Q`在π₀建立时无有效Q贡献，Q拥有合法监督以后渐进开启；每次Q/系数或残差改变而影响动作，均产生新的完整策略快照并在下一轮重评Q。这里不宣称每轮数学上严格单调改进。
+- **权重原则：** 首批实施所有**保留在V1合同中的**监督通路均应能执行并更新授权参数；权重数值留给训练配置。不得以「待证明提升盈利」为由永久省略F2→Value/Reasoning→Actor的前向链路。
 
 ### 2.4 策略版本、行动价值和反事实回放
 
@@ -169,7 +174,7 @@ z_t &= \underbrace{\beta_Q\Delta\widetilde Q_t}_{\text{价值锚点}}+\underbrac
 2. 记录**模型版本、决策前预测、提议动作、探索/采样与实际执行动作**。
 3. 主账户严格执行学生被采样/选出的合法动作；真实Native账户承担后果。
 4. 到了合法反馈时间，再计算真实结果；老师可在相同决策前状态派生ADD/WAIT反事实，但不得覆盖主账户。
-5. 不同类型反馈分别进入`L_outcome/L_q_cf/L_reason/L_policy_*`，保留有效位、Reward来源和时间条件。
+5. 不同类型反馈分别进入`L_outcome/L_q_real/L_q_cf/L_reason/L_policy_demo`等现行V1目标，保留有效位、Reward来源和时间条件；CF偏好不再单独给Actor增加第二份Loss。
 6. 自主经验识别学生薄弱点，形成专项补课，同时维持自然教材覆盖；反事实/错题不能被冒充为自然市场概率分布。
 7. 阶段性冻结整个学生，调用**相同完整政策前向**进入Teacher-free原生考试。考试只看学生独立交易；不要求测试盈利才能认定工程接线完成。
 
@@ -185,8 +190,8 @@ z_t &= \underbrace{\beta_Q\Delta\widetilde Q_t}_{\text{价值锚点}}+\underbrac
 | R06 Q是否成了后验Oracle？ | 最优未来策略和冻结学生策略语义不同 | 策略条件Q与严格Oracle值独立，CF使用同一个冻结学生后续策略 |
 | R07 Q与Actor谁先训练？ | Actor依赖Q而Q又依赖Actor，存在启动循环 | 完整模型先建立中性Q差的π₀，冻结快照评价Q，再改进策略 |
 | R08 Q如何处理长时占仓？ | 窗口结束若被错当终局，WAIT/ADD比较严重偏差 | 区分交易终止/右删失/数据截断，合法bootstrap或无效，不虚构收益 |
-| R09 Reasoning可能完全无贡献？ | 非零门控/显式Q接线不保证真正学会用F2 | Reasoning有效偏好辅助监督 + 连通性/梯度/输入敏感性工程证据；不强制每笔影响 |
-| R10 决策Loss可能破坏事实预测？ | Actor可能为实现动作目标扭曲F2概率、Q数值 | 基础V1按Loss设SG边界，F2/Q由独立监督更新，结构化周期刷新 |
+| R09 Reasoning可能完全无贡献？ | 非零门控/显式Q接线不保证真正学会用F2 | Reasoning使用合法L2示范/Outcome独立辅助监督 + 最小连通性检查；不因这一点增加CF价值重复Loss |
+| R10 决策Loss可能破坏事实预测？ | Actor可能为实现动作目标扭曲F2概率、Q数值 | Gate/Reasoning/价值锚点全路径按Loss设SG边界，F2/Q由独立监督更新 |
 | R11 Actor是否只依赖Q argmax？ | 完美Q可贪心，但现实近似Q有误差 | Q显式有界锚点 + 直觉/思考有界修正 + 唯一最终Actor |
 | R12 Teacher是否接管学生真实账户？ | 会破坏自身经验与Q政策归属 | 实习主账户Teacher-free执行；老师仅事后合法分支/反馈 |
 | R13 是否可能用未来参数提前考试？ | 训练标签发布与模拟实习时间不一致会隐式泄漏 | 区分离线全TRAIN和严格按时间实习；TEST封存；在参数更新日志中保留合法反馈时刻 |
@@ -209,7 +214,7 @@ z_t &= \underbrace{\beta_Q\Delta\widetilde Q_t}_{\text{价值锚点}}+\underbrac
 3. Outcome使用统一时间-终止风险语义，提供可验证的交易后果预测。
 4. Value学习策略条件的完整账户行动价值，不是只看单笔Quality或后验Oracle。
 5. 决策采取**直觉 + 结构化思考 + 显式ΔQ锚点 + 有界修正**，唯一Final Actor执行。
-6. L1→L2→L3初始策略→L4冻结策略价值→L5策略改进→L6自主循环，始终连续继承同一个学生。
+6. L1→L2→L3示范行为先验/确定性π₀→L4冻结策略价值→L5由价值锚点改进策略→L6自主循环，始终连续继承同一个学生。
 7. Outcome/Q各自监督真实语义，Actor基础Loss与事实预测梯度隔离；阶段性可重新训练前置表征并刷新下游。
 8. 学生真正拥有主账户；老师未来仅作为TRAIN事后教学，反事实从相同决策状态复制。
 9. 策略版本、反馈可用时间、Reward版本、数据来源和合法性必须可追溯。

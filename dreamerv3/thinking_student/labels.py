@@ -1,11 +1,15 @@
-"""Outcome teaching labels from native teacher trade facts (A3, B1.4).
+"""Teaching labels from the TRAIN teacher sidecar (A3, A6 L3, B1.4).
+
+Outcome labels come from native teacher trade facts.
 
 One label describes the counterfactual "ADD now, then hold" native trade from
 the decision state. TP and SL are competing first terminations on a
 market-minute grid. A trade that is still open at the data boundary, or that
 a forced non-TP/SL exit closed, only tells us that neither TP nor SL happened
 before that age (right-censoring); it is never relabelled as a failure.
-Labels are TRAIN teaching data only and never enter the policy input.
+Demonstration labels are the strict L2 oracle's action where the teacher is
+valid and not tied (L_policy_demo). Labels are TRAIN teaching data only and
+never enter the policy input.
 """
 import numpy as np
 
@@ -38,6 +42,10 @@ LABEL_SPACE = {
     'outcome_quality': (),
     'outcome_quality_valid': (),
 }
+# The teacher L2 fields `demo_arrays` reads. demo_weight is 0 on rows without
+# a demonstration and otherwise carries the class weight of the curriculum.
+L2_FIELDS = ('strict_action', 'teacher_valid', 'tie')
+DEMO_SPACE = {'demo_action': (), 'demo_weight': ()}
 
 
 def time_bin(minutes):
@@ -64,14 +72,19 @@ def allowed_classes(kind, minutes):
   return allowed
 
 
-def empty_labels(batch_shape=()):
+def _zeros(space, batch_shape=()):
   return {k: np.zeros((*batch_shape, *shape), np.float32)
-          for k, shape in LABEL_SPACE.items()}
+          for k, shape in space.items()}
+
+
+def empty_labels(batch_shape=()):
+  """Every teaching label (Outcome and demonstration), all without information."""
+  return _zeros({**LABEL_SPACE, **DEMO_SPACE}, batch_shape)
 
 
 def outcome_label(l1):
   """Project one teacher L1 fact record; invalid parts stay zero with valid=0."""
-  out = empty_labels()
+  out = _zeros(LABEL_SPACE)
   kind = l1.get('exit_type') if l1 else None
   if not l1 or not l1.get('immediate_outcome_verified') or kind not in (
       *TERMINATIONS, *CENSORINGS):
@@ -98,9 +111,33 @@ def outcome_label(l1):
 
 def label_arrays(facts):
   """Stack `outcome_label` over a sequence of L1 fact records (None allowed)."""
-  out = empty_labels((len(facts),))
+  out = _zeros(LABEL_SPACE, (len(facts),))
   for i, l1 in enumerate(facts):
     if l1 and l1.get('immediate_outcome_verified'):
       for k, v in outcome_label(l1).items():
         out[k][i] = v
   return out
+
+
+def demo_arrays(demos):
+  """Strict L2 demonstrations: (action, valid) per row. A tie or an invalid
+  teacher record demonstrates nothing; the formal tie-break is not a label."""
+  action = np.zeros(len(demos), np.float32)
+  valid = np.zeros(len(demos), bool)
+  for i, l2 in enumerate(demos):
+    if l2 and l2.get('teacher_valid') and not l2.get('tie'):
+      if l2.get('strict_action') not in (0, 1):
+        raise ValueError(f'Strict L2 action must be WAIT or ADD, got {l2.get("strict_action")!r}')
+      action[i], valid[i] = l2['strict_action'], True
+  return action, valid
+
+
+def class_weights(action, valid, balance=1.0):
+  """(w_wait, w_add) with mean 1 over the demonstrations; balance=1 gives
+  both classes equal total weight, balance=0 keeps natural frequencies."""
+  n = np.array([(valid & (action == 0)).sum(), (valid & (action == 1)).sum()], np.float64)
+  if not n.all():
+    raise ValueError(f'Both demonstrated actions are needed, got WAIT/ADD counts {n.tolist()}')
+  p = n / n.sum()
+  w = p ** -balance
+  return tuple(float(x) for x in w / (p * w).sum())

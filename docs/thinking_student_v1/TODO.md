@@ -2,6 +2,7 @@
 
 分支：`feat/thinking-student-v1-20261022`（dreamerv3 + gym-trading-env，worktree 在 `/home/v/Documents/work/research/fg-s3-thinking-student-v1-20261022/`）
 规则：每项完成并有运行证据后才打勾；每个切片结束时补一份极短记录。
+设计来源：`~/Documents/work/research/thinkstudent/`（本目录为其副本）。2026-10-22 23:15 的 A1–A6/C3 更新后，S2–S5 条目已按新版改写。
 
 ## 0. 准备
 - [x] 读取 thinkstudent 全部文档，理解 A1–A6 / B1–B2 / C1–C3 / ABC Review
@@ -32,25 +33,26 @@
 - [x] 提交 dreamerv3 仓库（gym 在 S1 无改动）
 
 ## S2 — 首个自主学生 π0
-- [ ] corpus 持仓行补算 `account_native`：沿原始动作重放 Native，消除训练与推理的账户输入偏差（S1 只能精确补算空仓行）
-- [ ] `L_policy_demo`（严格 L2 示范）加自然 WAIT/ADD 样本；`opt_l3` 只更新 decision 组
-- [ ] 自主 Native 采集：答卷、行为策略、执行动作落盘
-- [ ] 冻结完整 π0 快照
-- [ ] 最小验证，并写记录
+- [x] corpus 持仓行补算 `account_native`：沿原始动作重放 Native，消除训练与推理的账户输入偏差（S1 只能精确补算空仓行）（gym `replay_account_native` 用录制器的 `execute_observed` 逐行重放，并要求每行 observation 与录制值相等，不设哈希门禁；dreamerv3 `prepare-corpus` 每个策略起一个 CPU 进程，6 个策略共 2 分 20 秒，约 4 ms/行；账户与 `position_state` 逐行一致；持仓行 P1 28237、P2_low 27784、P2_mid 28169、P3 27458、P4 5492；缓存在 `/data/logdir/fg_single3/thinking_student/corpus_cache/`；S0+S1+账户+env/obs 共 25 passed）
+- [x] `L_policy_demo`：只用合法严格 L2 示范训练行为先验，类别平衡/成对监督（不强制 ADD 比例、不改 Reward）；`opt_l3` 只更新 decision 组；`Q→Reasoning/Gate` 改为零初始化的中性投影；π0 的 `β_Q` 不贡献动作（示范：训练集 WAIT 46603 / ADD 440，类别权重 0.505 / 53.46。从 S1 R2 继承后在 GPU 上做 3000 次 L3 更新，约 2.5 分钟。留出集类别加权 NLL 1.722→0.898（最好）/1.036（最终），常数答案 0.826；最终 ADD 示范上的 p_add 0.397、WAIT 示范上 0.289。测试证实一次 L3 更新只改 decision 和 `opt_l3`，Q 投影保持 0；β_Q=0 时随机 Q 不改变 z）
+- [x] 正式 π 用确定性 Masked Argmax（ADD 合法且 z>0 才 ADD，平局 WAIT），与 CF/考试同一规则；探索另设行为策略 μ，记录 π 提议、μ(a|s)、实际动作、探索标记；自主 Native 采集落盘（`brain.formal_action` 是唯一实现。GPU 上的 TRAIN 采集：正式 π0 跑完整个 TRAIN 时段 28263 步，ADD 50 次，35 TP / 14 SL / 1 换月；μ 采集 3000 步。中断后在新进程续采，结果与一次跑完逐位一致）
+- [x] 冻结完整 π0 快照（`S2_POLICY_FG809_20261023/policies/pi0`：完整参数，`policy.json` 记录动作选择方式、β_Q=0、μ 的 ε、RSSM 初始化、推理设备 cuda/bf16、Reward 版本、teacher 来源和两仓 SHA）
+- [x] 最小验证（短自主回放 + 一次 Actor 梯度更新；正式决策与 CF/考试规则一致；Mask、TP/SL 正确；记录 ADD 比例，不设门槛），并写记录（`run check`：34263 行，规则、Mask、TP/SL 点数都无违规。50 笔交易与 teacher“现在 ADD 后持有”的独立事实 50/50 一致，Native reward 之和与 teacher 的逐位相等。正式 π0 的 ADD 比例 11.8%。π0 与随机入场相当，没有优势。S0+S1+S2+账户+env/obs 共 32 passed。见 `S2_RECORD_20261023.md`）
+- [x] 提交 dreamerv3 和 gym 两个仓库（gym `fb7481d`；dreamerv3 见包含本行的提交）
 
 ## S3 — 策略条件 Q + 同策略 CF 老师
 - [ ] Gym：同初态 ADD/WAIT 双分支 runner（`export_state`/`import_state`，注入冻结 π_k 回调）
 - [ ] F-02：统一评价终点和折扣；状态分为 VALID_COMPLETE / VALID_ESTIMATED / NOT_COMPARABLE
-- [ ] `L_q_real` 与 `L_q_cf`；`opt_l4` 只更新 value 组；ΔQ 锚点生效后得到候选 π1
+- [ ] `L_q_real` 与 `L_q_cf`；`opt_l4` 只更新 value 组；Q 有了策略条件监督后逐步启用 `β_Q`（记入快照），得到候选 π1；不用同一 CF 差距训练 Actor 偏好
 - [ ] 最小验证，并写记录
 
 ## S4 — Reasoning 与策略改进
-- [ ] `L_reason`、`L_policy_pref`、`L_align`、`L_policy_rl`
-- [ ] 跑通一轮迭代：π_k → Q^{π_k} → 改进 Actor → π_{k+1}
+- [ ] `L_reason`（L2 示范 / Outcome 证据的辅助理解）与 `L_policy_demo` 先验刷新（中性 Q 锚点的教学视图）；Q→Reasoning 投影开始学习；V1 不实现 `L_policy_pref`、`L_align`、`L_policy_rl`
+- [ ] 跑通一轮迭代：冻结 π_k → Q^{π_k} → ΔQ 锚点改进完整 Policy → 发布 π_{k+1} → 重新评估
 - [ ] 最小验证，并写记录
 
 ## S5 — 自主教学循环 + Teacher-free 考试
 - [ ] B1 教学题生命周期，含 `ready_at` 成熟反馈
 - [ ] B2 课程循环：自然教材、多行为教材、学生自采、错题补课
-- [ ] 在封存区间做 Teacher-free 考试，使用同一个 `student.policy`
+- [ ] 在 DEV（VALIDATION）或合成数据上做 Teacher-free 工程短考，使用同一个 `student.policy`；封存 TEST 只在用户明确授权的最终评价中使用
 - [ ] 完整闭环演示一次，并写记录

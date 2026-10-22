@@ -156,7 +156,14 @@ class ValueBrain(nj.Module):
 
 
 class DecisionBrain(nj.Module):
-  """Intuition + structured Reasoning + bounded gate + one Final Actor head."""
+  """Intuition + structured Reasoning + bounded gate + one Final Actor head.
+
+  Q reaches Reasoning and the gate only as stopped decision context through
+  zero-initialized projections (A5, S2->S3): neither an untrained nor a newly
+  trained Q can move the demonstrated behavior prior. Q changes the action
+  through the explicit anchor beta_Q * clip(dQ / kappa_Q); Reasoning learns
+  to use the Q context only from later independent demonstrations (S4).
+  """
 
   units: int = 256
   layers: int = 2
@@ -164,7 +171,7 @@ class DecisionBrain(nj.Module):
   norm: str = 'rms'
   alpha_min: float = 0.1
   alpha_max: float = 1.0
-  beta_q: float = 1.0
+  beta_q: float = 0.0
   kappa_q: float = 1.0
   clip_q: float = 3.0
   clip_d: float = 5.0
@@ -173,13 +180,17 @@ class DecisionBrain(nj.Module):
     mlp = dict(act=self.act, norm=self.norm)
     e, qv = sg(evidence), sg(q)
     dq = jnp.where(legal, qv[..., ADD] - qv[..., WAIT], 0.)
+    q_ctx = nn.cast(jnp.concatenate([qv, dq[..., None]], -1))
+    x = jnp.concatenate([nn.cast(state), nn.cast(e)], -1)
     d = self.sub('intuition', nn.MLP, self.layers, self.units, **mlp)(state)
-    rin = jnp.concatenate(
-        [nn.cast(state), nn.cast(e), nn.cast(qv), nn.cast(dq[..., None])], -1)
-    r = self.sub('reason', nn.MLP, self.layers, self.units, **mlp)(rin)
+    pre = self.sub('reason_in', nn.Linear, self.units)(x) + self.sub(
+        'reason_q', nn.Linear, self.units, bias=False, winit='zeros')(q_ctx)
+    r = nn.act(self.act)(self.sub('reason_norm', nn.Norm, self.norm)(pre))
+    if self.layers > 1:
+      r = self.sub('reason', nn.MLP, self.layers - 1, self.units, **mlp)(r)
     reason_pref = f32(self.sub('reason_pref', nn.Linear, 1)(r))[..., 0]
-    gin = jnp.concatenate([nn.cast(state), nn.cast(e), nn.cast(qv)], -1)
-    g = f32(self.sub('gate', nn.Linear, 1)(gin))[..., 0]
+    g = f32(self.sub('gate', nn.Linear, 1)(x) + self.sub(
+        'gate_q', nn.Linear, 1, bias=False, winit='zeros')(q_ctx))[..., 0]
     alpha = self.alpha_min + (self.alpha_max - self.alpha_min) * jax.nn.sigmoid(g)
     wr = self.sub('reason_proj', nn.Linear, self.units, bias=False)(r)
     h = self.sub('integrator', nn.Norm, self.norm)(
@@ -189,10 +200,17 @@ class DecisionBrain(nj.Module):
     anchor = self.beta_q * jnp.clip(dq / self.kappa_q, -self.clip_q, self.clip_q)
     z = anchor + correction
     logits = jnp.stack([jnp.zeros_like(z), z], -1)
-    return dict(logits=logits, alpha=alpha, anchor=anchor,
+    return dict(logits=logits, z=z, alpha=alpha, anchor=anchor,
                 correction=correction, reason_pref=reason_pref, delta_q=dq)
 
 
 def masked_policy(logits, action_mask):
+  """MaskedSoftmax([0, z]): probabilities for teaching and diagnostics."""
   return embodied.jax.outs.MaskedCategorical(
       logits, action_mask > 0.5, unimix=0.0, allow_fallback=False)
+
+
+def formal_action(z, action_mask):
+  """DETERMINISTIC_MASKED_ARGMAX, the formal pi_k (A1): ADD exactly when the
+  Native mask allows it and z > 0; z == 0 and every other case is WAIT."""
+  return jnp.where((action_mask[..., ADD] > 0.5) & (z > 0), ADD, WAIT).astype(jnp.int32)

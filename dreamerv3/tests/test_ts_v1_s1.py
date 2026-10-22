@@ -3,6 +3,7 @@
 Run from gym-trading-env with PYTHONPATH=.:src:../dreamerv3:tests/entry_v1.
 """
 import pickle
+import shutil
 from pathlib import Path
 
 import jax
@@ -183,10 +184,15 @@ def test_l2_update_moves_only_outcome_and_declared_fusion(tmp_path, fusion):
 
 @pytest.mark.skipif(not CORPUS.exists(), reason='FG809 TRAIN corpus not present')
 def test_corpus_windows_carry_aligned_outcome_labels(tmp_path):
-  from dreamerv3.thinking_student.corpus import CorpusWindows
-  train = CorpusWindows(CORPUS, policies=['P3'], cache=tmp_path, split='train')
-  held = CorpusWindows(CORPUS, policies=['P3'], cache=tmp_path, split='eval')
+  from dreamerv3.thinking_student import corpus
+  shared = corpus.default_cache(CORPUS)
+  for name in ('P3.l1_facts.pkl', 'P3.account_native.npz'):
+    if (shared / name).exists():  # reuse the prepared Native replay (about 2 min)
+      shutil.copy(shared / name, tmp_path / name)
+  train = corpus.CorpusWindows(CORPUS, tmp_path, policies=['P3'], split='train')
+  held = corpus.CorpusWindows(CORPUS, tmp_path, policies=['P3'], split='eval')
   assert (tmp_path / 'P3.l1_facts.pkl').exists()
+  assert (tmp_path / 'P3.account_native.npz').exists()
   assert not {c[1] for c in train.chunks} & {c[1] for c in held.chunks}
   count = train.summary()['P3']
   assert count['labels'] > 0
@@ -198,8 +204,18 @@ def test_corpus_windows_carry_aligned_outcome_labels(tmp_path):
   labelled = data['outcome_valid'] > 0
   flat = data['position_state'][..., 1] == 0
   assert (data['action_mask'][..., 1][labelled] > 0.5).all() and flat[labelled].all()
-  assert np.array_equal(data['account_valid'] > 0, flat), 'account_native is exact on flat rows'
-  assert (data['account_native'][..., 0][flat] == 1).all()
+  # account_native is the replayed Native account on every row, flat or held.
+  assert (data['account_valid'] == 1).all()
+  assert np.array_equal(data['account_native'][..., 0] == 1, flat)
+  _, _, lo, hi = train.chunks[0]
+  chunk = train._chunk(0)
+  held = chunk['position_state'][:, 1] != 0
+  assert held.any() and (chunk['account_native'][held, 2] > 0).all()
+  np.testing.assert_array_equal(chunk['account_native'], train.accounts['P3'][lo:hi])
+  # The stepid join is checked: accounts one row off no longer fit the trace.
+  _, _, _, pos, _ = corpus.read_replay(CORPUS, 'P3')
+  with pytest.raises(ValueError, match='disagrees'):
+    corpus.account_check('P3', np.roll(train.accounts['P3'], 1, 0), pos)
   mets = update(agent, data)
   assert np.isfinite(mets['opt_l2/loss']) and mets['outcome/labels'] > 0
 
@@ -221,8 +237,8 @@ def test_checkpoint_carries_trained_outcome_and_lists_structure_changes(tmp_path
   for k in trained:
     np.testing.assert_array_equal(trained[k], np.asarray(other.params[k]), err_msg=k)
   obs = {k: data[k][:, T - 1] for k in agent.obs_space}
-  _, _, o1 = agent.policy(agent.init_policy(1), obs, mode='eval')
-  _, _, o2 = other.policy(other.init_policy(1), obs, mode='eval')
+  _, _, o1 = agent.policy(agent.init_policy(1), obs, mode='policy')
+  _, _, o2 = other.policy(other.init_policy(1), obs, mode='policy')
   assert o2['answer/outcome_valid'][0] == 1 and 0 < o2['answer/p_tp'][0] < 1
   np.testing.assert_allclose(o1['answer/p_tp'], o2['answer/p_tp'], rtol=1e-5)
 

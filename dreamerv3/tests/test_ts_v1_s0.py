@@ -64,12 +64,15 @@ def pure(agent, fn):
   return jax.jit(nj.pure(fn), static_argnames=('create', 'modify'))
 
 
-def test_native_rollout_single_policy(agent, factory):
-  _, rows = ts_run.rollout(agent, factory(), 200, mode='train')
+def test_native_rollout_single_policy(agent, factory, tmp_path):
+  # The behavior policy mu (half of the steps a uniform legal action) makes
+  # the untrained student trade, so the Native ledger closes TP/SL trades.
+  explorer = make_agent(tmp_path, preset='small', batch_size=1, batch_length=T,
+                        updates={'agent.ts.explore_eps': 0.5})
+  _, rows = ts_run.rollout(explorer, factory(), 200, mode='explore')
   assert len(rows) == 200
-  assert all(r['executed'] == r['proposed'] for r in rows)
   assert all(r['mask'][1] > 0.5 for r in rows if r['executed'] == 1)
-  assert any(r['executed'] == 1 for r in rows), 'untrained policy never tried ADD'
+  assert any(r['executed'] == 1 for r in rows), 'the explored student never tried ADD'
   # Q starts neutral (A6 L3 bootstrap): the value anchor contributes nothing.
   assert all(r['delta_q'] == 0. and r['anchor'] == 0. for r in rows)
   # Outcome exists only for a legal ADD from flat (C1-07).
@@ -78,11 +81,17 @@ def test_native_rollout_single_policy(agent, factory):
       assert r['outcome_valid'] == 0. and r['p_tp'] == 0.
   assert any(r['outcome_valid'] == 1. for r in rows)
   assert any(r['reward'] != 0. for r in rows), 'no native TP/SL reward observed'
-  # Greedy and sampled execution use the same function and distribution.
-  _, greedy = ts_run.rollout(agent, factory(), 20, mode='eval')
-  assert all(r['greedy'] for r in greedy) and not any(r['greedy'] for r in rows)
-  for r in greedy:
-    assert r['executed'] == int(r['p_add'] > 0.5 and r['mask'][1] > 0.5)
+  # mu is recorded around the formal action of the same policy forward.
+  for r in rows:
+    legal = r['mask'][1] > 0.5
+    assert r['proposed'] == int(legal and r['z'] > 0)
+    assert np.isclose(r['mu_prob'], 0.5 * (r['executed'] == r['proposed']) + 0.5 / (1 + legal))
+  assert any(r['explored'] for r in rows) and any(r['executed'] != r['proposed'] for r in rows)
+  # The formal pi executes its own proposal: masked argmax of [0, z].
+  _, formal = ts_run.rollout(agent, factory(), 20, mode='policy')
+  for r in formal:
+    assert r['executed'] == r['proposed'] == int(r['mask'][1] > 0.5 and r['z'] > 0)
+    assert r['mu_prob'] == 1. and not r['explored']
 
 
 def test_market_brain_ignores_student_actions(agent, factory):
@@ -147,8 +156,8 @@ def test_l1_update_save_resume(agent, factory, tmp_path):
   for k, v in agent.params.items():
     np.testing.assert_array_equal(np.asarray(v), np.asarray(other.params[k]), err_msg=k)
   obs = rows[0]
-  _, a1, o1 = agent.policy(agent.init_policy(1), obs, mode='eval')
-  _, a2, o2 = other.policy(other.init_policy(1), obs, mode='eval')
+  _, a1, o1 = agent.policy(agent.init_policy(1), obs, mode='policy')
+  _, a2, o2 = other.policy(other.init_policy(1), obs, mode='policy')
   assert int(a1['action'][0]) == int(a2['action'][0])
   np.testing.assert_allclose(o1['answer/p_add'], o2['answer/p_add'], rtol=1e-5)
 

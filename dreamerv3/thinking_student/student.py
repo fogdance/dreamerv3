@@ -2,8 +2,10 @@
 
 `StudentModel.policy` is the only decision path: Market Brain -> Account ->
 Fusion -> Outcome -> Value -> Intuition/Reasoning/Integrator -> Final Actor ->
-Native mask. Training, autonomous collection and Teacher-free exams all call
-it; `mode='eval'` selects greedy execution of the same distribution.
+Native mask. Training, autonomous collection, counterfactual continuation and
+Teacher-free exams all call it. mode='policy' executes the formal pi_k
+(DETERMINISTIC_MASKED_ARGMAX); mode='explore' executes the separate behavior
+policy mu (epsilon mixture around the formal action) and records mu(a|s).
 """
 import elements
 import jax
@@ -37,9 +39,11 @@ GROUPS = {
 
 def stage_groups(ts):
   """A6 2.2: the groups each stage optimizer may update. L_outcome adapts
-  SharedFusion only when the config declares it; L3-L5 arrive in S2-S4."""
+  SharedFusion only when the config declares it; L_policy_demo trains only
+  the decision group (Intuition/Reasoning/Gate/Integrator/Final)."""
   return {'L1': ('market', 'account'),
-          'L2': ('outcome', 'fusion') if ts.l2_fusion else ('outcome',)}
+          'L2': ('outcome', 'fusion') if ts.l2_fusion else ('outcome',),
+          'L3': ('decision',)}
 
 
 def warm(reset, burnin):
@@ -108,11 +112,12 @@ class StudentModel(embodied.jax.Agent):
 
   @property
   def ext_space(self):
-    # account_valid: 0 where the corpus could not reconstruct account_native.
-    # outcome_*: TRAIN teacher facts for L_outcome, never a policy input.
+    # account_valid: 0 where a data source has no exact account_native.
+    # outcome_*, demo_*: TRAIN teacher labels for L_outcome / L_policy_demo,
+    # never a policy input.
     spaces = {'account_valid': elements.Space(np.float32, ())}
-    spaces.update({k: elements.Space(np.float32, shape)
-                   for k, shape in labels.LABEL_SPACE.items()})
+    spaces.update({k: elements.Space(np.float32, shape) for k, shape in {
+        **labels.LABEL_SPACE, **labels.DEMO_SPACE}.items()})
     return spaces
 
   def init_policy(self, batch_size):
@@ -133,11 +138,13 @@ class StudentModel(embodied.jax.Agent):
         carry['market'], tokens, reset, training, single)
     return {'market': mcarry}, feat
 
-  def think(self, market_feat, obs, account_valid):
+  def think(self, market_feat, obs, account_valid, stop_state=False):
     account = self.account_enc(
         obs['position_state'], obs['account_native'], obs['action_mask'],
         account_valid)
     state = self.fusion(market.feat2tensor(market_feat), account)
+    if stop_state:
+      state = sg(state)
     legal = brain.add_legal(obs['position_state'], obs['action_mask'])
     outcome = self.outcome(state, legal)
     q = self.value(state, outcome['evidence'])
@@ -145,16 +152,27 @@ class StudentModel(embodied.jax.Agent):
     return dict(account=account, state=state, legal=legal, outcome=outcome,
                 q=q, decision=decision)
 
-  def policy(self, carry, obs, mode='train'):
+  def policy(self, carry, obs, mode='policy'):
+    if mode not in ('policy', 'explore'):
+      raise ValueError(f"Policy mode must be 'policy' or 'explore', got {mode!r}")
     carry, feat = self.observe_market(carry, obs, training=False, single=True)
     valid = jnp.ones(obs['is_first'].shape, f32)
     t = self.think(feat, obs, valid)
-    dist = brain.masked_policy(t['decision']['logits'], obs['action_mask'])
-    greedy = mode == 'eval'
-    action = dist.pred() if greedy else dist.sample(nj.seed())
-    action = action.astype(jnp.int32)
+    mask = obs['action_mask']
+    dist = brain.masked_policy(t['decision']['logits'], mask)
+    proposed = brain.formal_action(t['decision']['z'], mask)
+    action, explored, mu = proposed, jnp.zeros(proposed.shape, bool), jnp.ones(proposed.shape, f32)
+    if mode == 'explore':
+      # Behavior policy mu: with probability eps a uniform legal action.
+      eps = self.config.ts.explore_eps
+      k1, k2 = jax.random.split(nj.seed())
+      explored = jax.random.uniform(k1, proposed.shape) < eps
+      legal_add = mask[..., brain.ADD] > 0.5
+      coin = jax.random.bernoulli(k2, 0.5, proposed.shape) & legal_add
+      action = jnp.where(explored, coin.astype(jnp.int32), proposed)
+      mu = (1 - eps) * f32(action == proposed) + eps / (1 + f32(legal_add))
     out = answer_sheet(t, dist)
-    out['greedy'] = jnp.full(action.shape, greedy)
+    out.update(proposed=proposed, mu_prob=mu, explored=explored)
     out['finite'] = {k: jnp.isfinite(v).all(range(1, v.ndim))
                      for k, v in dict(feat=market.feat2tensor(feat),
                                       logits=t['decision']['logits']).items()}
@@ -219,6 +237,45 @@ class StudentModel(embodied.jax.Agent):
     mets['brain/outcome_valid'] = t['outcome']['valid'].mean()
     return loss, ({'market': mcarry}, mets)
 
+  def l3_loss(self, carry, data, training):
+    """L_policy_demo (A6 L3) on strict L2 demonstrations. Upstream outputs
+    enter stopped, so only the decision group learns the behavior prior; Q
+    stays neutral and reaches the decision only through its stopped paths."""
+    reset = data['is_first']
+    tokens = self.market_enc(data, reset, training)
+    mcarry, _, feat = self.market_dyn.observe(
+        carry['market'], tokens, reset, training)
+    t = self.think(sg(feat), data, data['account_valid'], stop_state=True)
+    # Native WAIT is always legal; zero dummy batches at init carry no mask.
+    mask = data['action_mask'].at[..., brain.WAIT].set(1.)
+    dist = brain.masked_policy(t['decision']['logits'], mask)
+    demo = (data['demo_weight'] > 0) & t['legal']
+    action = jnp.where(demo, data['demo_action'], 0.).astype(jnp.int32)
+    weight = warm(reset, self.config.ts.demo_burnin) * data['demo_weight'] * f32(demo)
+    nll = -dist.logp(action)
+    n = jnp.maximum(f32(weight > 0).sum(), 1.)
+    loss = (weight * nll).sum() / n
+    p_add = dist.prob(jnp.ones(reset.shape, jnp.int32))
+    adds = f32(weight > 0) * data['demo_action']
+    waits = f32(weight > 0) * (1 - data['demo_action'])
+    decide = f32(t['legal'] & (warm(reset, self.config.ts.demo_burnin) > 0))
+    take = f32(brain.formal_action(t['decision']['z'], mask) == brain.ADD)
+    mets = {
+        'loss/policy_demo': loss,
+        'policy/n_demo': f32(weight > 0).sum(),
+        'policy/n_add': adds.sum(), 'policy/n_wait': waits.sum(),
+        'policy/n_legal': decide.sum(),
+        'policy/p_add_on_add': (adds * p_add).sum() / jnp.maximum(adds.sum(), 1.),
+        'policy/p_add_on_wait': (waits * p_add).sum() / jnp.maximum(waits.sum(), 1.),
+        'policy/acc_add': (adds * take).sum() / jnp.maximum(adds.sum(), 1.),
+        'policy/acc_wait': (waits * (1 - take)).sum() / jnp.maximum(waits.sum(), 1.),
+        'policy/add_rate': (decide * take).sum() / jnp.maximum(decide.sum(), 1.),
+        'brain/alpha': t['decision']['alpha'].mean(),
+        'brain/correction_abs': jnp.abs(t['decision']['correction']).mean(),
+        'brain/delta_q_abs': jnp.abs(t['decision']['delta_q']).mean(),
+    }
+    return self.scales['policy_demo'] * loss, ({'market': mcarry}, mets)
+
   def l2_loss(self, carry, data, training):
     """L_outcome (A6 L2) on Native ADD facts. Market and Account are frozen:
     their outputs enter Fusion as stopped inputs, as in the policy forward."""
@@ -244,6 +301,7 @@ def answer_sheet(t, dist):
   o, q, d = t['outcome'], t['q'], t['decision']
   return {
       'answer/p_add': dist.prob(jnp.ones(d['alpha'].shape, jnp.int32)),
+      'answer/z': d['z'],
       'answer/q_wait': q[..., brain.WAIT],
       'answer/q_add': q[..., brain.ADD],
       'answer/delta_q': d['delta_q'],

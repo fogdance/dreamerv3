@@ -18,14 +18,21 @@ TS_DEFAULTS = {
     'fusion': {'units': 1024},
     'outcome': {'units': 1024, 'layers': 2, 'evidence': 32},
     'value': {'units': 1024, 'layers': 2},
+    # beta_q = 0: the value anchor contributes nothing to pi0 (A6 L3); S3
+    # raises it once Q has policy-conditioned supervision.
     'decision': {'units': 1024, 'layers': 2, 'alpha_min': 0.1, 'alpha_max': 1.0,
-                 'beta_q': 1.0, 'kappa_q': 1.0, 'clip_q': 3.0, 'clip_d': 5.0},
+                 'beta_q': 0.0, 'kappa_q': 1.0, 'clip_q': 3.0, 'clip_d': 5.0},
     # Training stage (A6) whose optimizer `train` steps. L2 adapts SharedFusion
-    # only when declared; burn-in rows after a market reset carry no L_outcome.
-    'stage': 'L1', 'l2_fusion': True, 'outcome_burnin': 16,
+    # only when declared; burn-in rows after a market reset carry no L_outcome
+    # (outcome_burnin) or L_policy_demo (demo_burnin).
+    'stage': 'L1', 'l2_fusion': True, 'outcome_burnin': 16, 'demo_burnin': 16,
+    # Behavior policy mu of mode='explore': a uniform legal action with
+    # probability explore_eps, else the formal pi_k action.
+    'explore_eps': 0.05,
     'loss_scales': {'dyn': 1.0, 'rep': 0.1, 'rec': 1.0, 'account': 1.0,
                     'outcome_event': 1.0, 'outcome_risk': 1.0,
-                    'outcome_mae': 1.0, 'outcome_quality': 1.0},
+                    'outcome_mae': 1.0, 'outcome_quality': 1.0,
+                    'policy_demo': 1.0},
 }
 
 SMALL = {
@@ -37,7 +44,7 @@ SMALL = {
     'agent.ts.account.units': 16, 'agent.ts.fusion.units': 16,
     'agent.ts.outcome.units': 16, 'agent.ts.outcome.evidence': 4,
     'agent.ts.value.units': 16, 'agent.ts.decision.units': 16,
-    'agent.ts.outcome_burnin': 2,
+    'agent.ts.outcome_burnin': 2, 'agent.ts.demo_burnin': 2,
 }
 
 
