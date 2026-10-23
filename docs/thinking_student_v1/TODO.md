@@ -231,7 +231,8 @@
   - 证据：
     - 2026-10-23 23:53:08 在 tmux `d3` 的窗口 `ts-formal` 中启动 `FORMAL_V1_20261024/formal_l1_l2.sh`，代码为 dreamerv3 `0faf1b5`、gym `0056296`。
     - L1 日志：从 E_ONLY 继承（reused 49、sliced 1、widened 1、initialized 60）；第 100 次更新 loss 48.4；GPU 2.8 GB，利用率 76%。
-    - 预计 L1 约 00:28 结束，L2 约 00:50 结束。
+    - 结果：L1 于 00:27:08 完成 10,000 次，L2 于 00:46:29 完成 12,000 次，exit 0。最新为 `foundation/ckpt/000000022000`，22 份 checkpoint 共 8.4 GB；`status` 为 `L2_done`，`pi_0000` 未冻结。
+    - 训练批次损失（详见 `FORMAL_TRAINING_IMPLEMENTATION.md`）：L1 市场重建 20.9 → 9.1；L2 `outcome_event` 2.78 → 2.37，常数答案为 2.775；真实 TP 行与 SL 行上的 TP 概率只差 0.022 ± 0.003。
     - 中断后重跑同一脚本即可接着训练；进度：`formal_train status --config …/formal_v1.yaml`。
   - L2 之后的 L3（配置中暂填 12,000 次）、`pi_0000` 和后续轮次，等用户决定。
 
