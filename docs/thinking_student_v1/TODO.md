@@ -227,7 +227,13 @@
       - c4 9 项（368 s）；s0 5、s1 11、s2 8、s3 4、s4 4；
       - gym corpus 9、account 3、cf 4。
     - 回归之后改了 `formal_train`（`--until` 与阶段先后保护），只影响编排测试和配置测试，这两项随后重跑通过。
-- [ ] C4-8：正式训练第一段（用户 2026-10-23 授权，开发全部完成后启动）：18 合约 L1 + L2，`formal_train pretrain --config formal_v1.yaml --until L2`，在 tmux 会话 `d3` 中启动，后台跑完，不监控
+- [x] C4-8：正式训练第一段（用户 2026-10-23 授权，开发全部完成后启动）：18 合约 L1 + L2，`formal_train pretrain --config formal_v1.yaml --until L2`，在 tmux 会话 `d3` 中启动，后台跑完，不监控
+  - 证据：
+    - 2026-10-23 23:53:08 在 tmux `d3` 的窗口 `ts-formal` 中启动 `FORMAL_V1_20261024/formal_l1_l2.sh`，代码为 dreamerv3 `0faf1b5`、gym `0056296`。
+    - L1 日志：从 E_ONLY 继承（reused 49、sliced 1、widened 1、initialized 60）；第 100 次更新 loss 48.4；GPU 2.8 GB，利用率 76%。
+    - 预计 L1 约 00:28 结束，L2 约 00:50 结束。
+    - 中断后重跑同一脚本即可接着训练；进度：`formal_train status --config …/formal_v1.yaml`。
+  - L2 之后的 L3（配置中暂填 12,000 次）、`pi_0000` 和后续轮次，等用户决定。
 
 ## S5 — 自主教学循环 + Teacher-free 考试
 - [ ] B1 教学题生命周期，含 `ready_at` 成熟反馈
