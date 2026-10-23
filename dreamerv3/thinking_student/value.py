@@ -402,15 +402,87 @@ class MultiQWindows:
     return std, source
 
 
+CHECK_KEYS = ('delta_q', 'z', 'p_tp_h', 'correction', 'q_add', 'q_wait')
+# Distance of the continuous z from the decision boundary z = 0, in units of
+# the std of z on the legal rows after the burn-in.
+BOUNDARY_EDGES = (0., .05, .1, .25, .5, 1., np.inf)
+
+
+def position_bins(length):
+  """Positions in a window: 16-row bins up to row 64, then doubling bins."""
+  edges, b = [a for a in (0, 16, 32, 48) if a < length], 64
+  while b < length:
+    edges.append(b)
+    b *= 2
+  return list(zip(edges, edges[1:] + [length]))
+
+
+def path_agreement(short, cont, act_short, act_cont, legal, burnin, keys=CHECK_KEYS):
+  """Window answers against the continuous path at the same cursors (arrays
+  [window, position, ...]): mean |difference| by position, also in units of
+  the continuous std after the burn-in, and flips of the formal masked-argmax
+  action on the rows whose mask allows ADD. A masked row is WAIT on both
+  paths and would only dilute a flip rate, so it never enters one. The flips
+  after the burn-in are also split by how far the continuous z lies from the
+  decision boundary z = 0 (BOUNDARY_EDGES)."""
+  pos = np.arange(short.shape[1])[None, :]
+  diff, flips = np.abs(short - cont), act_short != act_cont
+  post = legal & (pos >= burnin)
+
+  def in_std(value, std):
+    return float(value / std) if std > 0 else None
+
+  def flip_rate(rows):
+    n = int(rows.sum())
+    return dict(legal_rows=n, flips=int(flips[rows].sum()),
+                flip_rate=float(flips[rows].mean()) if n else None)
+
+  std = {k: float(cont[:, burnin:, i].std()) for i, k in enumerate(keys)}
+  by_position = {}
+  for a, b in position_bins(short.shape[1]):
+    d = {k: float(diff[:, a:b, i].mean()) for i, k in enumerate(keys)}
+    by_position[f'{a}-{b}'] = dict(
+        mean_abs_diff=d, in_std={k: in_std(v, std[k]) for k, v in d.items()},
+        **flip_rate(legal & (pos >= a) & (pos < b)))
+  after_burnin = {}
+  for i, k in enumerate(keys):
+    d, legal_c = diff[:, burnin:, i], cont[..., i][post]
+    after_burnin[k] = dict(
+        mean_abs_diff=float(d.mean()), max_abs_diff=float(d.max()), continuous_std=std[k],
+        in_std=in_std(d.mean(), std[k]),
+        legal_in_std=in_std(diff[..., i][post].mean(), legal_c.std()) if post.any() else None)
+  z = cont[..., keys.index('z')][post]
+  z_std = float(z.std()) if post.any() else 0.
+  dist, f = (np.abs(z) / z_std if z_std > 0 else np.zeros_like(z)), flips[post]
+  bins = {}
+  for lo, hi in zip(BOUNDARY_EDGES[:-1], BOUNDARY_EDGES[1:]):
+    near = (dist >= lo) & (dist < hi)
+    bins[f'{lo:g}-{hi:g}'] = dict(legal_rows=int(near.sum()), flips=int(f[near].sum()),
+                                  flip_rate=float(f[near].mean()) if near.any() else None)
+  a_c, a_s = act_cont[post], act_short[post]
+  return dict(
+      by_position=by_position, after_burnin=after_burnin,
+      actions=dict(**flip_rate(post), continuous_adds=int((a_c == ADD).sum()),
+                   window_adds=int((a_s == ADD).sum()),
+                   add_to_wait=int(((a_c == ADD) & (a_s == WAIT)).sum()),
+                   wait_to_add=int(((a_c == WAIT) & (a_s == ADD)).sum()),
+                   masked_flips=int(flips[~legal].sum())),
+      boundary=dict(
+          unit='|z| of the continuous path / std of z on the legal rows after the burn-in',
+          z_std=z_std, bins=bins,
+          flip_distance=dict(median=float(np.median(dist[f])), p90=float(np.quantile(dist[f], .9)),
+                             max=float(dist[f].max())) if f.any() else None))
+
+
 def window_check(policy, collection, windows=32, length=64, seed=0, device=None, log=print):
   """RSSM short-window check (C4 3.1). The frozen policy reads the decision
   inputs of a formal collection once continuously from the first market
-  minute (its answers as on a continuous path) and again in `windows`
-  windows that each start from the zero market state, as L4 windows do,
-  with the policy seeds of the continuous path. The answers of both at the
-  same cursors are compared by position in the window; the window starting
-  at the first minute is the control and must agree exactly. A diagnostic,
-  never a gate."""
+  minute (its answers and actions as on a continuous path) and again in
+  `windows` windows that each start from the zero market state, as training
+  windows do, with the policy seeds of the continuous path. Answers and
+  formal actions of both at the same cursors are compared by position in the
+  window (path_agreement); the window starting at the first minute is the
+  control and must agree exactly. A diagnostic, never a gate."""
   from .run import DECISION_OBS, load_policy
   rows, arrays, _ = load_collection(collection)
   agent, meta = load_policy(policy, device)
@@ -418,50 +490,53 @@ def window_check(policy, collection, windows=32, length=64, seed=0, device=None,
   if n <= 2 * length:
     raise ValueError(f'{n} collection rows are too few for {length}-row windows')
   reward = np.concatenate([[0.], arrays['reward'][:-1]]).astype(np.float32)
-  keys = ('delta_q', 'z', 'p_tp_h', 'correction')
+  keys = CHECK_KEYS
 
   def step(carry, t, first):
     obs = {k: arrays[k][t][None] for k in DECISION_OBS}
     obs.update(reward=reward[t:t + 1], is_first=np.array([first]),
                is_last=np.array([False]), is_terminal=np.array([False]))
-    carry, _, out = agent.policy(carry, obs, mode='policy')
-    return carry, [float(out[f'answer/{k}'][0]) for k in keys]
+    carry, act, out = agent.policy(carry, obs, mode='policy')
+    return carry, [float(out[f'answer/{k}'][0]) for k in keys], int(act['action'][0])
 
   rng = np.random.default_rng(seed)
   starts = [0] + sorted(int(s) for s in rng.choice(np.arange(1, n - length), windows, replace=False))
-  began, carry, path = time.time(), agent.init_policy(1), np.zeros((n, len(keys)))
+  began, carry = time.time(), agent.init_policy(1)
+  path, path_act = np.zeros((n, len(keys))), np.zeros(n, np.int8)
   agent.n_actions.value = base
   for t in range(n):
-    carry, path[t] = step(carry, t, t == 0)
+    carry, path[t], path_act[t] = step(carry, t, t == 0)
   short = np.zeros((len(starts), length, len(keys)))
+  short_act = np.zeros((len(starts), length), np.int8)
   for w, s in enumerate(starts):
     carry = agent.init_policy(1)
     agent.n_actions.value = base + s
     for j in range(length):
-      carry, short[w, j] = step(carry, s + j, j == 0)
+      carry, short[w, j], short_act[w, j] = step(carry, s + j, j == 0)
   cont = np.stack([path[s:s + length] for s in starts])
-  diff = np.abs(short - cont)
-  legal = np.stack([[rows[s + j]['mask'][1] > 0.5 for j in range(length)] for s in starts])
-  probe = diff[1:, burnin:]
-  dq_s, dq_c = short[1:, burnin:, 0], cont[1:, burnin:, 0]
+  cont_act = np.stack([path_act[s:s + length] for s in starts])
+  mask = np.array([r['mask'][1] > 0.5 for r in rows])
+  legal = np.stack([mask[s:s + length] for s in starts])
+  dq = keys.index('delta_q')
+  dq_s, dq_c = short[1:, burnin:, dq], cont[1:, burnin:, dq]
   signed = legal[1:, burnin:] & (dq_c != 0)
   same = json.loads((Path(collection) / 'meta.json').read_text())['policy'] == meta['policy']
   recorded = np.array([[r[k] for k in keys] for r in rows])
   report = dict(
       policy=str(policy), collection=str(collection), rows=n, windows=len(starts) - 1,
-      length=length, burnin=burnin, seconds=round(time.time() - began, 1),
-      control_max_abs_diff=float(diff[0].max()),
+      length=length, burnin=burnin, keys=list(keys), seconds=round(time.time() - began, 1),
+      control_max_abs_diff=float(np.abs(short[0] - cont[0]).max()),
+      control_action_flips=int((short_act[0] != cont_act[0]).sum()),
       replay_vs_record_max_abs_diff=float(np.abs(path - recorded).max()) if same else None,
-      by_position={f'{a}-{a + 16}': {k: float(diff[1:, a:a + 16, i].mean()) for i, k in enumerate(keys)}
-                   for a in range(0, length, 16)},
-      after_burnin={k: dict(mean_abs_diff=float(probe[..., i].mean()),
-                            max_abs_diff=float(probe[..., i].max()),
-                            continuous_std=float(cont[1:, burnin:, i].std()))
-                    for i, k in enumerate(keys)},
+      replay_vs_record_action_flips=(int((path_act != [r['proposed'] for r in rows]).sum())
+                                     if same else None),
+      **path_agreement(short[1:], cont[1:], short_act[1:], cont_act[1:], legal[1:], burnin, keys),
       delta_q_sign_agree=(float((np.sign(dq_s[signed]) == np.sign(dq_c[signed])).mean())
                           if signed.any() else None),
       delta_q_signed_rows=int(signed.sum()))
+  a = report['actions']
   log(f'state-check: control {report["control_max_abs_diff"]:.3g}, after burn-in '
       + ', '.join(f'{k} {v["mean_abs_diff"]:.4g}/{v["continuous_std"]:.4g}'
-                  for k, v in report['after_burnin'].items()))
+                  for k, v in report['after_burnin'].items())
+      + f'; formal action flips {a["flips"]}/{a["legal_rows"]} legal rows')
   return report

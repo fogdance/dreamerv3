@@ -304,6 +304,42 @@ def test_q_targets_of_one_policy_on_two_contracts(pik, two, tmp_path):
                  '--beta-q', '1', '--kappa-q', '0.5', '--corpus', str(two[0]), *args])
 
 
+def test_state_check_counts_action_flips_on_legal_rows_only():
+  """path_agreement on hand-made paths: two windows of four rows, burn-in 1,
+  answers (delta_q, z); the formal action is ADD iff legal and z > 0."""
+  keys = ('delta_q', 'z')
+  z_cont = np.array([[5., -2., .02, 3.], [0., 2., 0., -.02]])
+  z_short = np.array([[-5., 1., -.01, -3.], [0., 2.5, 0., -.03]])
+  legal = np.array([[1, 1, 1, 0], [0, 1, 0, 1]], bool)
+  cont, short = np.zeros((2, 4, 2)), np.zeros((2, 4, 2))
+  cont[..., 1], short[..., 1] = z_cont, z_short
+
+  def act(z):
+    return (legal & (z > 0)).astype(np.int8)
+
+  r = V.path_agreement(short, cont, act(z_short), act(z_cont), legal, burnin=1, keys=keys)
+  # After the burn-in, four legal rows: a WAIT -> ADD flip far from the
+  # boundary (z -2), an ADD -> WAIT flip next to it (z 0.02), none at z 2
+  # and -0.02. The masked row (z 3 / -3) is WAIT on both paths and no row
+  # of any rate.
+  assert r['actions'] == dict(legal_rows=4, flips=2, flip_rate=.5, continuous_adds=2,
+                              window_adds=2, add_to_wait=1, wait_to_add=1, masked_flips=0)
+  z_std = np.std([-2., .02, 2., -.02])
+  assert r['boundary']['z_std'] == pytest.approx(z_std)
+  bins = r['boundary']['bins']
+  assert bins['0-0.05'] == bins['1-inf'] == dict(legal_rows=2, flips=1, flip_rate=.5)
+  assert all(bins[b]['legal_rows'] == 0 for b in ('0.05-0.1', '0.1-0.25', '0.25-0.5', '0.5-1'))
+  assert r['boundary']['flip_distance']['max'] == pytest.approx(2 / z_std)
+  # One position bin of four rows; it holds the flip before the burn-in.
+  assert (r['by_position']['0-4']['legal_rows'], r['by_position']['0-4']['flips']) == (5, 3)
+  diff = np.abs(z_short - z_cont)[:, 1:]
+  assert r['after_burnin']['z']['in_std'] == pytest.approx(diff.mean() / z_cont[:, 1:].std())
+  assert r['after_burnin']['delta_q']['in_std'] is None
+  assert V.position_bins(64) == [(0, 16), (16, 32), (32, 48), (48, 64)]
+  assert V.position_bins(1024)[3:] == [(48, 64), (64, 128), (128, 256), (256, 512), (512, 1024)]
+  assert V.position_bins(4) == [(0, 4)]
+
+
 def test_orchestrator_rounds_resume_from_the_disk(two, tmp_path, monkeypatch):
   root = tmp_path / 'corpora'
   root.mkdir()
@@ -341,16 +377,33 @@ def test_orchestrator_rounds_resume_from_the_disk(two, tmp_path, monkeypatch):
     FT.main(['pretrain', '--config', str(raised)])
   assert len(calls) == n
 
-  # The round stops at L4; the rerun keeps pi_0's collections and CF,
+  # --until cf stops the round after its CF and state-check, before L4.
+  with pytest.raises(SystemExit):
+    FT.main(['pretrain', '--config', str(config), '--until', 'cf'])
+  calls.clear()
+  FT.main(['iterate', '--config', str(config), '--until', 'cf'])
+  assert calls == ['collect', 'collect', 'check', 'check', 'cf', 'cf', 'state-check']
+  state = json.loads(lay.state.read_text())
+  assert (state['round'], state['step']) == (1, 'cf_done') and not lay.learner(1).exists()
+  assert all((lay.experience(lay.policy(0), 'cf', c) / 'meta.json').exists() for c in CONTRACTS)
+  check = json.loads((lay.experience(lay.policy(0), 'collect', CONTRACTS[0])
+                      / 'state_check.json').read_text())
+  assert check['control_max_abs_diff'] == check['control_action_flips'] == 0
+  assert check['replay_vs_record_max_abs_diff'] == check['replay_vs_record_action_flips'] == 0
+  assert check['actions']['masked_flips'] == 0
+
+  # The rerun keeps pi_0's collections and CF and stops at L4; the next one
   # freezes pi_1 and stops at its first exam.
+  experience = files(lay.root / 'experience')
+  calls.clear()
   monkeypatch.setattr(FT, '_call', in_process(calls, fail='train-value'))
   with pytest.raises(RuntimeError, match='train-value failed'):
     FT.main(['iterate', '--config', str(config)])
+  assert calls == ['train-value']
   state = json.loads(lay.state.read_text())
   assert (state['round'], state['step']) == (1, 'L4')
   assert state['rounds']['1']['collected'] == CONTRACTS
-  experience = files(lay.root / 'experience')
-  assert all((lay.experience(lay.policy(0), 'cf', c) / 'meta.json').exists() for c in CONTRACTS)
+  assert files(lay.root / 'experience') == experience
   calls.clear()
   monkeypatch.setattr(FT, '_call', in_process(calls, fail='exam'))
   with pytest.raises(RuntimeError, match='exam failed'):

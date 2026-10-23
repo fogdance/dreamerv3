@@ -270,6 +270,26 @@
   - S0–S4 共 32 项，加 gym corpus 9 / account 3 / cf 4，合计 48 项通过；pytest 退出码 0，junitxml 记录 0 失败、0 跳过，466 s。
   - 本次没有改 gym 源码。
 
+## C4 R3 决定：正式 L3 → `pi_0000` → 状态一致性 → L4（用户 2026-10-24；计划：`PLAN_C4_20261023.md` 第 5 节）
+- [ ] D-1：正式 L3（从 foundation ckpt 22000 续训，64 行窗口、16 行预热，配置 12,000 次；L1/L2 不重训）→ 冻结 `pi_0000` → 考试（DEV FG409 + TRAIN_SMOKE）
+- [x] D-2：state-check 扩展（合法 ADD 行上正式动作的翻转率、按与决策边界距离分组的翻转、归一化差异、`q_add`/`q_wait`）＋ `iterate --until cf` ＋ 测试
+  - 证据：
+    - `value.path_agreement` 是纯函数，`window_check` 调用它。两条路径都记录正式 Masked Argmax 动作，比较的量加入 `q_add`、`q_wait`。报告包括：
+      - `by_position`：分段为 16 行到第 64 行，之后长度逐段翻倍；每段给出各量与标准差之比，以及合法行数、翻转数和翻转率；
+      - `actions`：预热之后合法行上的翻转，以及 ADD→WAIT、WAIT→ADD、`masked_flips`；
+      - `boundary`：按 |z|/std 分组的翻转；
+      - `control_action_flips`、`replay_vs_record_action_flips`。
+      mask 强制为 WAIT 的行不进入任何比率。
+    - `formal_train iterate --until cf`：一轮在 CF（和 state-check）之后停下，`step` 记为 `cf_done`。下次 `iterate` 从磁盘接着做 L4。`pretrain` 不接受 `cf`。
+    - 测试（CPU，2 项通过，160 s）：
+      - `test_state_check_counts_action_flips_on_legal_rows_only`：两个手算窗口；被 mask 的行 z 变号也不算翻转；近边界与远边界各翻转 1 次；
+      - 编排测试：`--until cf` 依次调用 collect ×2、check ×2、cf ×2、state-check，停在 `cf_done`，没有 learner 目录；对照窗口与重放的差和翻转都是 0，`masked_flips` 为 0；下一次 `iterate` 只调用 train-value，experience 文件不变。
+- [ ] D-3：`pi_0000` 在 FG005 上做与 R3 相同的 state-check（16 × 1024），另加训练位置上的 1000 × 64；据此决定：接受 64/16 进入 L4，或实现 carry 继承
+- [ ] D-4：（仅当 ADD/WAIT 决策受显著影响时）训练窗口继承完整连续市场路径的因果 RSSM carry：预计算并复用，不加长窗口，不重训 L1/L2
+- [ ] D-5：第 1 轮 collect / check / CF（`iterate --until cf`）
+- [ ] D-6：正式 L4 前的小样 Q 状态一致性检查（Q_ADD、Q_WAIT、ΔQ；诊断用 L4，不写入正式 run）；必要时用同一 carry 方案
+- [ ] D-7：正式 L4 及本轮其余步骤；记录、提交
+
 ## S5 — 自主教学循环 + Teacher-free 考试
 - [ ] B1 教学题生命周期，含 `ready_at` 成熟反馈
 - [ ] B2 课程循环：自然教材、多行为教材、学生自采、错题补课

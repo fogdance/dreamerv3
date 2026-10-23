@@ -2,7 +2,7 @@
 run.py and exam.py commands, driven by one config of configs/thinking_student/.
 
   python -m dreamerv3.thinking_student.formal_train pretrain --config FILE [--until L1|L2|L3]
-  python -m dreamerv3.thinking_student.formal_train iterate  --config FILE [--rounds N]
+  python -m dreamerv3.thinking_student.formal_train iterate  --config FILE [--rounds N] [--until cf]
   python -m dreamerv3.thinking_student.formal_train evaluate --config FILE --policy NAME [--train-smoke]
   python -m dreamerv3.thinking_student.formal_train run      --config FILE [--rounds N]
   python -m dreamerv3.thinking_student.formal_train status   --config FILE
@@ -15,7 +15,8 @@ iterate   rounds (B2-B8) on the newest frozen pi_k: per contract of the round
           its formal collection to the true terminal, check and CF
           (experience/pi_k/); in learners/pi_{k+1} L4 on the CF targets of
           pi_k only, then the S4 prior refresh (L5); pi_{k+1} frozen with the
-          value anchor; its Teacher-free exam.
+          value anchor; its Teacher-free exam. --until cf stops the round
+          after its CF (and state-check), before L4.
 evaluate  the Teacher-free exam of a frozen policy: DEV on the VALIDATION rows
           dev.contracts of paths.markets, else DEV_NOT_CONFIGURED;
           --train-smoke adds the TRAIN smoke.
@@ -302,7 +303,9 @@ def _round_contracts(it, names, r):
   return [names[((r - 1) * m + i) % len(names)] for i in range(m)]
 
 
-def iterate(cfg, lay, state, rounds):
+def iterate(cfg, lay, state, rounds, until=None):
+  """until='cf': the round stops after its CF and state-check, before L4; a
+  later iterate goes on from there."""
   contracts, it, s = _contracts(cfg), cfg['iteration'], cfg['student']
   corpora = _corpus_args(contracts.values())
   for _ in range(rounds):
@@ -362,6 +365,10 @@ def iterate(cfg, lay, state, rounds):
                       '--out', check, '--windows', it['state_check_windows'],
                       '--batch-length', s['batch_length'], '--seed', s['seed']],
               lay.log(f'r{r:03d}_state_check'))
+    if until == 'cf':
+      _step(lay, state, step='cf_done')
+      print(f'iterate stops after the CF of round {r} (--until cf); L4 has not started')
+      return
     # B4: L4 on the Q^{pi_k} targets only; B5: the S4 prior refresh.
     learner, targets = lay.learner(r), [a for out in cf.values() for a in ('--cf', out)]
     common = ['--run', learner, '--init-from', policy, '--save-every', it['save_every'],
@@ -476,11 +483,13 @@ def main(argv=None):
   parser.add_argument('--rounds', type=int, default=1, help='iterate/run: rounds of this call')
   parser.add_argument('--policy', default=None, help='evaluate: frozen policy name or folder')
   parser.add_argument('--train-smoke', action='store_true', help='evaluate: also the TRAIN smoke')
-  parser.add_argument('--until', choices=[stage for _, stage, _ in FOUNDATION], default=None,
-                      help='pretrain: stop after this foundation stage, before freezing pi_0000')
+  stops = {'pretrain': [stage for _, stage, _ in FOUNDATION], 'iterate': ['cf']}
+  parser.add_argument('--until', choices=[u for us in stops.values() for u in us], default=None,
+                      help='pretrain: stop after this foundation stage, before freezing pi_0000; '
+                           'iterate: cf stops the round after its CF, before L4')
   args = parser.parse_args(argv)
-  if args.until and args.command != 'pretrain':
-    parser.error('--until belongs to pretrain')
+  if args.until and args.until not in stops.get(args.command, []):
+    parser.error(f'--until {args.until} does not belong to {args.command}')
   cfg = load_config(args.config)
   lay = Layout(cfg['paths']['run_root'])
   if args.command == 'status':
@@ -494,7 +503,7 @@ def main(argv=None):
   if args.command in ('pretrain', 'run'):
     pretrain(cfg, lay, state, args.until)
   if args.command in ('iterate', 'run'):
-    iterate(cfg, lay, state, args.rounds)
+    iterate(cfg, lay, state, args.rounds, args.until if args.command == 'iterate' else None)
   if args.command == 'evaluate':
     policy = Path(args.policy) if '/' in args.policy else lay.policies / args.policy
     evaluate(cfg, lay, state, policy, args.train_smoke)
