@@ -62,14 +62,15 @@ def pik(two, tmp_path_factory):
 
 
 def in_process(calls, fail=None):
-  """formal_train._call without a subprocess; the first call of the run.py
-  command `fail` fails."""
+  """formal_train._call without a subprocess; the first call of `fail` (a
+  run.py command or the exam module) fails."""
   failed = set()
 
   def call(module, argv, log):
     argv = [str(a) for a in argv]
-    calls.append(argv[0] if module == 'run' else module)
-    if argv[0] == fail and fail not in failed:
+    name = argv[0] if module == 'run' else module
+    calls.append(name)
+    if name == fail and fail not in failed:
       failed.add(fail)
       raise RuntimeError(f'{fail} failed')
     importlib.import_module(f'dreamerv3.thinking_student.{module}').main(argv)
@@ -229,8 +230,8 @@ def test_q_targets_of_one_policy_on_two_contracts(pik, two, tmp_path):
   with pytest.raises(ValueError, match='twice'):
     V.MultiQWindows([cf[0], cf[0]], 'train', holdout=0)
 
-  # A branch that cannot be compared is no Q label; without valid pairs
-  # kappa_Q needs the configured floor.
+  # A branch that cannot be compared is no Q label, and a floor never
+  # stands in for missing pairs (C4 review R2).
   capped = tmp_path / 'capped'
   V.run_cf(pik['policy'], two[0], pik['collect'][CONTRACTS[0]], capped, forks=4, workers=1,
            max_steps=1, **QUIET)
@@ -239,10 +240,21 @@ def test_q_targets_of_one_policy_on_two_contracts(pik, two, tmp_path):
   idle = [p for p in pairs if p['status'] == 'NOT_COMPARABLE']
   assert idle and all(targets['q_cf_valid'][p['cursor'] - targets['cursor'][0]] == 0 for p in idle)
   np.savez(capped / 'targets.npz', **dict(targets, q_cf_valid=np.zeros_like(targets['q_cf_valid'])))
+  for floor in (None, 0.05):
+    with pytest.raises(ValueError, match='two valid'):
+      V.MultiQWindows([capped], 'train', holdout=0).kappa(floor)
+  # Real pairs of one Delta G: the configured floor replaces their zero std.
+  flat = tmp_path / 'flat'
+  shutil.copytree(cf[0], flat)
+  targets = dict(np.load(flat / 'targets.npz'))
+  add = train.parts[0].data['action'] == V.ADD
+  np.savez(flat / 'targets.npz', **dict(targets, q_real=np.zeros_like(targets['q_real']),
+                                         q_cf=np.where(add, -.5, .5).astype(np.float32)))
   with pytest.raises(ValueError, match='floor'):
-    V.MultiQWindows([capped], 'train', holdout=0).kappa()
-  floored, source = V.MultiQWindows([capped], 'train', holdout=0).kappa(0.05)
-  assert floored == 0.05 and source['floored'] and source['pairs'] == 0
+    V.MultiQWindows([flat], 'train', holdout=0).kappa()
+  floored, source = V.MultiQWindows([flat], 'train', holdout=0).kappa(0.05)
+  assert floored == 0.05 and source['floored'] and source['std'] == 0.
+  assert source['pairs'] == len(dgs[0]) >= 2
 
   # L4 on both contracts' targets moves only the Value Brain.
   args = ['--preset', 'small', '--device', 'cpu', '--batch-size', '2', '--batch-length', str(T),
@@ -264,6 +276,7 @@ def test_q_targets_of_one_policy_on_two_contracts(pik, two, tmp_path):
   assert frozen['ts']['decision.beta_q'] == 1.0
   assert frozen['ts']['decision.kappa_q'] == pytest.approx(kappa)
   assert frozen['teaching']['value_anchor']['kappa_source']['pairs'] == len(x)
+  assert frozen['teaching']['value_anchor']['pairs'] == train.pair_counts()
   assert frozen['lineage']['q_teacher_policy'] == [str(pik['policy'])]
   agent, _ = ts_run.load_policy(out, **QUIET)
   _, rows = ts_run.rollout(agent, ts_run.corpus_env(two[1]), 40)
@@ -272,6 +285,23 @@ def test_q_targets_of_one_policy_on_two_contracts(pik, two, tmp_path):
     legal = r['mask'][1] > 0.5 and r['delta_q'] != 0
     expect = np.clip(r['delta_q'] / kappa, -3., 3.) if legal else 0.
     assert r['anchor'] == pytest.approx(expect, rel=1e-5, abs=1e-7)
+
+  # Without two valid pairs the anchor stays off, floor or not (R2).
+  neutral = tmp_path / 'pik1_neutral'
+  ts_run.main(['freeze', '--run', str(run), '--name', 'pik1_neutral', '--out', str(neutral),
+               '--beta-q', '1', '--kappa-q', 'auto', '--kappa-floor', '0.05', '--cf', str(capped),
+               '--corpus', str(two[0]), *args])
+  frozen = json.loads((neutral / 'policy.json').read_text())
+  anchor = frozen['teaching']['value_anchor']
+  assert frozen['ts']['decision.beta_q'] == 0. and anchor['kappa_q'] is None
+  assert (anchor['status'], anchor['requested_beta_q'], anchor['pairs']['total']) == (
+      'Q_ANCHOR_NOT_READY', 1., 0)
+  agent, _ = ts_run.load_policy(neutral, **QUIET)
+  _, rows = ts_run.rollout(agent, ts_run.corpus_env(two[0]), 40)
+  assert all(r['anchor'] == 0 for r in rows)
+  with pytest.raises(ValueError, match='--cf targets'):
+    ts_run.main(['freeze', '--run', str(run), '--name', 'bad', '--out', str(tmp_path / 'bad'),
+                 '--beta-q', '1', '--kappa-q', '0.5', '--corpus', str(two[0]), *args])
 
 
 def test_orchestrator_rounds_resume_from_the_disk(two, tmp_path, monkeypatch):
@@ -311,7 +341,8 @@ def test_orchestrator_rounds_resume_from_the_disk(two, tmp_path, monkeypatch):
     FT.main(['pretrain', '--config', str(raised)])
   assert len(calls) == n
 
-  # The round stops at L4; the rerun keeps pi_0's collections and CF.
+  # The round stops at L4; the rerun keeps pi_0's collections and CF,
+  # freezes pi_1 and stops at its first exam.
   monkeypatch.setattr(FT, '_call', in_process(calls, fail='train-value'))
   with pytest.raises(RuntimeError, match='train-value failed'):
     FT.main(['iterate', '--config', str(config)])
@@ -321,18 +352,34 @@ def test_orchestrator_rounds_resume_from_the_disk(two, tmp_path, monkeypatch):
   experience = files(lay.root / 'experience')
   assert all((lay.experience(lay.policy(0), 'cf', c) / 'meta.json').exists() for c in CONTRACTS)
   calls.clear()
-  FT.main(['iterate', '--config', str(config)])
-  assert not {'collect', 'check', 'cf', 'state-check'} & set(calls)
-  assert calls[:3] == ['train-value', 'train-policy', 'freeze']
+  monkeypatch.setattr(FT, '_call', in_process(calls, fail='exam'))
+  with pytest.raises(RuntimeError, match='exam failed'):
+    FT.main(['iterate', '--config', str(config)])
+  assert calls == ['train-value', 'train-policy', 'freeze', 'exam']
   assert {p: v for p, v in files(lay.root / 'experience').items() if p in experience} == experience
   state = json.loads(lay.state.read_text())
   record = state['rounds']['1']
   assert (record['L5'], record['L6'], record['updates']) == (
       'S4_PRIOR_REFRESH', 'L6_NOT_IMPLEMENTED', {'L4': 2, 'L5': 2})
-  assert state['latest_candidate'] == str(lay.policy(1)) and state['best_dev'] is None
+  # The round records the anchor pi_1 was frozen with.
+  pairs = V.MultiQWindows([lay.experience(lay.policy(0), 'cf', c) for c in CONTRACTS], 'train',
+                          holdout=0).pair_counts()['total']
   frozen = json.loads((lay.policy(1) / 'policy.json').read_text())
+  assert record['value_anchor']['pairs'] == pairs
+  assert record['value_anchor']['beta_q'] == frozen['ts']['decision.beta_q'] == float(pairs >= 2)
+  assert state['step'] == 'exam' and state['latest_candidate'] == str(lay.policy(1))
   assert frozen['lineage']['q_teacher_policy'] == [str(lay.policy(0))]
   assert (lay.experience(lay.policy(0), 'collect', CONTRACTS[0]) / 'state_check.json').exists()
+
+  # pi_1 is frozen and its exam is not done: the rerun takes only its
+  # missing exams and no new round (C4 review R1).
+  calls.clear()
+  monkeypatch.setattr(FT, '_call', in_process(calls))
+  FT.main(['iterate', '--config', str(config)])
+  assert calls == ['exam', 'exam']
+  assert all((lay.exam(lay.policy(1), 'TRAIN_SMOKE', c) / 'exam.json').exists() for c in CONTRACTS)
+  state = json.loads(lay.state.read_text())
+  assert state['step'] == 'done' and state['best_dev'] is None
 
   # The configured rounds are done; status only reads.
   calls.clear()
@@ -343,6 +390,44 @@ def test_orchestrator_rounds_resume_from_the_disk(two, tmp_path, monkeypatch):
   assert files(lay.root) == before
   assert report['policies'] == {'pi_0000': True, 'pi_0001': True}
   assert report['learners']['pi_0001'] == {'L1': 0, 'L2': 0, 'L3': 2, 'L4': 2}
+
+
+def test_orchestrator_finishes_the_exam_of_a_frozen_candidate_first(pik, two, tmp_path,
+                                                                    monkeypatch):
+  """C4 review R1: pi_1 is frozen and one of its two DEV exams is done. The
+  rerun takes the other one only and no round 2, though max_rounds allows
+  it: finishing round 1 is the round of this call."""
+  from wp02_fixture import native_factory
+  rows = []
+  for shift, name in ((3, 'DEV1'), (4, 'DEV2')):
+    _, env, _ = native_factory(tmp_path / name, shift=shift)
+    rows.append(dict(contract=name, role='validation', eligible_for_training=False,
+                     path=str(env.parent / 'market.csv'), env_config=str(env)))
+  (tmp_path / 'pool.json').write_text(json.dumps(dict(files=rows)))
+  (tmp_path / 'corpora').mkdir()
+  for folder, name in zip(two, CONTRACTS):
+    (tmp_path / 'corpora' / name).symlink_to(folder)
+  config = tmp_path / 'dev.yaml'
+  config.write_text(yaml.safe_dump(dict(
+      paths=dict(markets='pool.json', corpus_root='corpora', run_root='run'),
+      dev=dict(contracts=['DEV1', 'DEV2']), student=dict(preset='small', device='cpu'),
+      iteration=dict(max_rounds=2), evaluation=dict(random_seeds=2))))
+  lay = FT.Layout(tmp_path / 'run')
+  for k in (0, 1):
+    shutil.copytree(pik['policy'], lay.policy(k))
+  first = lay.exam(lay.policy(1), 'DEV', 'DEV1')
+  E.main(['--policy', str(lay.policy(1)), '--out', str(first), '--pool', str(tmp_path / 'pool.json'),
+          '--contract', 'DEV1', '--random-seeds', '2'])
+  done = files(first)
+  calls = []
+  monkeypatch.setattr(FT, '_call', in_process(calls))
+  FT.main(['iterate', '--config', str(config), '--rounds', '1'])
+  assert calls == ['exam'] and files(first) == done
+  report = json.loads((lay.exam(lay.policy(1), 'DEV', 'DEV2') / 'exam.json').read_text())
+  assert report['label'] == 'DEV' and report['complete']
+  state = json.loads(lay.state.read_text())
+  assert state['step'] == 'done' and state['best_dev']['policy'] == str(lay.policy(1))
+  assert not lay.policy(2).exists() and not (lay.root / 'experience').exists()
 
 
 def test_exam_is_teacher_free_and_names_its_market(pik, two, tmp_path):

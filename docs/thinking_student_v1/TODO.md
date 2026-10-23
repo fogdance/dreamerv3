@@ -236,6 +236,40 @@
     - 中断后重跑同一脚本即可接着训练；进度：`formal_train status --config …/formal_v1.yaml`。
   - L2 之后的 L3（配置中暂填 12,000 次）、`pi_0000` 和后续轮次，等用户决定。
 
+## C4 源码 Review 修复（`FG_S3_TS_C4_gy34_d334_Source_Review_20261024.md`；计划：`PLAN_C4_20261023.md` 第 4 节）
+- [x] C4R-1：R1 冻结后中断时，重跑先补完该候选缺的考试，再看轮数上限；`exam.json` 原子写入 ＋ 测试
+  - 证据：
+    - `formal_train.iterate` 每轮开始前用 `_exam_missing` 检查最新冻结策略的考试文件，缺了就只补缺的部分（`evaluate` 按合约跳过已完成的）。k ≥ 1 时这一步计入本次调用的轮数，之后才检查 `max_rounds`。
+    - `_takes_smoke` 统一了 pretrain 与各轮的考试组成；`exam.json` 改用 `run._write` 原子写入。
+    - `test_orchestrator_rounds_resume_from_the_disk`：L4 失败后的重跑在冻结 `pi_0001` 后，第一次考试失败，调用序列为 train-value、train-policy、freeze、exam。再重跑只调用 `['exam', 'exam']`（两份 TRAIN_SMOKE，未配置 DEV），`step` 为 done；再跑一次没有任何调用。
+    - 新测试 `test_orchestrator_finishes_the_exam_of_a_frozen_candidate_first`：两个合成 DEV 合约，DEV1 已考完。在 `max_rounds` 2、`--rounds 1` 下重跑：
+      - 只调用一次 exam（DEV2）；
+      - DEV1 的文件字节和 mtime 不变；
+      - `best_dev` 为 `pi_0001`；
+      - 没有生成 `pi_0002`，也没有 experience。
+- [x] C4R-2：R2 β_Q > 0 至少需要 2 个有效 CF 成对样本，否则 β_Q = 0 并标 `Q_ANCHOR_NOT_READY`；κ_Q 下界不再顶替缺失的监督 ＋ 测试
+  - 证据：
+    - `run.value_anchor`：β_Q > 0 或 κ 为 `auto` 时必须给 `--cf`。有效对少于 2 个时，返回 β_Q 0，同时记 `requested_beta_q`、`status: Q_ANCHOR_NOT_READY` 和对数。
+    - `MultiQWindows.kappa`：少于 2 对时，给不给下界都报错。
+    - 编排器把锚点（β_Q、κ_Q、对数、状态）记入该轮。
+    - `test_q_targets_of_one_policy_on_two_contracts`：
+      - 0 对时，`kappa()` 和 `kappa(0.05)` 都报错；
+      - 所有有效对的 ΔG 都等于 0.5 时，不给下界报错，给 0.05 则使用下界（std 0）；
+      - 用 0 对的 CF 加 `--kappa-floor 0.05` 冻结，得到 β_Q 0、`Q_ANCHOR_NOT_READY`、请求值 1.0、0 对，40 步 rollout 的 anchor 全为 0；
+      - β_Q 1、固定 κ、不给 `--cf` 时报错。
+    - 编排测试中第 1 轮为 60 对，`pi_0001` 的 β_Q 为 1.0、κ_Q 为 0.853，与轮记录一致。
+- [x] C4R-3：R3 在 1024 行窗口上测量短窗口与连续状态的差距（正式 L2 诊断快照、冒烟 `pi_0000`），给出 L3 窗口与预热建议
+  - 证据：`C4_STATE_CHECK_20261024/`（`state_check.sh`，源码 dreamerv3 `4c67480`，GPU）。FG005 上 16 个 1024 行窗口，对照窗口差 0。
+    - 正式脑子（ckpt 22000 的诊断快照，决策头未训练）：`p_tp_h` 在 16 行之后的差距不到其标准差的 1%。`z` 的差距占其标准差的比例：16–32 行 22%、48–64 行 16%、112–128 行 10%、1008–1024 行 6%。
+    - 冒烟 `pi_0000`（市场脑接近 E_ONLY 原样）：`z` 的差距在所有位置都约为 20%，不衰减。
+    - 结论与建议见 `FORMAL_TRAINING_IMPLEMENTATION.md` 的“短窗口与连续状态”一节：L3 先按 64/16 训练，冻结 `pi_0000` 后再测一次训练后决策头的差距；是否加长窗口或改从真实状态起步，由用户决定。
+- [x] C4R-4：R4 正式配置 `state_check_windows: 0`，诊断改为手动运行 `run state-check`
+  - 证据：`formal_v1.yaml` 与 `formal_train.DEFAULTS` 的 `state_check_windows` 为 0。冒烟配置保留 16，编排测试显式设为 4，仍覆盖这一步。
+- 回归（CPU，`JAX_PLATFORMS=cpu`，在定稿代码上运行）：
+  - C4：10 项通过，368 s，含新增 1 项。
+  - S0–S4 共 32 项，加 gym corpus 9 / account 3 / cf 4，合计 48 项通过；pytest 退出码 0，junitxml 记录 0 失败、0 跳过，466 s。
+  - 本次没有改 gym 源码。
+
 ## S5 — 自主教学循环 + Teacher-free 考试
 - [ ] B1 教学题生命周期，含 `ready_at` 成熟反馈
 - [ ] B2 课程循环：自然教材、多行为教材、学生自采、错题补课

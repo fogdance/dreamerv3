@@ -144,12 +144,13 @@
 - **多合约学习：**
   - `MultiCorpusWindows` / `MultiQWindows` 先按合约抽、再在合约内抽窗口，窗口不跨合约。
   - L3 类别权重在全部合约的示范上统一计算。
-  - κ_Q = 同轮全部有效 CF 对的合并 std，各合约等权；退化时用配置的下界。
+  - κ_Q = 同轮全部有效 CF 对的合并 std，各合约等权；有效对少于 2 个时 β_Q 保持 0（`Q_ANCHOR_NOT_READY`），下界只替代真实成对样本的零方差或过小尺度。
   - 混入不同 π_k 的 CF 一律拒绝。
 - **编排 `formal_train`：**
   - 命令：`pretrain [--until Lk]`、`iterate`、`evaluate`、`run`、`status`。
   - 每一步是一个现有 CLI 的子进程。
   - 完成与否每次都从磁盘判断：阶段剩余次数 = 预算 − `progress.json`；已完成的采集、CF、考试跳过；冻结策略不可覆盖。
+  - 每轮开始前先补完最新冻结策略缺的考试，再看轮数上限或开新轮。
   - 某阶段的后续阶段或 π0 已经建立在它上面时，再给它加预算会被拒绝。
 - **Teacher-free 考试 `exam`：**
   - 标签：`DEV`（VALIDATION 行，与 TRAIN 同一条 `write_inputs`）、`TRAIN_SMOKE` 或 `DEV_NOT_CONFIGURED`。

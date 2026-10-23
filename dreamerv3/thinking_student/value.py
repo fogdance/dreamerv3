@@ -375,9 +375,10 @@ class MultiQWindows:
   def kappa(self, floor=None):
     """kappa_Q (A5): the std of Delta G over the valid pairs of every
     contract, a contract's pairs sharing its mix weight (uniform_contract:
-    every contract with pairs weighs the same). Fewer than two pairs or a
-    zero std is an error unless a positive `floor` is given; the floor also
-    replaces a smaller std. Returns (kappa, how it was computed)."""
+    every contract with pairs weighs the same). It needs two valid pairs: a
+    floor never stands in for missing pair supervision. A zero std is an
+    error unless a positive `floor` is given; the floor also replaces a
+    smaller std. Returns (kappa, how it was computed)."""
     dgs = [p.pairs() for p in self.parts]
     n = sum(len(d) for d in dgs)
     std = 0.
@@ -390,7 +391,9 @@ class MultiQWindows:
                   pairs=n, std=std, floor=floor, floored=False,
                   contracts={c: dict(pairs=len(d), std=float(d.std()) if len(d) else None)
                              for c, d in zip(self.contracts, dgs)})
-    if n < 2 or not std > 0 or (floor is not None and std < floor):
+    if n < 2:
+      raise ValueError(f'kappa_Q needs two valid ADD/WAIT pairs, the targets hold {n}')
+    if not std > 0 or (floor is not None and std < floor):
       if floor is None or not floor > 0:
         raise ValueError(f'kappa_Q is degenerate ({n} valid pairs, std {std}); '
                          'a positive floor is needed')

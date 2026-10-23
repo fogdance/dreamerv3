@@ -24,8 +24,10 @@ status    progress read from the disk (writes nothing).
 
 Every step runs an existing command in its own process (logs/). A rerun
 continues from the disk: a stage trains its budget minus its recorded
-progress, a finished collection or CF of the same frozen policy is kept and
-a frozen policy is never rewritten. run_state.json mirrors the progress for
+progress, a finished collection or CF of the same frozen policy is kept, a
+frozen policy is never rewritten, and the missing exams of the newest frozen
+policy come before the round limit or a new round (a round ends with its
+candidate's exam). run_state.json mirrors the progress for
 reading and is never consulted to admit anything. Budgets and rounds come
 from the config; nothing loops without a bound. S5 (L6: ready_at feedback
 and the curriculum) is not implemented, and every round records that.
@@ -57,7 +59,7 @@ DEFAULTS = dict(
     iteration=dict(max_rounds=0, contracts=None, contracts_per_round=2, parallel_contracts=1,
                    cf_wait_forks=None, cf_workers=1, cf_max_steps=8192, value_updates=0,
                    prior_refresh_updates=0, cf_boost=16.0, save_every=0, holdout=0,
-                   beta_q=1.0, kappa_q='auto', kappa_floor=None, state_check_windows=32),
+                   beta_q=1.0, kappa_q='auto', kappa_floor=None, state_check_windows=0),
     evaluation=dict(random_seeds=5, smoke_contracts=2, smoke_steps=6000),
 )
 FOUNDATION = (('train-market', 'L1', 'market_updates'), ('train-outcome', 'L2', 'outcome_updates'),
@@ -197,6 +199,24 @@ def _newest(lay):
   return max(ks) if ks else None
 
 
+def _takes_smoke(cfg, k):
+  """pi_0000 always takes the TRAIN smoke; a round's candidate only when no
+  DEV is configured."""
+  return k == 0 or not cfg['dev']['contracts']
+
+
+def _exam_missing(cfg, lay, policy, train_smoke):
+  """Whether a part of the exam of `policy`, as evaluate takes it, is not on
+  the disk yet (exam.json is written last and whole)."""
+  dev = cfg['dev']['contracts']
+  outs = ([lay.exam(policy, 'DEV', c) / 'exam.json' for c in dev] if dev else
+          [lay.root / 'eval' / Path(policy).name / 'DEV_NOT_CONFIGURED.json'])
+  if train_smoke:
+    outs += [lay.exam(policy, 'TRAIN_SMOKE', c) / 'exam.json'
+             for c in list(_contracts(cfg))[:cfg['evaluation']['smoke_contracts']]]
+  return not all(out.exists() for out in outs)
+
+
 def _collected(out):
   meta = _read(Path(out) / 'meta.json')
   return bool(meta and meta['done'])
@@ -257,7 +277,7 @@ def pretrain(cfg, lay, state, until=None):
   _step(lay, state, step='exam', frozen_policy=str(pi0),
         latest_candidate=state['latest_candidate'] or str(pi0), updates_by_stage=_updates(lay),
         latest_checkpoint=str(latest(lay.foundation)))
-  evaluate(cfg, lay, state, pi0, train_smoke=True)
+  evaluate(cfg, lay, state, pi0, train_smoke=_takes_smoke(cfg, 0))
   _step(lay, state, step='done')
 
 
@@ -289,10 +309,20 @@ def iterate(cfg, lay, state, rounds):
     k = _newest(lay)
     if k is None:
       raise RuntimeError('No frozen policy: run pretrain first')
+    policy = lay.policy(k)
+    if _exam_missing(cfg, lay, policy, _takes_smoke(cfg, k)):
+      # B7 of pi_k stopped after its freeze or part way: only its missing
+      # exams, before the round limit or a new round. For k > 0 this
+      # finishes round k, a round of this call.
+      _step(lay, state, step='exam', frozen_policy=str(policy))
+      evaluate(cfg, lay, state, policy, _takes_smoke(cfg, k))
+      _step(lay, state, step='done')
+      if k:
+        continue
     if k >= it['max_rounds']:
       print(f'iteration.max_rounds = {it["max_rounds"]} reached at pi_{k:04d}')
       return
-    r, policy = k + 1, lay.policy(k)
+    r = k + 1
     rec = state['rounds'].setdefault(str(r), dict(
         policy_in=policy.name, contracts=_round_contracts(it, list(contracts), r)))
     _step(lay, state, phase='iteration', round=r, step='collect')
@@ -357,12 +387,14 @@ def iterate(cfg, lay, state, rounds):
       _call('run', ['freeze', '--run', learner, '--name', new.name, '--out', new, *targets, *corpora,
                     '--beta-q', it['beta_q'], '--kappa-q', it['kappa_q'], *floor,
                     '--holdout', it['holdout'], *_student(cfg)], lay.log(f'r{r:03d}_freeze'))
-    p = _updates(lay, r)
-    rec.update(policy_out=new.name, updates=dict(L4=p['L4'], L5=p['L5']))
+    p, anchor = _updates(lay, r), _read(new / 'policy.json')['teaching'].get('value_anchor', {})
+    rec.update(policy_out=new.name, updates=dict(L4=p['L4'], L5=p['L5']), value_anchor=dict(
+        beta_q=anchor.get('beta_q'), kappa_q=anchor.get('kappa_q'),
+        pairs=anchor.get('pairs', {}).get('total'), status=anchor.get('status')))
     _step(lay, state, step='exam', frozen_policy=str(new), latest_candidate=str(new),
           updates_by_stage=p, latest_checkpoint=str(latest(learner)))
     # B7: the Teacher-free exam of the new candidate.
-    evaluate(cfg, lay, state, new, train_smoke=not cfg['dev']['contracts'])
+    evaluate(cfg, lay, state, new, train_smoke=_takes_smoke(cfg, r))
     _step(lay, state, step='done')
 
 

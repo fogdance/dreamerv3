@@ -108,7 +108,7 @@ def exam(policy, out, label, config, source, steps=None, seeds=5, device=None, l
   """The student's Teacher-free run on the Native env of `config` (all of it,
   or its first `steps` minutes) and `seeds` random-entry accounts on the
   same minutes; writes and returns out/exam.json."""
-  from .run import collect, load_policy
+  from .run import _write, collect, load_policy
   from gym_trading_env.research import ts_v1_corpus as C
   from gym_trading_env.research.ts_v1_account import StudentEnv
   began, out = time.time(), Path(out)
@@ -146,7 +146,8 @@ def exam(policy, out, label, config, source, steps=None, seeds=5, device=None, l
       advantage={k: student[k] - summary[k]['mean'] for k in SCORES if k in summary},
       advantage_per_seed=[student['reward_per_minute'] - x['reward_per_minute'] for x in randoms],
       definitions=DEFINITIONS, seconds=round(time.time() - began, 1))
-  (out / 'exam.json').write_text(json.dumps(report, indent=1))
+  # Last and whole: an exam.json on the disk is a finished exam (formal_train).
+  _write(out / 'exam.json', json.dumps(report, indent=1).encode())
   log(f'{label} {meta["policy"]}: reward {student["reward"]:.3f} over {student["minutes"]} minutes, '
       f'random mean {summary.get("reward", {}).get("mean")}')
   return report

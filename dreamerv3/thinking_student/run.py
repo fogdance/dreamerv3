@@ -660,23 +660,33 @@ def _train(agent, args, train, held, report, constant=None):
 
 
 def value_anchor(args):
-  """beta_Q and kappa_Q of a new snapshot (A5). kappa 'auto' is the std of
-  Delta G over the valid train pairs of the --cf targets of one frozen pi_k,
-  pooled over their contracts with the --mix weights; --kappa-floor stands
-  in for a degenerate or smaller scale (MultiQWindows.kappa)."""
+  """beta_Q and kappa_Q of a new snapshot (A5). Q moves an action only where
+  it learned an action difference: beta_Q > 0 needs at least two valid
+  ADD/WAIT pairs in the --cf train targets of one frozen pi_k, else the
+  snapshot keeps beta_Q = 0 and says Q_ANCHOR_NOT_READY. kappa 'auto' is
+  the std of Delta G over those pairs, pooled over their contracts with the
+  --mix weights; --kappa-floor only replaces a zero or smaller std of them
+  (MultiQWindows.kappa)."""
   record = dict(beta_q=float(args.beta_q))
+  if args.kappa_q != 'auto':
+    record['kappa_q'] = float(args.kappa_q)
+    if not record['kappa_q'] > 0:
+      raise ValueError(f'kappa_Q must be positive, got {record["kappa_q"]}')
+    if not record['beta_q'] > 0:
+      return record
+  if not args.cf:
+    raise ValueError("beta_Q > 0 and kappa_Q 'auto' need the --cf targets of the value head")
+  from .value import MultiQWindows
+  targets = MultiQWindows(args.cf, 'train', holdout=args.holdout, mix=args.mix)
+  record['pairs'] = targets.pair_counts()
+  if record['pairs']['total'] < 2:
+    print(f'Q_ANCHOR_NOT_READY: {record["pairs"]["total"]} valid ADD/WAIT pairs; beta_Q stays 0')
+    return dict(record, beta_q=0., requested_beta_q=record['beta_q'], kappa_q=None,
+                status='Q_ANCHOR_NOT_READY', cf=[str(c) for c in args.cf])
   if args.kappa_q == 'auto':
-    from .value import MultiQWindows
-    if not args.cf:
-      raise ValueError("kappa_Q 'auto' needs the --cf targets")
-    kappa, source = MultiQWindows(args.cf, 'train', holdout=args.holdout,
-                                  mix=args.mix).kappa(args.kappa_floor)
+    kappa, source = targets.kappa(args.kappa_floor)
     record.update(kappa_q=kappa, kappa_source=dict(
         cf=[str(c) for c in args.cf], split='train', holdout=args.holdout, **source))
-  else:
-    record['kappa_q'] = float(args.kappa_q)
-  if not record['kappa_q'] > 0:
-    raise ValueError(f'kappa_Q must be positive, got {record["kappa_q"]}')
   return record
 
 
@@ -740,11 +750,13 @@ def main(argv=None):
   parser.add_argument('--cf-boost', type=float, default=16.,
                       help='train-value: sampling weight of a fork row with a valid branch')
   parser.add_argument('--beta-q', type=float, default=None,
-                      help='freeze: A5 value-anchor weight beta_Q')
+                      help='freeze: A5 value-anchor weight beta_Q; above 0 it needs two valid '
+                           '--cf pairs, else 0 (Q_ANCHOR_NOT_READY)')
   parser.add_argument('--kappa-q', default=None,
                       help="freeze: kappa_Q, a number or 'auto' = std(Delta G) of --cf train pairs")
   parser.add_argument('--kappa-floor', type=float, default=None,
-                      help="freeze: positive kappa_Q used when 'auto' is degenerate or smaller")
+                      help="freeze: positive kappa_Q for a zero or smaller 'auto' std of real "
+                           'pairs; never for missing pairs')
   args = parser.parse_args(argv)
   if args.command == 'collect':
     agent, meta = load_policy(args.policy, args.device)
@@ -782,8 +794,9 @@ def main(argv=None):
   updates, anchor = {'agent.ts.stage': stage}, None
   if args.command == 'freeze' and args.beta_q is not None:
     anchor = value_anchor(args)
-    updates.update({'agent.ts.decision.beta_q': anchor['beta_q'],
-                    'agent.ts.decision.kappa_q': anchor['kappa_q']})
+    updates['agent.ts.decision.beta_q'] = anchor['beta_q']
+    if anchor['kappa_q'] is not None:
+      updates['agent.ts.decision.kappa_q'] = anchor['kappa_q']
   agent = build(args.run, args.preset, args.device or 'cuda', args.init_f1, args.init_from,
                 args.migrate, batch_size=args.batch_size, batch_length=args.batch_length,
                 updates=updates)

@@ -50,10 +50,10 @@ iteration:
   prior_refresh_updates: 100
   save_every: 50
   holdout: 0
-  beta_q: 1.0
+  beta_q: 1.0             # 0 with Q_ANCHOR_NOT_READY when the round's CF holds < 2 valid pairs
   kappa_q: auto
-  kappa_floor: 0.05
-  state_check_windows: 32
+  kappa_floor: 0.05       # replaces a zero or smaller std of real pairs, never missing pairs
+  state_check_windows: 0  # diagnosis by hand: run.py state-check
 
 evaluation:
   random_seeds: 5
