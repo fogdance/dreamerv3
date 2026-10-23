@@ -108,6 +108,7 @@
   - `opt_l4` 只更新 value 组。
   - 三项损失：`L_q_real`、`L_q_cf`、`L_q_pair`（ΔQ 回归到 ΔG）。上游全部 SG，带 burn-in。
   - 不用 target copy（回报完整），没有 Actor 损失。
+  - 留出评估在同样的行上给出常数答案（训练段目标均值）的 MSE，以及 `constant/sign_agree`（每对都取训练段 ΔG 均值的符号），与模型的 `q/sign_agree` 对比。
 
 **下一版快照与加载**
 - π_{k+1} 的快照写入 β_Q 和 κ_Q；`auto` 时 κ_Q = 训练段有效对 ΔG 的标准差。

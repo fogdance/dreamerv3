@@ -64,10 +64,16 @@
 
 ## S3 — 策略条件 Q + 同策略 CF 老师
 - [x] S3-1：Gym `ts_v1_cf.py`：同初态 ADD/WAIT 双分支，注入冻结 π_k 回调；与 π_k 参考轨迹汇合得到精确回报；状态 VALID_COMPLETE / NOT_COMPARABLE（VALID_ESTIMATED 保留、本轮不生成）；合成测试（汇合 G = 跑到终止的 G；截断 → NOT_COMPARABLE）（gym `test_ts_v1_cf.py` 4 项通过：规则策略下汇合 G 与跑到真终止的 G 相对误差 ≤1e-9、两种首动作都有、长汇合分支、CAP 与 REFERENCE_INCOMPLETE、汇合时必须经策略见证；Dreamer `test_ts_v1_s3.py` 用真实小学生再验一次）
-- [ ] S3-2：F-02 统一折扣 γ=332/333 每有效市场分钟、终点为合约真终止；Dreamer `value.py`：参考 G_ref、GPU 多进程 CF、`targets.npz`
-- [ ] S3-3：L4：`L_q_real`、`L_q_cf`、`L_q_pair`；`opt_l4` 只更新 value 组；`train-value`；不用同一 CF 差距训练 Actor 偏好
-- [ ] S3-4：候选 π1：β_Q=1、κ_Q=std(ΔG) 记入快照；正式 TRAIN 采集；决策依赖检查（z − z(β=0) = anchor）
-- [ ] S3-5：最小验证（一个完整对 + 交易、一个 NOT_COMPARABLE、真实数据 2 个汇合分支跑到终止核对），写 `S3_RECORD_20261023.md`，提交两仓
+- [x] S3-2：F-02 统一折扣 γ=332/333 每有效市场分钟、终点为合约真终止；Dreamer `value.py`：参考 G_ref、GPU 多进程 CF、`targets.npz`（FG809 实跑 `S3_FG809_20261023/cf/pi0r/`：pi0r 正式采集 28263 行到 MAIN_ROLL，1211 个合法空仓 fork 全部 VALID_COMPLETE（汇合 1199、真终止 12），NOT_COMPARABLE 0；5 个 GPU worker 重放主轨迹 z 差异全 0，48 分钟；ΔG 均值 −0.056、标准差 0.344）
+- [x] S3-3：L4：`L_q_real`、`L_q_cf`、`L_q_pair`；`opt_l4` 只更新 value 组；`train-value`；不用同一 CF 差距训练 Actor 偏好（`S3_PI1_FG809_20261023`：从 pi0r 继承，L4 3000 次约 3 分钟。留出评估如实记录：最后 2048 行只含 08-03 一天的 88 对；q_real 0.135 优于常数 0.179，但 q_cf 1.92、q_pair 0.87 差于常数 1.62、0.80，ΔQ 符号一致率 0.20 低于常数符号 0.236。8192 行留出诊断同样如此：符号一致率 0.52，常数 0.71。结论是 ΔQ 在 FG809 单合约上不外推。评估新增 `constant/sign_agree`）
+- [x] S3-4：候选 π1：β_Q=1、κ_Q=std(ΔG) 记入快照；正式 TRAIN 采集；决策依赖检查（z − z(β=0) = anchor）（`S3_PI1_FG809_20261023/policies/pi1`：β_Q 1、κ_Q 0.29054（训练段 1123 对）。在 pi0r 的 28263 个状态上，z_pi1 − z_pi0r 与 anchor 最大偏差 2.4e-7，不合法行 z 逐位相等；翻转 17 次（WAIT→ADD 14、ADD→WAIT 3）。pi1 自己的采集 28263 步到 MAIN_ROLL：ADD 54、TP 40 / SL 13 / MAIN_ROLL 1，奖励 −11.93（pi0r −12.22）；`check` 违规 0，与 facts 54/54 一致。仅作诊断）
+- [x] S3-5：最小验证（一个完整对 + 交易、一个 NOT_COMPARABLE、真实数据 2 个汇合分支跑到终止核对），写 `S3_RECORD_20261023.md`，提交两仓
+  - 证据：
+    - `cf/pi0r/cases.json`：两个完整对，分支分别交易 13 笔和 9 笔；
+    - `cap_example.json`：fork 10693 在 1000 步上限下为 NOT_COMPARABLE/CAP，无标签；
+    - `spot_check.json`：fork 10693 和 20982 的汇合 G 与跑到真终止的 G 相对误差 1.7e-16；
+    - `test_ts_v1_s3.py` 4 项通过（143 s）。
+  - dreamerv3 一个提交，未推送；gym 本轮无改动。
 
 ## S4 — Reasoning 与策略改进
 - [ ] `L_reason`（L2 示范 / Outcome 证据的辅助理解）与 `L_policy_demo` 先验刷新（中性 Q 锚点的教学视图）；Q→Reasoning 投影开始学习；V1 不实现 `L_policy_pref`、`L_align`、`L_policy_rl`

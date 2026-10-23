@@ -162,6 +162,16 @@ def test_cf_targets_train_the_value_brain_and_freeze_the_anchor(world, tmp_path)
   final = report['eval'][-1]
   for key in ('loss/q_real', 'constant/q_real', 'q/n_real'):
     assert key in final, key
+  # The state-free sign answer is scored on the same held-out pairs.
+  const, agree, signed = report['constant']['delta_g'], 0, 0
+  for data in held.batches(1, T):
+    dg = np.where(data['action'] == 1, data['q_real'] - data['q_cf'],
+                  data['q_cf'] - data['q_real'])
+    s = (data['q_cf_valid'] > 0) & (dg != 0)
+    s[:, :burnin] = False
+    signed, agree = signed + s.sum(), agree + (s & (np.sign(dg) == np.sign(const))).sum()
+  assert final['q/n_sign'] == signed
+  assert final['constant/sign_agree'] == round(agree / max(signed, 1), 5)
   with (world['policy'] / 'agent.pkl').open('rb') as f:
     source = pickle.load(f)['params']
   with (folder / 'agent.pkl').open('rb') as f:

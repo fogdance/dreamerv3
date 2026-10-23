@@ -525,6 +525,10 @@ def evaluate(agent, windows, constant=None):
           ('q_cf', data['q_cf'] - constant['q_cf'], cf),
           ('q_pair', dg - constant['delta_g'], cf)):
         pool(f'constant/{key}', (err ** 2 * mask).sum() / max(mask.sum(), 1.), mask.sum())
+      # The state-free sign answer: every pair gets the sign of the train mean.
+      signed = cf * (dg != 0)
+      agree = signed * (np.sign(dg) == np.sign(constant['delta_g']))
+      pool('constant/sign_agree', agree.sum() / max(signed.sum(), 1.), signed.sum())
     _, mets = agent.report(agent.init_report(B), _device(agent, data, i))
     batches += 1
     for k, v in mets.items():
