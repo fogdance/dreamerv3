@@ -30,7 +30,7 @@ def world(tmp_path_factory):
   agent = small(root / 'agent')
   run = root / 'run'
   ts_run.save(agent, run)
-  policy = ts_run.freeze(agent, run, 'pik', 'small', corpus)
+  policy = ts_run.freeze(agent, run, 'pik', 'small', [corpus])
   # A snapshot frozen before L4 existed has no opt_l4 state.
   with (policy / 'agent.pkl').open('rb') as f:
     data = pickle.load(f)

@@ -10,7 +10,8 @@ cf         same-state ADD/WAIT branches from legal flat decisions of the
 targets    per reference row: q_real, the executed action's complete Native
            return (STUDENT_EXECUTED_NATIVE); per fork row: q_cf, the other
            action's branch return (VERIFIED_CF_NATIVE, VALID_COMPLETE only).
-QWindows   L4 training windows over the reference rows.
+QWindows   L4 training windows over the reference rows; MultiQWindows mixes
+           the targets of one pi_k on several TRAIN contracts (C4 3.1).
 
 Every CF worker first replays the whole reference in its own process and
 refuses any action or reward that differs from the collection: the branches
@@ -220,7 +221,8 @@ def cf_targets(reference, results):
 class QWindows:
   """L4 windows over the reference rows of one collection with its targets.
 
-  split='train' holds rows before the last `holdout`, 'eval' the rest. A
+  split='train' holds rows before the last `holdout` (every row with
+  holdout=0), 'eval' the rest. A
   window starts from the zero market state like the policy at the first
   market minute (its first `burnin` rows carry no Q loss). Windows are
   sampled in proportion to their Q rows after the burn-in, a fork row with
@@ -235,8 +237,8 @@ class QWindows:
     n = len(rows)
     if not np.array_equal(t['cursor'], [r['cursor'] for r in rows]):
       raise ValueError('Q targets and the collection have different cursors')
-    if not 0 < holdout < n:
-      raise ValueError(f'Holdout of {holdout} rows does not fit {n} rows')
+    if not 0 <= holdout < n or (split == 'eval' and not holdout):
+      raise ValueError(f'Holdout of {holdout} rows does not fit {n} rows for split {split}')
     self.lo, self.hi = {'train': (0, n - holdout), 'eval': (n - holdout, n)}[split]
     self.burnin, self.cf_boost = burnin, cf_boost
     self.rng = np.random.default_rng(seed)
@@ -271,10 +273,13 @@ class QWindows:
       out[k] = np.zeros(shape + tuple(s), np.float32)
     return out
 
-  def sample(self, batch, length):
+  def _pick(self, batch, length):
     cdf = self._starts(length)
     picks = np.searchsorted(cdf, self.rng.random(batch) * cdf[-1], side='right')
-    return self._stack([self.lo + int(i) for i in picks], length)
+    return [self.lo + int(i) for i in picks]
+
+  def sample(self, batch, length):
+    return self._stack(self._pick(batch, length), length)
 
   def batches(self, batch, length):
     """Every non-overlapping window of the split, in full batches."""
@@ -292,10 +297,168 @@ class QWindows:
                 q_cf=float(d['q_cf'][lo:hi][cf].mean()) if cf.any() else 0.,
                 delta_g=float(dg[cf].mean()) if cf.any() else 0.)
 
-  def kappa(self):
-    """std(Delta G) of the valid pairs of the split (A5 kappa_Q)."""
+  def pairs(self):
+    """Delta G = G(ADD) - G(WAIT) of every valid pair of the split."""
     d, lo, hi = self.data, self.lo, self.hi
     cf = d['q_cf_valid'][lo:hi] > 0
-    dg = np.where(d['action'][lo:hi] == ADD, d['q_real'][lo:hi] - d['q_cf'][lo:hi],
-                  d['q_cf'][lo:hi] - d['q_real'][lo:hi])[cf]
-    return float(dg.std()), int(cf.sum())
+    return np.where(d['action'][lo:hi] == ADD, d['q_real'][lo:hi] - d['q_cf'][lo:hi],
+                    d['q_cf'][lo:hi] - d['q_real'][lo:hi])[cf]
+
+  def kappa(self):
+    """std(Delta G) of the valid pairs of the split (A5 kappa_Q)."""
+    dg = self.pairs()
+    return float(dg.std()), len(dg)
+
+
+def _contract(meta):
+  return json.loads((Path(meta['corpus']) / 'source.json').read_text())['contract']
+
+
+class MultiQWindows:
+  """L4 windows over the CF targets of one frozen pi_k on several TRAIN
+  contracts (C4 3.1). Each window first draws its contract (`mix` as in
+  corpus.MultiCorpusWindows), then a window of that contract's reference
+  rows exactly as QWindows draws it; a window never joins two contracts.
+  Every cf folder must hold targets of the same frozen policy: Q targets
+  are Q^{pi_k} of their own policy only (A6 2.4)."""
+
+  def __init__(self, folders, split='train', holdout=2048, burnin=0, cf_boost=16.,
+               seed=0, mix='uniform_contract'):
+    self.folders = [Path(f) for f in folders]
+    metas = [json.loads((f / 'meta.json').read_text()) for f in self.folders]
+    policies = sorted({str(Path(m['policy']).resolve()) for m in metas})
+    if len(policies) != 1:
+      raise ValueError(f'Q targets of different policies cannot be mixed: {policies}')
+    self.policy, self.contracts = policies[0], [_contract(m) for m in metas]
+    if len(set(self.contracts)) != len(self.contracts):
+      raise ValueError(f'One contract appears twice: {self.contracts}')
+    self.parts = [QWindows(m['collection'], f / 'targets.npz', split, holdout, burnin, cf_boost)
+                  for f, m in zip(self.folders, metas)]
+    self.rng = np.random.default_rng(seed)
+    for part in self.parts:
+      part.rng = self.rng
+    w = (np.ones(len(self.parts)) if mix == 'uniform_contract'
+         else np.array([p.hi - p.lo for p in self.parts], np.float64))
+    self.mix, self.p = mix, w / w.sum()
+    self.exposure = dict.fromkeys(self.contracts, 0)
+
+  def sample(self, batch, length):
+    which = self.rng.choice(len(self.parts), batch, p=self.p)
+    rows = [self.parts[i]._stack(self.parts[i]._pick(1, length), length) for i in which]
+    for i in which:
+      self.exposure[self.contracts[i]] += 1
+    return {k: np.concatenate([r[k] for r in rows]) for k in rows[0]}
+
+  def batches(self, batch, length):
+    """Every non-overlapping window of every contract, in full batches of
+    one contract each."""
+    for part in self.parts:
+      yield from part.batches(batch, length)
+
+  def pair_counts(self):
+    counts = {c: len(p.pairs()) for c, p in zip(self.contracts, self.parts)}
+    return dict(total=sum(counts.values()), **counts)
+
+  def constant(self):
+    """Mean targets over the valid rows of every contract: the state-free
+    answer to beat on the pooled rows."""
+    real, cf = [], []
+    for p in self.parts:
+      d, lo, hi = p.data, p.lo, p.hi
+      real.append(d['q_real'][lo:hi][d['q_real_valid'][lo:hi] > 0])
+      cf.append(d['q_cf'][lo:hi][d['q_cf_valid'][lo:hi] > 0])
+    real, cf = np.concatenate(real), np.concatenate(cf)
+    dg = np.concatenate([p.pairs() for p in self.parts])
+    return dict(q_real=float(real.mean()), q_cf=float(cf.mean()) if len(cf) else 0.,
+                delta_g=float(dg.mean()) if len(dg) else 0.)
+
+  def kappa(self, floor=None):
+    """kappa_Q (A5): the std of Delta G over the valid pairs of every
+    contract, a contract's pairs sharing its mix weight (uniform_contract:
+    every contract with pairs weighs the same). Fewer than two pairs or a
+    zero std is an error unless a positive `floor` is given; the floor also
+    replaces a smaller std. Returns (kappa, how it was computed)."""
+    dgs = [p.pairs() for p in self.parts]
+    n = sum(len(d) for d in dgs)
+    std = 0.
+    if n:
+      x = np.concatenate(dgs)
+      w = np.concatenate([np.full(len(d), q / len(d)) for d, q in zip(dgs, self.p) if len(d)])
+      w = w / w.sum()
+      std = float(np.sqrt((w * (x - (w * x).sum()) ** 2).sum()))
+    source = dict(statistic=f'std of Delta G over valid train pairs, {self.mix} weights',
+                  pairs=n, std=std, floor=floor, floored=False,
+                  contracts={c: dict(pairs=len(d), std=float(d.std()) if len(d) else None)
+                             for c, d in zip(self.contracts, dgs)})
+    if n < 2 or not std > 0 or (floor is not None and std < floor):
+      if floor is None or not floor > 0:
+        raise ValueError(f'kappa_Q is degenerate ({n} valid pairs, std {std}); '
+                         'a positive floor is needed')
+      source['floored'] = True
+      return float(floor), source
+    return std, source
+
+
+def window_check(policy, collection, windows=32, length=64, seed=0, device=None, log=print):
+  """RSSM short-window check (C4 3.1). The frozen policy reads the decision
+  inputs of a formal collection once continuously from the first market
+  minute (its answers as on a continuous path) and again in `windows`
+  windows that each start from the zero market state, as L4 windows do,
+  with the policy seeds of the continuous path. The answers of both at the
+  same cursors are compared by position in the window; the window starting
+  at the first minute is the control and must agree exactly. A diagnostic,
+  never a gate."""
+  from .run import DECISION_OBS, load_policy
+  rows, arrays, _ = load_collection(collection)
+  agent, meta = load_policy(policy, device)
+  burnin, n, base = int(agent.config.ts.q_burnin), len(rows), int(agent.n_actions)
+  if n <= 2 * length:
+    raise ValueError(f'{n} collection rows are too few for {length}-row windows')
+  reward = np.concatenate([[0.], arrays['reward'][:-1]]).astype(np.float32)
+  keys = ('delta_q', 'z', 'p_tp_h', 'correction')
+
+  def step(carry, t, first):
+    obs = {k: arrays[k][t][None] for k in DECISION_OBS}
+    obs.update(reward=reward[t:t + 1], is_first=np.array([first]),
+               is_last=np.array([False]), is_terminal=np.array([False]))
+    carry, _, out = agent.policy(carry, obs, mode='policy')
+    return carry, [float(out[f'answer/{k}'][0]) for k in keys]
+
+  rng = np.random.default_rng(seed)
+  starts = [0] + sorted(int(s) for s in rng.choice(np.arange(1, n - length), windows, replace=False))
+  began, carry, path = time.time(), agent.init_policy(1), np.zeros((n, len(keys)))
+  agent.n_actions.value = base
+  for t in range(n):
+    carry, path[t] = step(carry, t, t == 0)
+  short = np.zeros((len(starts), length, len(keys)))
+  for w, s in enumerate(starts):
+    carry = agent.init_policy(1)
+    agent.n_actions.value = base + s
+    for j in range(length):
+      carry, short[w, j] = step(carry, s + j, j == 0)
+  cont = np.stack([path[s:s + length] for s in starts])
+  diff = np.abs(short - cont)
+  legal = np.stack([[rows[s + j]['mask'][1] > 0.5 for j in range(length)] for s in starts])
+  probe = diff[1:, burnin:]
+  dq_s, dq_c = short[1:, burnin:, 0], cont[1:, burnin:, 0]
+  signed = legal[1:, burnin:] & (dq_c != 0)
+  same = json.loads((Path(collection) / 'meta.json').read_text())['policy'] == meta['policy']
+  recorded = np.array([[r[k] for k in keys] for r in rows])
+  report = dict(
+      policy=str(policy), collection=str(collection), rows=n, windows=len(starts) - 1,
+      length=length, burnin=burnin, seconds=round(time.time() - began, 1),
+      control_max_abs_diff=float(diff[0].max()),
+      replay_vs_record_max_abs_diff=float(np.abs(path - recorded).max()) if same else None,
+      by_position={f'{a}-{a + 16}': {k: float(diff[1:, a:a + 16, i].mean()) for i, k in enumerate(keys)}
+                   for a in range(0, length, 16)},
+      after_burnin={k: dict(mean_abs_diff=float(probe[..., i].mean()),
+                            max_abs_diff=float(probe[..., i].max()),
+                            continuous_std=float(cont[1:, burnin:, i].std()))
+                    for i, k in enumerate(keys)},
+      delta_q_sign_agree=(float((np.sign(dq_s[signed]) == np.sign(dq_c[signed])).mean())
+                          if signed.any() else None),
+      delta_q_signed_rows=int(signed.sum()))
+  log(f'state-check: control {report["control_max_abs_diff"]:.3g}, after burn-in '
+      + ', '.join(f'{k} {v["mean_abs_diff"]:.4g}/{v["continuous_std"]:.4g}'
+                  for k, v in report['after_burnin'].items()))
+  return report

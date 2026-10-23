@@ -181,7 +181,7 @@ def test_frozen_policy_records_and_reloads_what_decides_actions(corpus, tmp_path
   agent = small(tmp_path / 'a', **{'decision.beta_q': 0.25})
   run = tmp_path / 'run'
   ts_run.save(agent, run)
-  folder = ts_run.freeze(agent, run, 'pi0', 'small', corpus)
+  folder = ts_run.freeze(agent, run, 'pi0', 'small', [corpus])
   meta = json.loads((folder / 'policy.json').read_text())
   source = json.loads((corpus / 'source.json').read_text())
   assert meta['action_selection'] == 'DETERMINISTIC_MASKED_ARGMAX'
@@ -190,7 +190,7 @@ def test_frozen_policy_records_and_reloads_what_decides_actions(corpus, tmp_path
   assert meta['outcome']['horizon_minutes'] == 2760 and len(meta['outcome']['classes']) == 34
   assert 'no CHUNK_END' in meta['rssm_initialization']
   assert meta['reward_version'] == source['inputs']['reward_schema']
-  assert meta['teacher']['funds_floor'] == source['funds_floor']
+  assert meta['corpora'][0]['funds_floor'] == source['funds_floor']
   loaded, _ = ts_run.load_policy(folder)
   assert loaded.config.ts.decision.beta_q == 0.25
   for k, v in agent.params.items():

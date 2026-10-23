@@ -1,29 +1,38 @@
 """Thinking Student V1 runner: staged training on TS teaching material, frozen
 policy snapshots and autonomous Native experience.
 
-  python -m dreamerv3.thinking_student.run train-market  --run DIR --corpus DIR ...
+  python -m dreamerv3.thinking_student.run train-market  --run DIR --corpus DIR [--corpus DIR ...]
   python -m dreamerv3.thinking_student.run train-outcome --run DIR --corpus DIR ...
   python -m dreamerv3.thinking_student.run train-policy  --run DIR --corpus DIR ...
-  python -m dreamerv3.thinking_student.run freeze  --run DIR --name pi0 --corpus DIR
+  python -m dreamerv3.thinking_student.run freeze  --run DIR --name pi0 --corpus DIR ... [--out DIR]
   python -m dreamerv3.thinking_student.run collect --policy DIR --corpus DIR --out DIR
   python -m dreamerv3.thinking_student.run check   --out DIR [--corpus DIR]
   python -m dreamerv3.thinking_student.run rollout --run DIR --corpus DIR
   python -m dreamerv3.thinking_student.run cf      --policy DIR --corpus DIR [--forks N]
-  python -m dreamerv3.thinking_student.run train-value --run DIR --init-from POLICY --cf DIR
-  python -m dreamerv3.thinking_student.run freeze  --run DIR --name pi1 --beta-q 1 --kappa-q auto --cf DIR
+  python -m dreamerv3.thinking_student.run state-check --policy DIR --collection DIR
+  python -m dreamerv3.thinking_student.run train-value --run DIR --init-from POLICY --cf DIR [--cf DIR ...]
+  python -m dreamerv3.thinking_student.run freeze  --run DIR --name pi1 --beta-q 1 --kappa-q auto --cf DIR ...
 
 One policy improvement round (S4) runs in one directory: train-value from
 the frozen pi_k on its CF targets, train-policy to refresh the prior
 (L_policy_demo with a neutral anchor + L_reason), then freeze pi_{k+1}.
 
---corpus is one contract folder of gym ts_v1_corpus (teaching material and
-the TS env inputs: Quality TP reward, no CHUNK_END).
+--corpus is a contract folder of gym ts_v1_corpus (teaching material and
+the TS env inputs: Quality TP reward, no CHUNK_END). The training commands
+take several (C4: windows of several TRAIN contracts, never joined across
+contracts); collect, check, rollout and cf take one. --holdout 0 trains on
+every TRAIN window; a holdout > 0 is a TRAIN_INTERNAL_DIAGNOSTIC tail of
+each contract, never a DEV exam.
 
-A run directory holds `ckpt/<step>/agent.pkl` and a `latest` pointer. Loading
-never checks code or data hashes (C2); shape mismatches fail loudly instead
-of silently re-initializing. A frozen policy `policies/<name>/` holds the
-complete parameters and `policy.json`, the record of everything that decides
-its actions (A6 2.4); collection and exams load it and never train it.
+A run directory holds `ckpt/<step>/agent.pkl` with `progress.json` (the
+updates of each stage so far) and a `latest` pointer; --save-every also
+saves during a training command, so an interrupted command loses at most
+the updates since its last save. Loading never checks code or data hashes
+(C2); shape mismatches fail loudly instead of silently re-initializing. A
+frozen policy `policies/<name>/` holds the complete parameters and
+`policy.json`, the record of everything that decides its actions (A6 2.4);
+collection and exams load it and never train it, and a frozen folder is
+never written again.
 """
 import argparse
 import hashlib
@@ -38,7 +47,7 @@ import numpy as np
 
 from . import labels as L
 from .config import observation_space
-from .corpus import LABEL_ACCOUNT, CorpusWindows, TSCorpus
+from .corpus import MIXES, LABEL_ACCOUNT, MultiCorpusWindows, TSCorpus, corpus_sources
 from .student import make_agent
 
 POLICY_OBS = tuple(observation_space())
@@ -48,17 +57,28 @@ DECISION_OBS = tuple(k for k in POLICY_OBS
 
 # ---- checkpoint ----
 
-def save(agent, run, tag=None):
+STAGES = ('L1', 'L2', 'L3', 'L4')
+
+
+def _write(path, data):
+  """Replace a file atomically: a reader sees the old or the new bytes."""
+  tmp = path.with_name(path.name + '.tmp')
+  tmp.write_bytes(data)
+  tmp.rename(path)
+
+
+def save(agent, run, tag=None, progress=None):
+  """`ckpt/<updates>/agent.pkl` (with the stage `progress`), then the
+  `latest` pointer."""
   run = Path(run)
   data = agent.save()
   name = tag or f"{data['counters']['updates']:012d}"
   folder = run / 'ckpt' / name
   folder.mkdir(parents=True, exist_ok=True)
-  tmp = folder / 'agent.pkl.tmp'
-  with tmp.open('wb') as f:
-    pickle.dump(data, f)
-  tmp.rename(folder / 'agent.pkl')
-  (run / 'ckpt' / 'latest').write_text(name)
+  _write(folder / 'agent.pkl', pickle.dumps(data))
+  if progress is not None:
+    _write(folder / 'progress.json', json.dumps(progress, indent=1).encode())
+  _write(run / 'ckpt' / 'latest', name.encode())
   return folder
 
 
@@ -76,7 +96,21 @@ def resume(agent, run):
   return folder
 
 
-def reports(run, names=('train_policy', 'train_value')):
+def progress(run):
+  """Optimizer updates of each stage in this run so far, as recorded with
+  its latest checkpoint (zero before the first recorded save)."""
+  done = dict.fromkeys(STAGES, 0)
+  folder = latest(run)
+  if folder is not None and (folder / 'progress.json').exists():
+    done.update(json.loads((folder / 'progress.json').read_text())['updates'])
+  return done
+
+
+REPORTS = {'L1': 'train_market', 'L2': 'train_outcome', 'L3': 'train_policy',
+           'L4': 'train_value'}
+
+
+def reports(run, names=tuple(REPORTS.values())):
   """The newest report of each training command among the run's
   checkpoints: one improvement round trains L4 and then refreshes L3."""
   found, ckpt = {}, Path(run) / 'ckpt'
@@ -105,7 +139,9 @@ def build(run, preset, device, init_f1=None, init_from=None, migrate=None, **kwa
     (Path(run) / 'inherit.json').write_text(json.dumps(lists, indent=1))
   elif init_f1:
     from .transfer import inherit_f1
-    inherit_f1(agent, init_f1)
+    lists = inherit_f1(agent, init_f1)
+    Path(run).mkdir(parents=True, exist_ok=True)
+    (Path(run) / 'inherit.json').write_text(json.dumps(lists, indent=1))
   return agent
 
 
@@ -135,11 +171,17 @@ def _repos():
   return out
 
 
-def freeze(agent, run, name, preset, corpus=None, teaching=None):
-  """Write `run/policies/<name>/`: the complete parameters (every module
-  that can change an action) and policy.json with the action selection,
-  decision coefficients, RSSM initialization, Reward and data sources."""
-  folder = Path(run) / 'policies' / name
+def freeze(agent, run, name, preset, corpora=(), teaching=None, lineage=None, out=None):
+  """Write the snapshot `out` (default `run/policies/<name>/`): the complete
+  parameters (every module that can change an action) and policy.json with
+  the action selection, decision coefficients, RSSM initialization, Reward,
+  the TRAIN contracts it learned from and its lineage. A snapshot never
+  changes: a folder that holds a policy.json is refused, and a new policy
+  takes a new name (C4 4.3-4)."""
+  folder = Path(out) if out else Path(run) / 'policies' / name
+  if (folder / 'policy.json').exists():
+    raise FileExistsError(f'{folder} holds a frozen policy; a new policy takes a new name')
+  sources = corpus_sources(corpora)
   folder.mkdir(parents=True, exist_ok=True)
   data = agent.save()
   blob = pickle.dumps(data)
@@ -171,17 +213,16 @@ def freeze(agent, run, name, preset, corpus=None, teaching=None):
       # exams load the policy on the device and dtype recorded here.
       inference=dict(platform=agent.config.jax.platform,
                      compute_dtype=agent.config.jax.compute_dtype),
-      teaching=teaching or {}, repos=_repos())
-  if corpus:
-    source = json.loads((Path(corpus) / 'source.json').read_text())
-    meta['corpus'] = str(corpus)
-    meta['reward_version'] = source['inputs']['reward_schema']
-    meta['teacher'] = {k: source[k] for k in (
-        'contract', 'fold', 'mode', 'funds_floor', 'gamma', 'clock', 'created')}
-  tmp = folder / 'agent.pkl.tmp'
-  tmp.write_bytes(blob)
-  tmp.rename(folder / 'agent.pkl')
-  (folder / 'policy.json').write_text(json.dumps(meta, indent=1))
+      teaching=teaching or {}, lineage=lineage or {}, repos=_repos(),
+      corpora=[dict(path=str(c), reward_schema=s['inputs']['reward_schema'],
+                    **{k: s[k] for k in ('contract', 'fold', 'mode', 'funds_floor',
+                                         'gamma', 'clock', 'created')})
+               for c, s in zip(corpora, sources)])
+  if sources:
+    # corpus_sources admits only corpora of one reward schema.
+    meta['reward_version'] = sources[0]['inputs']['reward_schema']
+  _write(folder / 'agent.pkl', blob)
+  _write(folder / 'policy.json', json.dumps(meta, indent=1).encode())
   return folder
 
 
@@ -584,33 +625,54 @@ def corpus_env(corpus):
   return StudentEnv(C.corpus_env(corpus))
 
 
-def _train_with_eval(agent, args, train, held, report, constant=None):
-  def checkpoint(done=None):
-    if done is None or (args.eval_every and done % args.eval_every == 0
-                        and done != args.updates):
-      report['eval'].append(evaluate(agent, held, constant))
-      print('eval', report['eval'][-1])
+def _train(agent, args, train, held, report, constant=None):
+  """`args.updates` updates of the run's stage on the `train` windows: a
+  checkpoint with the stage progress every `save_every` updates and at the
+  end; with held-out windows (TRAIN_INTERNAL_DIAGNOSTIC) an evaluation
+  before, every `eval_every` updates and after."""
+  stage, before = agent.config.ts.stage, progress(args.run)
 
-  stage = agent.config.ts.stage
-  checkpoint()
-  report['last_train'] = {k: float(v) for k, v in train_stage(
-      agent, train, args.updates, args.log_every, checkpoint).items()
-      if k.startswith(LOG_KEYS[stage])}
-  checkpoint()
-  return save(agent, args.run)
+  def record(done):
+    return dict(updates={**before, stage: before[stage] + done}, stage=stage,
+                agent_updates=int(agent.n_updates), seed=args.seed, mix=args.mix,
+                sources=report.get('corpora') or report.get('contracts'))
+
+  def evaluate_now():
+    report['eval'].append(evaluate(agent, held, constant))
+    print('eval', report['eval'][-1])
+
+  def on_update(done):
+    if done == args.updates:
+      return
+    if held is not None and args.eval_every and done % args.eval_every == 0:
+      evaluate_now()
+    if args.save_every and done % args.save_every == 0:
+      print('Saved', save(agent, args.run, progress=record(done)))
+
+  if held is not None:
+    evaluate_now()
+  mets = train_stage(agent, train, args.updates, args.log_every, on_update)
+  if held is not None:
+    evaluate_now()
+  report.update(last_train={k: float(v) for k, v in mets.items() if k.startswith(LOG_KEYS[stage])},
+                exposure=train.exposure, progress=record(args.updates))
+  return save(agent, args.run, progress=report['progress'])
 
 
 def value_anchor(args):
-  """beta_Q and kappa_Q of a new snapshot (A5); kappa 'auto' is std(Delta G)
-  over the valid train pairs of the --cf targets."""
+  """beta_Q and kappa_Q of a new snapshot (A5). kappa 'auto' is the std of
+  Delta G over the valid train pairs of the --cf targets of one frozen pi_k,
+  pooled over their contracts with the --mix weights; --kappa-floor stands
+  in for a degenerate or smaller scale (MultiQWindows.kappa)."""
   record = dict(beta_q=float(args.beta_q))
   if args.kappa_q == 'auto':
-    from .value import QWindows
-    meta = json.loads((Path(args.cf) / 'meta.json').read_text())
-    kappa, pairs = QWindows(meta['collection'], Path(args.cf) / 'targets.npz', 'train',
-                            holdout=args.holdout).kappa()
-    record.update(kappa_q=kappa, kappa_source=dict(cf=str(args.cf), split='train',
-                                                    holdout=args.holdout, pairs=pairs))
+    from .value import MultiQWindows
+    if not args.cf:
+      raise ValueError("kappa_Q 'auto' needs the --cf targets")
+    kappa, source = MultiQWindows(args.cf, 'train', holdout=args.holdout,
+                                  mix=args.mix).kappa(args.kappa_floor)
+    record.update(kappa_q=kappa, kappa_source=dict(
+        cf=[str(c) for c in args.cf], split='train', holdout=args.holdout, **source))
   else:
     record['kappa_q'] = float(args.kappa_q)
   if not record['kappa_q'] > 0:
@@ -618,11 +680,17 @@ def value_anchor(args):
   return record
 
 
+def _one(folders, flag):
+  if not folders or len(folders) != 1:
+    raise ValueError(f'This command takes exactly one {flag}')
+  return folders[0]
+
+
 def main(argv=None):
   parser = argparse.ArgumentParser()
   parser.add_argument('command', choices=[
       'train-market', 'train-outcome', 'train-policy', 'freeze', 'collect',
-      'check', 'rollout', 'cf', 'train-value'])
+      'check', 'rollout', 'cf', 'state-check', 'train-value'])
   parser.add_argument('--run', default=None)
   parser.add_argument('--preset', default='size12m')
   parser.add_argument('--device', default=None,
@@ -632,10 +700,16 @@ def main(argv=None):
                       help='earlier Thinking Student run or checkpoint (listed inheritance)')
   parser.add_argument('--migrate', default=None, choices=['r2r3'],
                       help='parameter layout change of --init-from (transfer.MIGRATIONS)')
-  parser.add_argument('--corpus', default=None, help='TS corpus folder of one contract')
+  parser.add_argument('--corpus', action='append', default=None,
+                      help='TS corpus folder of one contract; training and freeze take several')
+  parser.add_argument('--mix', default='uniform_contract', choices=MIXES,
+                      help='how windows draw their contract')
   parser.add_argument('--holdout', type=int, default=2048,
-                      help='last market cursors held out of training')
+                      help='last cursors of each contract held out of training '
+                           '(TRAIN_INTERNAL_DIAGNOSTIC); 0 trains on every window')
   parser.add_argument('--updates', type=int, default=10)
+  parser.add_argument('--save-every', type=int, default=0,
+                      help='also checkpoint every N updates of a training command')
   parser.add_argument('--batch-size', type=int, default=8)
   parser.add_argument('--batch-length', type=int, default=64)
   parser.add_argument('--log-every', type=int, default=10)
@@ -644,7 +718,9 @@ def main(argv=None):
                       help='L3 class weighting: 1 equal class weight, 0 natural')
   parser.add_argument('--name', default='pi0', help='frozen policy name')
   parser.add_argument('--policy', default=None, help='frozen policy folder')
-  parser.add_argument('--out', default=None, help='collection folder')
+  parser.add_argument('--out', default=None,
+                      help='collection folder (collect, check); snapshot folder (freeze); '
+                           'report file (state-check)')
   parser.add_argument('--steps', type=int, default=200)
   parser.add_argument('--chunk', type=int, default=1024)
   parser.add_argument('--mode', default='policy', choices=['policy', 'explore'])
@@ -656,23 +732,29 @@ def main(argv=None):
   parser.add_argument('--workers', type=int, default=4, help='cf: GPU worker processes')
   parser.add_argument('--max-steps', type=int, default=8192,
                       help='cf: branch steps before NOT_COMPARABLE')
-  parser.add_argument('--cf', default=None, help='cf output folder (train-value, kappa)')
+  parser.add_argument('--cf', action='append', default=None,
+                      help='cf output folder of one contract (train-value, kappa); '
+                           'several of one frozen pi_k')
+  parser.add_argument('--windows', type=int, default=32,
+                      help='state-check: windows compared with the continuous path')
   parser.add_argument('--cf-boost', type=float, default=16.,
                       help='train-value: sampling weight of a fork row with a valid branch')
   parser.add_argument('--beta-q', type=float, default=None,
                       help='freeze: A5 value-anchor weight beta_Q')
   parser.add_argument('--kappa-q', default=None,
                       help="freeze: kappa_Q, a number or 'auto' = std(Delta G) of --cf train pairs")
+  parser.add_argument('--kappa-floor', type=float, default=None,
+                      help="freeze: positive kappa_Q used when 'auto' is degenerate or smaller")
   args = parser.parse_args(argv)
   if args.command == 'collect':
     agent, meta = load_policy(args.policy, args.device)
     out = args.out or Path(args.policy).parents[1] / 'collect' / f"{meta['policy']}_{args.mode}"
     print('Collecting into', out)
-    collect(agent, corpus_env(args.corpus), out, args.steps, args.mode, args.chunk,
-            meta['policy'])
+    collect(agent, corpus_env(_one(args.corpus, '--corpus')), out, args.steps, args.mode,
+            args.chunk, meta['policy'])
     return
   if args.command == 'check':
-    report = check_collection(args.out, args.corpus)
+    report = check_collection(args.out, args.corpus and _one(args.corpus, '--corpus'))
     (Path(args.out) / 'check.json').write_text(json.dumps(report, indent=1))
     print(json.dumps(report, indent=1))
     return
@@ -682,8 +764,16 @@ def main(argv=None):
     name = json.loads((policy / 'policy.json').read_text())['policy']
     collection = args.collection or policy.parents[1] / 'collect' / f'{name}_policy'
     out = Path(args.out or policy.parents[1] / 'cf' / name)
-    run_cf(policy, args.corpus, collection, out, args.forks, args.seed, args.workers,
-           args.max_steps)
+    run_cf(policy, _one(args.corpus, '--corpus'), collection, out, args.forks, args.seed,
+           args.workers, args.max_steps)
+    return
+  if args.command == 'state-check':
+    from .value import window_check
+    report = window_check(args.policy, args.collection, args.windows, args.batch_length,
+                          args.seed, args.device)
+    out = Path(args.out or Path(args.collection) / 'state_check.json')
+    out.write_text(json.dumps(report, indent=1))
+    print(json.dumps({k: v for k, v in report.items() if k != 'windows_detail'}, indent=1))
     return
   if not args.run:
     parser.error(f'{args.command} needs --run')
@@ -698,67 +788,77 @@ def main(argv=None):
                 args.migrate, batch_size=args.batch_size, batch_length=args.batch_length,
                 updates=updates)
   ts = agent.config.ts
+  # The sampler continues on a fresh stream after each save it resumes from.
+  seed = np.random.SeedSequence([args.seed, STAGES.index(stage), progress(args.run)[stage]])
+  diagnostic = 'TRAIN_INTERNAL_DIAGNOSTIC' if args.holdout else None
   if args.command in ('train-market', 'train-outcome', 'train-policy'):
-    corpus = TSCorpus(args.corpus)
-  if args.command == 'train-market':
-    windows = CorpusWindows(corpus, split='train', holdout=args.holdout)
-    train_stage(agent, windows, args.updates, args.log_every)
-    print('Saved', save(agent, args.run))
-  elif args.command == 'train-outcome':
-    kw = dict(weight='outcome', burnin=ts.outcome_burnin, holdout=args.holdout,
-              accounts=[LABEL_ACCOUNT])
-    train = CorpusWindows(corpus, split='train', **kw)
-    held = CorpusWindows(corpus, split='eval', **kw)
-    constant = constant_answer(train)
-    report = {'corpus': args.corpus, 'holdout': args.holdout,
-              'train_labels': train.summary(), 'eval_labels': held.summary(),
-              'constant_answer': constant.round(5).tolist(), 'eval': []}
-    folder = _train_with_eval(agent, args, train, held, report, constant)
-    (folder / 'train_outcome.json').write_text(json.dumps(report, indent=1))
-    print('Saved', folder)
-  elif args.command == 'train-policy':
-    kw = dict(weight='demo', burnin=ts.demo_burnin, holdout=args.holdout,
-              accounts=[LABEL_ACCOUNT])
-    train = CorpusWindows(corpus, split='train', demo_balance=args.demo_balance, **kw)
-    held = CorpusWindows(corpus, split='eval', demo_weights=train.demo_weights, **kw)
-    report = {'corpus': args.corpus, 'holdout': args.holdout,
-              'demo_balance': args.demo_balance, 'demo_weights': train.demo_weights,
-              'train_demos': train.demo_counts, 'eval_demos': held.demo_counts,
-              'eval': []}
-    print('demonstrations', {k: report[k] for k in (
-        'demo_weights', 'train_demos', 'eval_demos')})
-    folder = _train_with_eval(agent, args, train, held, report)
-    (folder / 'train_policy.json').write_text(json.dumps(report, indent=1))
+    sources = corpus_sources(args.corpus or ())
+    if not sources:
+      parser.error(f'{args.command} needs --corpus')
+    accounts = None if stage == 'L1' else [LABEL_ACCOUNT]
+    corpora = [TSCorpus(c, behaviors=accounts) for c in args.corpus]
+    kw = dict(mix=args.mix, holdout=args.holdout, accounts=accounts)
+    if stage == 'L2':
+      kw.update(weight='outcome', burnin=ts.outcome_burnin)
+    elif stage == 'L3':
+      kw.update(weight='demo', burnin=ts.demo_burnin)
+    train = MultiCorpusWindows(corpora, split='train', seed=seed,
+                               demo_balance=args.demo_balance, **kw)
+    held = MultiCorpusWindows(corpora, split='eval', demo_weights=train.demo_weights, **kw) \
+        if args.holdout and stage != 'L1' else None
+    report = dict(corpora=[s['contract'] for s in sources], corpus_folders=args.corpus,
+                  mix=args.mix, holdout=args.holdout, diagnostic=diagnostic,
+                  rows={c: p.hi - p.lo for c, p in zip(train.contracts, train.parts)}, eval=[])
+    constant = None
+    if stage == 'L2':
+      constant = constant_answer(train)
+      report.update(train_labels=train.summary(), eval_labels=held and held.summary(),
+                    constant_answer=constant.round(5).tolist())
+    elif stage == 'L3':
+      report.update(demo_balance=args.demo_balance, demo_weights=train.demo_weights,
+                    train_demos=train.demo_counts, eval_demos=held and held.demo_counts)
+      print('demonstrations', {k: report[k] for k in ('demo_weights', 'train_demos')})
+    folder = _train(agent, args, train, held, report, constant)
+    (folder / f'{REPORTS[stage]}.json').write_text(json.dumps(report, indent=1))
     print('Saved', folder)
   elif args.command == 'train-value':
-    from .value import QWindows
-    cf = Path(args.cf)
-    meta = json.loads((cf / 'meta.json').read_text())
-    kw = dict(holdout=args.holdout, burnin=ts.q_burnin)
-    train = QWindows(meta['collection'], cf / 'targets.npz', 'train',
-                     cf_boost=args.cf_boost, seed=args.seed, **kw)
-    held = QWindows(meta['collection'], cf / 'targets.npz', 'eval', **kw)
+    from .value import MultiQWindows
+    if not args.cf:
+      parser.error('train-value needs --cf')
+    kw = dict(holdout=args.holdout, burnin=ts.q_burnin, mix=args.mix)
+    train = MultiQWindows(args.cf, 'train', cf_boost=args.cf_boost, seed=seed, **kw)
+    held = MultiQWindows(args.cf, 'eval', **kw) if args.holdout else None
     constant = train.constant()
-    report = {'cf': str(cf), 'policy': meta['policy'], 'holdout': args.holdout,
-              'cf_boost': args.cf_boost, 'constant': constant,
-              'train_pairs': train.kappa()[1], 'eval_pairs': held.kappa()[1], 'eval': []}
+    report = {'cf': [str(c) for c in args.cf], 'policy': train.policy,
+              'contracts': train.contracts, 'mix': args.mix, 'holdout': args.holdout,
+              'diagnostic': diagnostic, 'cf_boost': args.cf_boost, 'constant': constant,
+              'train_pairs': train.pair_counts(), 'eval_pairs': held and held.pair_counts(),
+              'eval': []}
     print('Q targets', {k: report[k] for k in ('constant', 'train_pairs', 'eval_pairs')})
-    folder = _train_with_eval(agent, args, train, held, report, constant)
+    folder = _train(agent, args, train, held, report, constant)
     (folder / 'train_value.json').write_text(json.dumps(report, indent=1))
     print('Saved', folder)
   elif args.command == 'freeze':
     teaching = {}
     for name, data in reports(args.run).items():
       teaching[name] = {k: v for k, v in data.items() if k != 'eval'}
-      teaching[name]['final_eval'] = data['eval'][-1]
+      teaching[name]['final_eval'] = data['eval'][-1] if data['eval'] else None
     if anchor:
       teaching['value_anchor'] = anchor
-    print('Frozen', freeze(agent, args.run, args.name, args.preset, args.corpus, teaching))
+    lineage = {}
+    if (Path(args.run) / 'inherit.json').exists():
+      lineage['inherited_from'] = json.loads((Path(args.run) / 'inherit.json').read_text())['source']
+    if args.cf:
+      lineage.update(cf=[str(c) for c in args.cf], q_teacher_policy=sorted(
+          {json.loads((Path(c) / 'meta.json').read_text())['policy'] for c in args.cf}))
+    print('Frozen', freeze(agent, args.run, args.name, args.preset, args.corpus or (),
+                           teaching, lineage, args.out))
   else:
     out = Path(args.run) / 'rollouts'
     out.mkdir(parents=True, exist_ok=True)
     with (out / f'rollout_{int(agent.n_actions):09d}.jsonl').open('w') as f:
-      _, rows = rollout(agent, corpus_env(args.corpus), args.steps, args.mode, record=f)
+      _, rows = rollout(agent, corpus_env(_one(args.corpus, '--corpus')), args.steps,
+                        args.mode, record=f)
     adds = sum(r['executed'] == 1 for r in rows)
     print(f'rollout steps={len(rows)} adds={adds} '
           f'reward={sum(r["reward"] for r in rows):.3f}')

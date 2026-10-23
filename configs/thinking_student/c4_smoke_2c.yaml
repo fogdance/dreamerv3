@@ -1,0 +1,59 @@
+# C4 smoke of the formal flow on the formal student (size50m): two TRAIN
+# contracts (FG005, the shortest, and FG405, the latest), a few updates per
+# stage, one improvement round and the Teacher-free DEV exam on FG409.
+# An engineering run of the whole chain, not a training result.
+#
+#   cd gym-trading-env && env PYTHONPATH=.:src:../dreamerv3 \
+#     /home/v/miniconda3/envs/dreamerv3/bin/python -m dreamerv3.thinking_student.formal_train \
+#     run --config ../dreamerv3/configs/thinking_student/c4_smoke_2c.yaml --rounds 1
+
+paths:  # relative paths are relative to this file
+  markets: markets/pool.json
+  corpus_root: /data/logdir/fg_single3/thinking_student/corpus
+  run_root: /data/logdir/fg_single3/thinking_student/C4_SMOKE_2C_50M_20261023
+  # Market brain of the size50m E-observation formal run on the 18 TRAIN
+  # contracts (S3-V2 E_ONLY, 1M env steps): encoder (+ zero MACD rows), RSSM
+  # and market decoder are inherited; the Thinking Student heads start fresh.
+  init_f1: /data/logdir/fg_single3/s3_v2/E_ONLY_MARKET_MINUTE_FORMAL_1M_v1_20261016/ckpt/step_000001000000
+
+corpora:
+  contracts: [CZCE.FG005, CZCE.FG405]
+  mix: uniform_contract
+
+dev:
+  contracts: [CZCE.FG409]  # VALIDATION rows of paths.markets
+
+student:
+  preset: size50m
+  device: cuda
+  seed: 20261023
+  batch_size: 8
+  batch_length: 64
+  log_every: 10
+
+foundation:
+  market_updates: 40
+  outcome_updates: 60
+  policy_updates: 40
+  save_every: 20
+  holdout: 0
+
+iteration:
+  max_rounds: 1
+  contracts_per_round: 2
+  parallel_contracts: 2
+  cf_wait_forks: 8       # every ADD of pi_k is forked; plus 8 sampled WAITs
+  cf_workers: 3          # GPU worker processes per contract (6 at a time)
+  value_updates: 40
+  prior_refresh_updates: 20
+  save_every: 20
+  holdout: 0
+  beta_q: 1.0
+  kappa_q: auto
+  kappa_floor: 0.05
+  state_check_windows: 16
+
+evaluation:
+  random_seeds: 5
+  smoke_contracts: 2
+  smoke_steps: 6000

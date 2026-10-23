@@ -1,0 +1,61 @@
+# Thinking Student V1 formal training on every TRAIN contract (C4).
+# Authorized by the user on 2026-10-23 for the foundation L1 and L2 only:
+#
+#   cd gym-trading-env && env PYTHONPATH=.:src:../dreamerv3 \
+#     /home/v/miniconda3/envs/dreamerv3/bin/python -m dreamerv3.thinking_student.formal_train \
+#     pretrain --config ../dreamerv3/configs/thinking_student/formal_v1.yaml --until L2
+#
+# L3 (policy_updates), pi_0000 and the rounds wait for the next decision.
+# Budgets from the size50m speeds on the 18 corpora (FORMAL_TRAINING_IMPLEMENTATION.md):
+# one update takes 0.20 s in L1 and 0.10 s in L2 at batch 8 and 16 alike.
+
+paths:  # relative paths are relative to this file
+  markets: markets/pool.json
+  corpus_root: /data/logdir/fg_single3/thinking_student/corpus
+  run_root: /data/logdir/fg_single3/thinking_student/FORMAL_V1_20261024
+  # Market brain of the size50m E-observation formal run on the 18 TRAIN
+  # contracts (S3-V2 E_ONLY, 1M env steps): encoder (+ zero MACD rows), RSSM
+  # and market decoder are inherited; the Thinking Student heads start fresh.
+  init_f1: /data/logdir/fg_single3/s3_v2/E_ONLY_MARKET_MINUTE_FORMAL_1M_v1_20261016/ckpt/step_000001000000
+
+corpora:
+  contracts: discover   # every TRAIN corpus under corpus_root (18)
+  mix: uniform_contract
+
+dev:
+  contracts: [CZCE.FG409]
+
+student:
+  preset: size50m
+  device: cuda
+  seed: 20261024
+  batch_size: 16
+  batch_length: 64
+  log_every: 100
+
+foundation:
+  market_updates: 10000   # L1: ~21 passes over the 488k TRAIN rows, ~35 min
+  outcome_updates: 12000  # L2: ~20 passes over ~450k labelled rows, ~20 min
+  policy_updates: 12000   # L3: not run by --until L2
+  save_every: 1000        # 388 MB per checkpoint
+  holdout: 0
+
+iteration:
+  max_rounds: 1
+  contracts_per_round: 3    # rotates through the 18 contracts round by round
+  parallel_contracts: 2     # x cf_workers GPU processes, ~1.7 GB RAM and 1.2 GB GPU each
+  cf_wait_forks: 100
+  cf_workers: 3
+  value_updates: 100
+  prior_refresh_updates: 100
+  save_every: 50
+  holdout: 0
+  beta_q: 1.0
+  kappa_q: auto
+  kappa_floor: 0.05
+  state_check_windows: 32
+
+evaluation:
+  random_seeds: 5
+  smoke_contracts: 2
+  smoke_steps: 6000

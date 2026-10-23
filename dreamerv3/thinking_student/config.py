@@ -1,52 +1,22 @@
 """Thinking Student V1 configuration on top of the canonical Dreamer presets.
 
-Numbers here are implementation settings (C2 4.2), recorded with every policy
-snapshot; they are not part of the frozen A1-A6 contract.
+The student settings are configs/thinking_student/student.yaml (C2 4.2
+implementation settings, recorded with every policy snapshot; not part of the
+frozen A1-A6 contract).
 """
 import copy
 from pathlib import Path
 
 import elements
 import numpy as np
+import yaml
 
 from ..configuration import read_config_yaml
 
-TS_DEFAULTS = {
-    'account': {'units': 1024, 'layers': 2},
-    'fusion': {'units': 1024},
-    'outcome': {'units': 1024, 'layers': 2},
-    'value': {'units': 1024, 'layers': 2},
-    # beta_q = 0: the value anchor contributes nothing to pi0 (A6 L3); S3
-    # raises it once Q has policy-conditioned supervision.
-    'decision': {'units': 1024, 'layers': 2, 'alpha_min': 0.1, 'alpha_max': 1.0,
-                 'beta_q': 0.0, 'kappa_q': 1.0, 'clip_q': 3.0, 'clip_d': 5.0},
-    # Training stage (A6) whose optimizer `train` steps. L2 adapts SharedFusion
-    # only when declared; burn-in rows after a market reset carry no L_outcome
-    # (outcome_burnin), L_policy_demo (demo_burnin) or Q loss (q_burnin).
-    'stage': 'L1', 'l2_fusion': True, 'outcome_burnin': 16, 'demo_burnin': 16,
-    'q_burnin': 16,
-    # Behavior policy mu of mode='explore': a uniform legal action with
-    # probability explore_eps, else the formal pi_k action.
-    'explore_eps': 0.05,
-    # L3 sums L_policy_demo and L_reason on the same demonstrations.
-    'loss_scales': {'dyn': 1.0, 'rep': 0.1, 'rec': 1.0, 'account': 1.0,
-                    'outcome_event': 1.0, 'outcome_risk': 1.0,
-                    'outcome_mae': 1.0, 'outcome_quality': 1.0,
-                    'policy_demo': 1.0, 'reason': 1.0,
-                    'q_real': 1.0, 'q_cf': 1.0, 'q_pair': 1.0},
-}
-
-SMALL = {
-    'agent.enc.simple.units': 16, 'agent.dec.simple.layers': 1,
-    'agent.dec.simple.units': 16,
-    'agent.dyn.rssm.deter': 32, 'agent.dyn.rssm.hidden': 16,
-    'agent.dyn.rssm.stoch': 2, 'agent.dyn.rssm.classes': 4,
-    'agent.dyn.rssm.blocks': 4,
-    'agent.ts.account.units': 16, 'agent.ts.fusion.units': 16,
-    'agent.ts.outcome.units': 16,
-    'agent.ts.value.units': 16, 'agent.ts.decision.units': 16,
-    'agent.ts.outcome_burnin': 2, 'agent.ts.demo_burnin': 2, 'agent.ts.q_burnin': 2,
-}
+# The student settings live with the other Thinking Student configs.
+STUDENT = Path(__file__).parents[2] / 'configs' / 'thinking_student' / 'student.yaml'
+_SETTINGS = yaml.safe_load(STUDENT.read_text())
+TS_DEFAULTS, SMALL = _SETTINGS['ts'], _SETTINGS['small']
 
 
 def make_config(preset='size12m', seed=0, batch_size=8, batch_length=64,
