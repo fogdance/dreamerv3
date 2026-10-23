@@ -99,9 +99,23 @@
     - s2：8 项，83 s；
     - s1：11 项，81 s；
     - s0：5 项，53 s。
-- [ ] S4-3：真实数据：对 pi1 做 CF（`cf/pi1`），L4 学 Q^{pi1}（从 pi1 继承），留出集对比常数答案。
-- [ ] S4-4：L3 先验刷新（示范 + `L_reason`）→ 冻结 pi2（β_Q 1，κ_Q auto）→ pi2 正式采集与 `check` → 决策依赖与受控敏感性诊断。
-- [ ] S4-5：重新评估（对 pi2 做 CF，当前 Q 在 Q^{pi2} 目标上只评估），写 `S4_RECORD`，更新 INTERFACE_SUMMARY 与 memory，提交 dreamerv3。
+- [x] S4-3：真实数据：对 pi1 做 CF（`cf/pi1`），L4 学 Q^{pi1}（从 pi1 继承），留出集对比常数答案。
+  - 证据（`S4_RECORD_20261023.md` 第 1、2 节）：
+    - CF：`S3_PI1_FG809_20261023/cf/pi1`，1357 个 fork 全部 VALID_COMPLETE（汇合 1345、真终止 12），NOT_COMPARABLE 0；5 个 GPU worker 重放 z 差异全 0；2817 s。ΔG 均值 −0.094、标准差 0.372；训练段 1236 对（std 0.2664），留出段 121 对只在 08-03 一天。
+    - L4：`S4_FG809_20261023`，从 pi1 继承（reused 349），3000 次更新约 3 分钟。2048 行留出：q_real 0.144、q_pair 0.893、符号一致率 0.241 好于常数（0.158 / 1.019 / 0.149），q_cf 0.455 差于常数 0.409；这一天 ΔG 与训练段符号相反。
+    - 干净的 8192 行诊断（从 pi0r 继承，Q = 0）：符号一致率最高 0.761，始终低于常数 0.777；3000 次时 q_real、q_cf 差于常数。ΔQ 仍不外推。
+- [x] S4-4：L3 先验刷新（示范 + `L_reason`）→ 冻结 pi2（β_Q 1，κ_Q auto）→ pi2 正式采集与 `check` → 决策依赖与受控敏感性诊断。
+  - 证据（`S4_RECORD_20261023.md` 第 3–6 节）：
+    - L3：同一 run 从 19020 恢复，2000 次更新到 21020。留出示范 NLL 2.26、L_reason 1.06，都差于常数 0.84；训练批次分别为 0.29、0.50。run 内 β_Q = 0（锚点在 `freeze` 写入），所以 `formal_add_rate` 等于 `add_rate`。
+    - pi2：β_Q 1，κ_Q 0.26636；`teaching` 含 `train_value`、`train_policy`、`value_anchor`。
+    - 在 pi1 的状态上：z 差 = Δanchor + Δcorrection（偏差 4.8e-7）；`reason_q` 范数 0.437、`gate_q` 0.0138；Q 头置零后，correction 平均变 0.684，先验翻转 72/1357；正式动作翻转 50 次，ADD 54 → 76。
+    - pi2 采集：28263 步到 MAIN_ROLL，合法 1614，ADD 57，TP 43 / SL 13 / MAIN_ROLL 1，奖励 −11.973；`check` 违规 0，facts 57/57 一致。与 pi1 第一处不同在 cursor 38，来自先验刷新。仅作诊断。
+- [x] S4-5：重新评估（对 pi2 做 CF，当前 Q 在 Q^{pi2} 目标上只评估），写 `S4_RECORD`，更新 INTERFACE_SUMMARY 与 memory，提交 dreamerv3。
+  - 证据（`S4_RECORD_20261023.md` 第 7 节与小结）：
+    - CF(pi2)：`S4_FG809_20261023/cf/pi2`，1614 个 fork 全部 VALID_COMPLETE（汇合 1611、真终止 3），NOT_COMPARABLE 0；5 个 worker 重放 z 差异全 0；2823 s。
+    - `train-value --updates 0`（`S4_NEXT_FG809_20261023`）：当前 Q（Q^{pi1}）在 Q^{pi2} 的 2048 行留出集上，q_real 0.162 好于常数 0.234，q_cf 1.877 差于常数 1.716，q_pair 1.000 与常数 1.036 相当；只有 08-03 一天的 62 对。
+    - Q 目标随策略的变化：在 927 个两策略都空仓的同一 cursor 上（Outcome 答案逐位相同），ΔG^{pi1} 与 ΔG^{pi2} 相关 0.65，符号一致 82%。下一轮必须用 `cf/pi2` 重做 L4。
+    - 文档：记录、TODO、INTERFACE_SUMMARY 与计划补充；`brain.md` 与 thinkstudent 目录同步；memory 已更新；dreamerv3 一个提交，未推送；gym 无改动。
 
 ## S5 — 自主教学循环 + Teacher-free 考试
 - [ ] B1 教学题生命周期，含 `ready_at` 成熟反馈

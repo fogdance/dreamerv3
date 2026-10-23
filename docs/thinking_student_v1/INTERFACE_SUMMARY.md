@@ -64,8 +64,8 @@
 - Checkpoint 和教材默认继承，由开发人员处理语义适配，不设代码或数据 Hash 门禁。
 - 每个切片完成的标志是一段可运行的功能、真实的学习活动和一项薄验证。不以盈利或 AUC 设门槛。
 
-## 实现状态（2026-10-23：Review 修正、教材重建、S3）
-详见 `R_M_RECORD_20261023.md` 与 `S3_RECORD_20261023.md`。
+## 实现状态（2026-10-23：Review 修正、教材重建、S3、S4）
+详见 `R_M_RECORD_20261023.md`、`S3_RECORD_20261023.md` 与 `S4_RECORD_20261023.md`。
 
 **账户输入与 Outcome**
 - `account_native` 14 维，字段表为 gym `ts_v1_account.ACCOUNT_NATIVE_FIELDS`。新增 4 个字段：
@@ -116,3 +116,20 @@
 - 加载快照：
   - 非优化器参数必须完全一致；
   - 后加阶段的优化器状态（例如旧快照没有的 `opt_l4`）重新初始化，并逐项列出。
+
+**S4：先验刷新与一轮策略改进**（`PLAN_S4_20261023.md`）
+- L3 = `L_policy_demo` + `L_reason`，两者用同一批严格示范行、同样的类别权重和 burn-in：
+  - `L_policy_demo` 在教学视图 `[0, correction]` 上算，anchor 不参与。所以 β_Q 取任何值，先验的梯度都一样，残差不会学去抵消 Q。
+  - `L_reason`：`reason_pref` 回答“严格 TRAIN Oracle 认为 ADD 严格优于 WAIT”，用 BCE。梯度只到 Reasoning 通路（`reason_in`、`reason_q`、`reason_norm`、`reason`、`reason_pref`）。`reason_pref` 不进入 z。
+  - L3 评估同时给出两项的常数答案（`constant/policy_demo`、`constant/reason`）：p = 0.5，即同样加权下的 log 2 × 平均权重。
+  - 评估还给出先验视图和 run 内正式 z 的 ADD 率（`policy/add_rate`、`policy/formal_add_rate`）。训练 run 的配置中 β_Q = 0，β_Q 和 κ_Q 只在 `freeze` 时写入快照，所以 CLI 流程里两者相等。π_{k+1} 带锚点的行为由冻结后的诊断和正式采集衡量。
+- Q→Reasoning：
+  - Q 受过 L4 监督后，停止梯度的 Q 上下文不为 0。`reason_q`、`gate_q` 从这两项独立示范 Loss 开始学习。
+  - 没有任何以 ΔQ 或 ΔG 为目标的监督。
+- 一轮改进在同一个 run 目录完成：`train-value`（从 π_k 出发，用它的 CF）→ `train-policy`（先验刷新）→ `freeze` π_{k+1}。
+  - `freeze` 从该 run 所有 checkpoint 中取每类报告（`train_value`、`train_policy`）的最新一份。
+  - `policy.json` 用 `reasoning.reason_pref` 说明这个头的含义和训练来源，取代原来的 `untrained`。
+- FG809 实跑（`S4_RECORD_20261023.md`）：
+  - pi1 → pi2 一轮跑通，CF(pi2) 已就绪，可作为下一轮的教材；
+  - ΔQ 和先验在留出集上都不优于常数，所以 pi2 是可运行的候选，不是更好的策略；
+  - 同一状态下换了后续策略，约 1/5 的 ΔG 改变符号，Q 教材只属于产生它的 π_k。
