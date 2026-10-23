@@ -1,14 +1,19 @@
-"""Thinking Student V1 runner: corpus preparation, staged training, frozen
+"""Thinking Student V1 runner: staged training on TS teaching material, frozen
 policy snapshots and autonomous Native experience.
 
-  python -m dreamerv3.thinking_student.run prepare-corpus --corpus DIR
   python -m dreamerv3.thinking_student.run train-market  --run DIR --corpus DIR ...
   python -m dreamerv3.thinking_student.run train-outcome --run DIR --corpus DIR ...
   python -m dreamerv3.thinking_student.run train-policy  --run DIR --corpus DIR ...
   python -m dreamerv3.thinking_student.run freeze  --run DIR --name pi0 --corpus DIR
   python -m dreamerv3.thinking_student.run collect --policy DIR --corpus DIR --out DIR
   python -m dreamerv3.thinking_student.run check   --out DIR [--corpus DIR]
-  python -m dreamerv3.thinking_student.run rollout --run DIR (--corpus DIR | --fixture DIR)
+  python -m dreamerv3.thinking_student.run rollout --run DIR --corpus DIR
+  python -m dreamerv3.thinking_student.run cf      --policy DIR --corpus DIR [--forks N]
+  python -m dreamerv3.thinking_student.run train-value --run DIR --init-from POLICY --cf DIR
+  python -m dreamerv3.thinking_student.run freeze  --run DIR --name pi1 --beta-q 1 --kappa-q auto --cf DIR
+
+--corpus is one contract folder of gym ts_v1_corpus (teaching material and
+the TS env inputs: Quality TP reward, no CHUNK_END).
 
 A run directory holds `ckpt/<step>/agent.pkl` and a `latest` pointer. Loading
 never checks code or data hashes (C2); shape mismatches fail loudly instead
@@ -17,7 +22,6 @@ complete parameters and `policy.json`, the record of everything that decides
 its actions (A6 2.4); collection and exams load it and never train it.
 """
 import argparse
-import gzip
 import hashlib
 import json
 import pickle
@@ -28,8 +32,9 @@ from pathlib import Path
 
 import numpy as np
 
+from . import labels as L
 from .config import observation_space
-from .corpus import CorpusWindows, corpus_factory, default_cache, prepare
+from .corpus import LABEL_ACCOUNT, CorpusWindows, TSCorpus
 from .student import make_agent
 
 POLICY_OBS = tuple(observation_space())
@@ -67,9 +72,10 @@ def resume(agent, run):
   return folder
 
 
-def build(run, preset, device, init_f1=None, init_from=None, **kwargs):
+def build(run, preset, device, init_f1=None, init_from=None, migrate=None, **kwargs):
   """Resume the run strictly; a fresh run may start from F1 market weights
-  or from another Thinking Student checkpoint (`init_from`, listed changes)."""
+  or from another Thinking Student checkpoint (`init_from`, listed changes,
+  optionally through a named layout `migrate`)."""
   if init_f1 and init_from:
     raise ValueError('Choose one of init_f1 and init_from')
   agent = make_agent(Path(run) / 'logdir', preset=preset, device=device, **kwargs)
@@ -78,7 +84,7 @@ def build(run, preset, device, init_f1=None, init_from=None, **kwargs):
     print(f'Resumed {folder}')
   elif init_from:
     from .transfer import inherit_student
-    lists = inherit_student(agent, init_from)
+    lists = inherit_student(agent, init_from, migrate)
     Path(run).mkdir(parents=True, exist_ok=True)
     (Path(run) / 'inherit.json').write_text(json.dumps(lists, indent=1))
   elif init_f1:
@@ -132,8 +138,15 @@ def freeze(agent, run, name, preset, corpus=None, teaching=None):
       behavior_policy=dict(mode='explore', kind='epsilon mixture around the formal action',
                            eps=float(agent.config.ts.explore_eps)),
       rssm_initialization=(
-          'zero market carry (rssm.initial) at the first decision and after every '
-          'CHUNK_END reset (is_first); stochastic latents use the policy call counter seeds'),
+          'zero market carry (rssm.initial) once, at the first market minute: the '
+          'TS env has no CHUNK_END, so market memory runs to the true terminal; '
+          'training windows start from the zero carry with a loss burn-in; '
+          'stochastic latents use the policy call counter seeds'),
+      outcome=dict(horizon_minutes=L.HORIZON, bins=list(L.OUTCOME_BINS),
+                   classes=[*(f'{e}_bin{k}' for e in L.EVENTS for k in range(L.NBINS)),
+                            'OPEN_AT_H'],
+                   answers='p_tp_h, p_sl_h, p_other_h, p_open_h: first ending within H'),
+      untrained=dict(reason_pref='diagnostic only; L_reason trains it from S4'),
       preset=preset, ts=_flat(dict(agent.config.ts), ''),
       # z near 0 can change sign between compute dtypes; collection, CF and
       # exams load the policy on the device and dtype recorded here.
@@ -141,12 +154,11 @@ def freeze(agent, run, name, preset, corpus=None, teaching=None):
                      compute_dtype=agent.config.jax.compute_dtype),
       teaching=teaching or {}, repos=_repos())
   if corpus:
-    corpus = Path(corpus)
-    teacher = json.loads((corpus / 'teacher_manifest.json').read_text())
+    source = json.loads((Path(corpus) / 'source.json').read_text())
     meta['corpus'] = str(corpus)
-    meta['reward_version'] = teacher.get('reward_schema')
-    meta['teacher'] = {k: teacher.get(k) for k in (
-        'protocol', 'fold', 'strict_identity', 'objective', 'score_policy')}
+    meta['reward_version'] = source['inputs']['reward_schema']
+    meta['teacher'] = {k: source[k] for k in (
+        'contract', 'fold', 'mode', 'funds_floor', 'gamma', 'clock', 'created')}
   tmp = folder / 'agent.pkl.tmp'
   tmp.write_bytes(blob)
   tmp.rename(folder / 'agent.pkl')
@@ -154,9 +166,12 @@ def freeze(agent, run, name, preset, corpus=None, teaching=None):
   return folder
 
 
-def load_policy(folder, device=None, logdir=None):
+def load_policy(folder, device=None, logdir=None, log=print):
   """Build the student exactly as the snapshot recorded it (by default on
-  its recorded inference device and dtype) and load it."""
+  its recorded inference device and dtype) and load it. The snapshot's
+  non-optimizer parameters fix its actions and must all match; optimizer
+  state of a training stage added after the freeze never acts and starts
+  fresh (listed)."""
   folder = Path(folder)
   meta = json.loads((folder / 'policy.json').read_text())
   updates = {f'agent.ts.{k}': tuple(v) if isinstance(v, list) else v
@@ -165,15 +180,25 @@ def load_policy(folder, device=None, logdir=None):
                      device=device or meta['inference']['platform'],
                      batch_size=1, batch_length=1, updates=updates)
   with (folder / 'agent.pkl').open('rb') as f:
-    agent.load(pickle.load(f))
+    data = pickle.load(f)
+  fresh = agent.save()['params']
+  missing = sorted(fresh.keys() - data['params'].keys())
+  extra = sorted(data['params'].keys() - fresh.keys())
+  if extra or any(not k.startswith('opt_') for k in missing):
+    raise ValueError(f'{folder}: snapshot parameters differ from the student '
+                     f'(missing {missing[:5]}, extra {extra[:5]})')
+  if missing:
+    log(f'{folder.name}: fresh optimizer state for {len(missing)} keys of later stages')
+    data['params'] = {**{k: fresh[k] for k in missing}, **data['params']}
+  agent.load(data)
   return agent, meta
 
 
 # ---- autonomous Native experience through the single student.policy ----
 
 ANSWER_KEYS = ('p_add', 'z', 'q_wait', 'q_add', 'delta_q', 'alpha', 'anchor',
-               'correction', 'reason_pref', 'outcome_valid', 'p_tp', 'p_tp_15',
-               'p_sl', 'p_open', 'quality')
+               'correction', 'reason_pref', 'outcome_valid', 'p_tp_h', 'p_tp_15',
+               'p_sl_h', 'p_other_h', 'p_open_h', 'quality')
 ACCOUNT_KEYS = ('tp_count', 'non_tp_exits', 'account_net_pnl', 'unfinished_lots')
 
 
@@ -190,33 +215,43 @@ class Autonomous:
   mode='policy' executes the formal pi_k; mode='explore' executes the
   behavior policy mu and records mu(a|s). Each step returns the answer sheet
   recorded before the action, the proposed and executed actions and the
-  Native account experience. Teachers never act here. `state()` holds the
-  Native account, market memory, pending observation and the policy seed
-  counter, so `restore()` continues exactly where the run stopped.
+  Native account experience. Teachers never act here. Market memory starts
+  once, at the first market minute, and runs to the true terminal (the TS
+  env has no CHUNK_END). `state()` holds the Native account, market memory,
+  pending observation and the policy seed counter, so `restore()` continues
+  exactly where the run stopped.
   """
 
-  def __init__(self, agent, env, mode='policy', options=None, seed=0):
+  def __init__(self, agent, env, mode='policy', seed=0):
+    if env.chunk_steps:
+      raise ValueError('The Thinking Student trades the TS env without CHUNK_END (chunk_steps 0)')
     self.agent, self.env, self.mode = agent, env, mode
-    self.obs, _ = env.reset(seed=seed, options=options)
+    self.obs, _ = env.reset(seed=seed)
     self.carry = agent.init_policy(1)
     self.reward, self.first, self.steps, self.done = 0., True, 0, False
 
-  def step(self):
+  def step(self, action=None):
+    """One decision through student.policy. A given `action` is executed in
+    place of the policy's (a counterfactual branch); the policy still runs,
+    so market memory and policy seeds advance as on the policy's own path."""
     env, obs = self.env, self.obs
     o = student_obs(obs, self.reward, self.first, False, False)
     self.carry, act, out = self.agent.policy(self.carry, o, mode=self.mode)
-    action = int(act['action'][0])
+    forced = action is not None
+    action = int(action) if forced else int(act['action'][0])
     mask = obs['action_mask'].astype(float).tolist()
     if action == 1 and mask[1] < 0.5:
       raise RuntimeError('Student policy executed a masked ADD')
     cursor = int(env.current_step)
     clock = str(env._raw.index[cursor])
+    equity = float(env._calculate_equity())
     nxt, reward, terminated, truncated, info = env.step(action)
     row = dict(step=self.steps, cursor=cursor, time=clock, mode=self.mode,
                first=self.first, mask=mask, proposed=int(out['proposed'][0]),
-               executed=action, mu_prob=float(out['mu_prob'][0]),
+               executed=action, forced=forced, mu_prob=float(out['mu_prob'][0]),
                explored=bool(out['explored'][0]), reward=float(reward),
-               status=info['status'], reject_reason=info.get('reject_reason'),
+               equity=equity, status=info['status'],
+               reject_reason=info.get('reject_reason'),
                **{k: float(out[f'answer/{k}'][0]) for k in ANSWER_KEYS},
                **{k: info.get(k) for k in ACCOUNT_KEYS})
     # Decision-time arrays; `reward` is what this action produced in Native.
@@ -224,16 +259,10 @@ class Autonomous:
     arrays.update(
         is_first=self.first, action=action, proposed=row['proposed'],
         mu_prob=row['mu_prob'], explored=row['explored'], reward=row['reward'],
-        chunk_end=info['status'] == 'CHUNK_END', terminal=bool(terminated),
-        **{f'answer_{k}': row[k] for k in ANSWER_KEYS})
+        terminal=bool(terminated), **{f'answer_{k}': row[k] for k in ANSWER_KEYS})
     self.steps += 1
     self.reward, self.first = float(reward), False
-    if info['status'] == 'CHUNK_END':
-      # The account continues; market memory restarts as in the corpus.
-      nxt, _ = env.reset()
-      self.reward, self.first = 0., True
-    elif terminated or truncated:
-      self.done = True
+    self.done = bool(terminated or truncated)
     self.obs = nxt
     return row, arrays
 
@@ -259,8 +288,8 @@ class Autonomous:
     return self
 
 
-def collect(agent, env, out, steps, mode='policy', options=None, chunk=1024,
-            policy=None, log=print):
+def collect(agent, env, out, steps, mode='policy', chunk=1024, policy=None,
+            log=print):
   """Autonomous experience until `steps` decisions in total (or the data end):
   steps/<n>.jsonl answer and account records, replay/<n>.npz decision arrays,
   then state.pkl, so a stopped collection resumes at its last full chunk."""
@@ -275,7 +304,7 @@ def collect(agent, env, out, steps, mode='policy', options=None, chunk=1024,
     totals['resumed'] += 1
     log(f'Resumed collection at step {run.steps}, chunk {index}')
   else:
-    run, index = Autonomous(agent, env, mode, options), 0
+    run, index = Autonomous(agent, env, mode), 0
     totals = dict(steps=0, legal=0, adds=0, explored=0, reward=0., resumed=0)
   meta = dict(policy=policy, mode=run.mode, eps=float(agent.config.ts.explore_eps)
               if run.mode == 'explore' else 0., chunk=chunk,
@@ -314,17 +343,16 @@ def collect(agent, env, out, steps, mode='policy', options=None, chunk=1024,
   return run
 
 
-TEACHER_EXITS = {'TP5': 'TAKE_PROFIT', 'SL30': 'STOP_LOSS'}
+FACT_KINDS = {'TAKE_PROFIT': 'TP5', 'STOP_LOSS': 'SL30'}
 
 
-def check_collection(out, corpus=None, flat_policy='P0'):
+def check_collection(out, corpus=None):
   """Minimal verification of an autonomous collection (C3 S2): each recorded
-  proposal follows the formal rule, the formal pi executed its own proposal,
-  no executed ADD was masked, and each closed Native trade reached TP by
-  >= 5 points or lost >= 30 points at SL. With a TRAIN corpus, each student
-  ADD is compared with the teacher's independent "ADD now, then hold" fact at
-  the same minute of the always-flat corpus policy: exit type and exit
-  minute, or an exit after the collection end for a still open trade."""
+  proposal follows the formal rule, the formal pi executed its own proposal
+  (forced counterfactual actions excepted), no executed ADD was masked, and
+  each closed Native trade reached TP by >= 5 points or lost >= 30 points at
+  SL. With the corpus of the collection's contract, each student ADD from a
+  funded flat account is compared with the Native fact of the same cursor."""
   out = Path(out)
   rows = [json.loads(line) for file in sorted((out / 'steps').glob('*.jsonl'))
           for line in file.open()]
@@ -337,7 +365,7 @@ def check_collection(out, corpus=None, flat_policy='P0'):
       explored=sum(r['explored'] for r in rows),
       rule_violations=[r['step'] for r in rows
                        if r['proposed'] != int(r['mask'][1] > 0.5 and r['z'] > 0)],
-      formal_violations=[r['step'] for r in rows if r['mode'] == 'policy'
+      formal_violations=[r['step'] for r in rows if r['mode'] == 'policy' and not r['forced']
                          and (r['executed'] != r['proposed'] or r['mu_prob'] != 1.)],
       masked_adds=[r['step'] for r in adds if r['mask'][1] < 0.5])
   trades, exits, points = env['attributions'], {}, []
@@ -352,53 +380,49 @@ def check_collection(out, corpus=None, flat_policy='P0'):
                 point_violations=points, reward=sum(r['reward'] for r in rows),
                 last={k: rows[-1][k] for k in ('time', 'cursor', *ACCOUNT_KEYS)})
   if corpus:
-    report['teacher'] = _teacher_agreement(rows, adds, trades, env['entries'],
-                                           corpus, flat_policy)
+    report['facts'] = _fact_agreement(rows, adds, trades, env['entries'], corpus)
   return report
 
 
-def _teacher_agreement(rows, adds, trades, entries, corpus, flat_policy):
-  from .corpus import loads
-  times = {r['cursor']: r['time'] for r in adds}
-  facts = {}
-  with gzip.open(Path(corpus) / 'teacher_sidecar' / flat_policy / 'steps.jsonl.gz', 'rb') as f:
-    for line in f:
-      row = loads(line)
-      if row['cursor'] in times:
-        if row['time'] != times[row['cursor']] or row['lots_before'] != 0:
-          raise ValueError(f'{flat_policy} sidecar cursor {row["cursor"]} is not the '
-                           f'flat state of the student decision at {times[row["cursor"]]}')
-        facts[row['cursor']] = ((row.get('teacher') or {}).get('L1')) or {}
+def _fact_agreement(rows, adds, trades, entries, corpus):
+  """Fill, exit type and exit minute of each student ADD against the fact of
+  its cursor; a trade still open at the collection end agrees when the fact
+  exits later."""
+  from gym_trading_env.research import ts_v1_corpus as C
+  facts = C.load_arrays(Path(corpus) / 'facts')
+  floor = json.loads((Path(corpus) / 'source.json').read_text())['funds_floor']
   closed = {t['entry_cursor']: t for t in trades}
   still_open = {e['entry_cursor'] for e in entries.values()}
   result = dict(agree=0, rejected=0, unchecked=0, disagree=[])
   for r in adds:
-    fact = facts.get(r['cursor'], {})
-    if r['reject_reason']:
-      result['rejected'] += 1
-    elif not fact.get('immediate_outcome_verified'):
+    t = r['cursor']
+    filled = not r['reject_reason']
+    if r['equity'] < floor:
       result['unchecked'] += 1
-    elif fact['entry_cursor'] in closed:
-      t = closed[fact['entry_cursor']]
-      native = t['reason'] if t['reason'] in TEACHER_EXITS.values() else 'OTHER_EXIT'
-      if TEACHER_EXITS.get(fact['exit_type'], 'OTHER_EXIT') == native and (
-          fact['exit_cursor'] == t['exit_cursor']):
+    elif filled != bool(facts['filled'][t]):
+      result['disagree'].append(dict(cursor=t, native_filled=filled, fact_filled=not filled))
+    elif not filled:
+      result['rejected'] += 1
+    elif int(facts['entry_cursor'][t]) in closed:
+      trade = closed[int(facts['entry_cursor'][t])]
+      kind, exit = C.KINDS[facts['kind'][t]], int(facts['exit_cursor'][t])
+      if FACT_KINDS.get(trade['reason'], 'OTHER_EXIT') == kind and trade['exit_cursor'] == exit:
         result['agree'] += 1
       else:
-        result['disagree'].append(dict(cursor=r['cursor'], native=t['reason'],
-            native_exit=t['exit_cursor'], teacher=fact['exit_type'],
-            teacher_exit=fact['exit_cursor']))
-    elif fact['entry_cursor'] in still_open and fact['exit_cursor'] > rows[-1]['cursor']:
+        result['disagree'].append(dict(cursor=t, native=trade['reason'],
+            native_exit=trade['exit_cursor'], fact=kind, fact_exit=exit))
+    elif int(facts['entry_cursor'][t]) in still_open and (
+        facts['exit_cursor'][t] < 0 or facts['exit_cursor'][t] > rows[-1]['cursor']):
       result['agree'] += 1
     else:
-      result['disagree'].append(dict(cursor=r['cursor'], native='NO_TRADE',
-          teacher=fact['exit_type'], teacher_exit=fact['exit_cursor']))
+      result['disagree'].append(dict(cursor=t, native='NO_TRADE',
+          fact=C.KINDS[facts['kind'][t]], fact_exit=int(facts['exit_cursor'][t])))
   return result
 
 
-def rollout(agent, env, steps, mode='policy', options=None, record=None):
+def rollout(agent, env, steps, mode='policy', record=None):
   """A short autonomous run kept in memory (engineering smoke and tests)."""
-  run, rows = Autonomous(agent, env, mode, options), []
+  run, rows = Autonomous(agent, env, mode), []
   while len(rows) < steps and not run.done:
     row, _ = run.step()
     rows.append(row)
@@ -414,10 +438,12 @@ LOG_KEYS = {
            'loss/account_can_add', 'brain/p_add', 'brain/delta_q_abs'),
     'L2': ('opt_l2/loss', 'loss/outcome_event', 'loss/outcome_risk',
            'loss/outcome_mae', 'loss/outcome_quality', 'outcome/labels',
-           'outcome/p_tp_on_tp', 'outcome/p_tp_on_sl'),
+           'outcome/p_tp_on_tp', 'outcome/p_tp_on_sl', 'outcome/p_other_h'),
     'L3': ('opt_l3/loss', 'loss/policy_demo', 'policy/n_add',
            'policy/p_add_on_add', 'policy/p_add_on_wait', 'policy/add_rate',
            'brain/alpha'),
+    'L4': ('opt_l4/loss', 'loss/q_real', 'loss/q_cf', 'loss/q_pair', 'q/n_cf',
+           'q/delta_q_on_cf', 'q/delta_g', 'q/sign_agree', 'brain/delta_q_abs'),
 }
 
 
@@ -455,15 +481,20 @@ POOL = {
         'policy/p_add_on_add': 'policy/n_add', 'policy/acc_add': 'policy/n_add',
         'policy/p_add_on_wait': 'policy/n_wait', 'policy/acc_wait': 'policy/n_wait',
         'policy/add_rate': 'policy/n_legal'}),
+    'L4': (('loss/', 'q/', 'brain/'), 'q/n_real', {
+        'loss/q_cf': 'q/n_cf', 'loss/q_pair': 'q/n_cf', 'q/delta_g': 'q/n_cf',
+        'q/delta_q_on_cf': 'q/n_cf', 'q/sign_agree': 'q/n_sign'}),
 }
 COUNTS = ('outcome/labels', 'outcome/label_not_legal', 'policy/n_demo',
-          'policy/n_add', 'policy/n_wait', 'policy/n_legal')
+          'policy/n_add', 'policy/n_wait', 'policy/n_legal', 'q/n_real', 'q/n_cf',
+          'q/n_sign')
 
 
 def evaluate(agent, windows, constant=None):
   """Stage report pooled over every held-out window, with the best
   state-free answer scored on exactly the same rows: `constant` (a class
-  distribution) for L2, the uniform WAIT/ADD answer for class-weighted L3."""
+  distribution) for L2, the uniform WAIT/ADD answer for class-weighted L3,
+  the mean train targets (`constant`, QWindows.constant) for L4."""
   from .student import warm
   stage, ts = agent.config.ts.stage, agent.config.ts
   prefixes, default, pools = POOL[stage]
@@ -484,11 +515,21 @@ def evaluate(agent, windows, constant=None):
       w = np.asarray(warm(data['is_first'], ts.demo_burnin)) * data['demo_weight']
       n = float((w > 0).sum())
       pool('constant/policy_demo', np.log(2.) * w.sum() / max(n, 1.), n)
+    if stage == 'L4' and constant is not None:
+      w = np.asarray(warm(data['is_first'], ts.q_burnin))
+      real, cf = w * data['q_real_valid'], w * data['q_cf_valid']
+      dg = np.where(data['action'] == 1, data['q_real'] - data['q_cf'],
+                    data['q_cf'] - data['q_real'])
+      for key, err, mask in (
+          ('q_real', data['q_real'] - constant['q_real'], real),
+          ('q_cf', data['q_cf'] - constant['q_cf'], cf),
+          ('q_pair', dg - constant['delta_g'], cf)):
+        pool(f'constant/{key}', (err ** 2 * mask).sum() / max(mask.sum(), 1.), mask.sum())
     _, mets = agent.report(agent.init_report(B), _device(agent, data, i))
     batches += 1
     for k, v in mets.items():
       if not k.startswith(prefixes) or (
-          k.startswith(('outcome/n_', 'policy/n_')) and k not in COUNTS):
+          k.startswith(('outcome/n_', 'policy/n_', 'q/n_')) and k not in COUNTS):
         continue
       if k in COUNTS:
         sums[k] = sums.get(k, 0.) + float(v)
@@ -502,27 +543,17 @@ def evaluate(agent, windows, constant=None):
 def constant_answer(train):
   """Add-one smoothed class frequencies of the observed train outcomes: the
   best Outcome answer that ignores the state, as a reference to beat."""
-  fit = np.concatenate([
-      train.labels[name]['outcome_allowed'][lo:hi][
-          train.labels[name]['outcome_valid'][lo:hi] > 0]
-      for name, _, lo, hi in train.chunks])
+  fit = train.outcome_allowed()
   observed = fit[fit.sum(-1) == 1]
   return (observed.sum(0) + 1.) / (len(observed) + fit.shape[-1])
 
 
 def corpus_env(corpus):
-  """Native E env on the corpus TRAIN source, starting at its warm account."""
+  """The Native TS env of the corpus contract from a fresh account, with the
+  student's account input."""
+  from gym_trading_env.research import ts_v1_corpus as C
   from gym_trading_env.research.ts_v1_account import StudentEnv
-  initial = json.loads((Path(corpus) / 'initial_account.json').read_text())
-  return StudentEnv(corpus_factory(corpus)()), {'resume': initial}
-
-
-def fixture_env(folder):
-  """Synthetic Native env (engineering smoke only)."""
-  from wp02_fixture import native_factory
-  from gym_trading_env.research.ts_v1_account import StudentEnv
-  factory, _, _ = native_factory(folder, minutes=210, chunk=64)
-  return StudentEnv(factory()), None
+  return StudentEnv(C.corpus_env(corpus))
 
 
 def _train_with_eval(agent, args, train, held, report, constant=None):
@@ -541,11 +572,29 @@ def _train_with_eval(agent, args, train, held, report, constant=None):
   return save(agent, args.run)
 
 
+def value_anchor(args):
+  """beta_Q and kappa_Q of a new snapshot (A5); kappa 'auto' is std(Delta G)
+  over the valid train pairs of the --cf targets."""
+  record = dict(beta_q=float(args.beta_q))
+  if args.kappa_q == 'auto':
+    from .value import QWindows
+    meta = json.loads((Path(args.cf) / 'meta.json').read_text())
+    kappa, pairs = QWindows(meta['collection'], Path(args.cf) / 'targets.npz', 'train',
+                            holdout=args.holdout).kappa()
+    record.update(kappa_q=kappa, kappa_source=dict(cf=str(args.cf), split='train',
+                                                    holdout=args.holdout, pairs=pairs))
+  else:
+    record['kappa_q'] = float(args.kappa_q)
+  if not record['kappa_q'] > 0:
+    raise ValueError(f'kappa_Q must be positive, got {record["kappa_q"]}')
+  return record
+
+
 def main(argv=None):
   parser = argparse.ArgumentParser()
   parser.add_argument('command', choices=[
-      'prepare-corpus', 'train-market', 'train-outcome', 'train-policy',
-      'freeze', 'collect', 'check', 'rollout'])
+      'train-market', 'train-outcome', 'train-policy', 'freeze', 'collect',
+      'check', 'rollout', 'cf', 'train-value'])
   parser.add_argument('--run', default=None)
   parser.add_argument('--preset', default='size12m')
   parser.add_argument('--device', default=None,
@@ -553,10 +602,11 @@ def main(argv=None):
   parser.add_argument('--init-f1', default=None)
   parser.add_argument('--init-from', default=None,
                       help='earlier Thinking Student run or checkpoint (listed inheritance)')
-  parser.add_argument('--corpus', default=None)
-  parser.add_argument('--corpus-cache', default=None,
-                      help='label and exact-account cache (default: shared per corpus)')
-  parser.add_argument('--workers', type=int, default=None)
+  parser.add_argument('--migrate', default=None, choices=['r2r3'],
+                      help='parameter layout change of --init-from (transfer.MIGRATIONS)')
+  parser.add_argument('--corpus', default=None, help='TS corpus folder of one contract')
+  parser.add_argument('--holdout', type=int, default=2048,
+                      help='last market cursors held out of training')
   parser.add_argument('--updates', type=int, default=10)
   parser.add_argument('--batch-size', type=int, default=8)
   parser.add_argument('--batch-length', type=int, default=64)
@@ -570,52 +620,80 @@ def main(argv=None):
   parser.add_argument('--steps', type=int, default=200)
   parser.add_argument('--chunk', type=int, default=1024)
   parser.add_argument('--mode', default='policy', choices=['policy', 'explore'])
-  parser.add_argument('--fixture', default=None,
-                      help='synthetic native env folder (engineering smoke only)')
+  parser.add_argument('--collection', default=None,
+                      help='formal pi_k collection (cf; default collect/<policy>_policy)')
+  parser.add_argument('--forks', type=int, default=None,
+                      help='cf: WAIT forks sampled uniformly (default all); pi_k ADDs always')
+  parser.add_argument('--seed', type=int, default=0)
+  parser.add_argument('--workers', type=int, default=4, help='cf: GPU worker processes')
+  parser.add_argument('--max-steps', type=int, default=8192,
+                      help='cf: branch steps before NOT_COMPARABLE')
+  parser.add_argument('--cf', default=None, help='cf output folder (train-value, kappa)')
+  parser.add_argument('--cf-boost', type=float, default=16.,
+                      help='train-value: sampling weight of a fork row with a valid branch')
+  parser.add_argument('--beta-q', type=float, default=None,
+                      help='freeze: A5 value-anchor weight beta_Q')
+  parser.add_argument('--kappa-q', default=None,
+                      help="freeze: kappa_Q, a number or 'auto' = std(Delta G) of --cf train pairs")
   args = parser.parse_args(argv)
-  cache = args.corpus_cache or (default_cache(args.corpus) if args.corpus else None)
-  if args.command == 'prepare-corpus':
-    for row in prepare(args.corpus, cache, workers=args.workers):
-      print(row)
-    return
   if args.command == 'collect':
     agent, meta = load_policy(args.policy, args.device)
-    env, options = corpus_env(args.corpus) if args.corpus else fixture_env(args.fixture)
     out = args.out or Path(args.policy).parents[1] / 'collect' / f"{meta['policy']}_{args.mode}"
     print('Collecting into', out)
-    collect(agent, env, out, args.steps, args.mode, options, args.chunk, meta['policy'])
+    collect(agent, corpus_env(args.corpus), out, args.steps, args.mode, args.chunk,
+            meta['policy'])
     return
   if args.command == 'check':
     report = check_collection(args.out, args.corpus)
     (Path(args.out) / 'check.json').write_text(json.dumps(report, indent=1))
     print(json.dumps(report, indent=1))
     return
+  if args.command == 'cf':
+    from .value import run_cf
+    policy = Path(args.policy)
+    name = json.loads((policy / 'policy.json').read_text())['policy']
+    collection = args.collection or policy.parents[1] / 'collect' / f'{name}_policy'
+    out = Path(args.out or policy.parents[1] / 'cf' / name)
+    run_cf(policy, args.corpus, collection, out, args.forks, args.seed, args.workers,
+           args.max_steps)
+    return
   if not args.run:
     parser.error(f'{args.command} needs --run')
-  stage = {'train-market': 'L1', 'train-outcome': 'L2',
-           'train-policy': 'L3'}.get(args.command, 'L1')
+  stage = {'train-market': 'L1', 'train-outcome': 'L2', 'train-policy': 'L3',
+           'train-value': 'L4'}.get(args.command, 'L1')
+  updates, anchor = {'agent.ts.stage': stage}, None
+  if args.command == 'freeze' and args.beta_q is not None:
+    anchor = value_anchor(args)
+    updates.update({'agent.ts.decision.beta_q': anchor['beta_q'],
+                    'agent.ts.decision.kappa_q': anchor['kappa_q']})
   agent = build(args.run, args.preset, args.device or 'cuda', args.init_f1, args.init_from,
-                batch_size=args.batch_size, batch_length=args.batch_length,
-                updates={'agent.ts.stage': stage})
+                args.migrate, batch_size=args.batch_size, batch_length=args.batch_length,
+                updates=updates)
+  ts = agent.config.ts
+  if args.command in ('train-market', 'train-outcome', 'train-policy'):
+    corpus = TSCorpus(args.corpus)
   if args.command == 'train-market':
-    windows = CorpusWindows(args.corpus, cache, labels=False, workers=args.workers)
+    windows = CorpusWindows(corpus, split='train', holdout=args.holdout)
     train_stage(agent, windows, args.updates, args.log_every)
     print('Saved', save(agent, args.run))
   elif args.command == 'train-outcome':
-    train = CorpusWindows(args.corpus, cache, split='train', workers=args.workers)
-    held = CorpusWindows(args.corpus, cache, split='eval')
+    kw = dict(weight='outcome', burnin=ts.outcome_burnin, holdout=args.holdout,
+              accounts=[LABEL_ACCOUNT])
+    train = CorpusWindows(corpus, split='train', **kw)
+    held = CorpusWindows(corpus, split='eval', **kw)
     constant = constant_answer(train)
-    report = {'train_chunks': len(train.chunks), 'eval_chunks': len(held.chunks),
+    report = {'corpus': args.corpus, 'holdout': args.holdout,
+              'train_labels': train.summary(), 'eval_labels': held.summary(),
               'constant_answer': constant.round(5).tolist(), 'eval': []}
     folder = _train_with_eval(agent, args, train, held, report, constant)
     (folder / 'train_outcome.json').write_text(json.dumps(report, indent=1))
     print('Saved', folder)
   elif args.command == 'train-policy':
-    train = CorpusWindows(args.corpus, cache, split='train', weight='demo',
-                          demo_balance=args.demo_balance, workers=args.workers)
-    held = CorpusWindows(args.corpus, cache, split='eval', weight='demo',
-                         demo_weights=train.demo_weights)
-    report = {'train_chunks': len(train.chunks), 'eval_chunks': len(held.chunks),
+    kw = dict(weight='demo', burnin=ts.demo_burnin, holdout=args.holdout,
+              accounts=[LABEL_ACCOUNT])
+    train = CorpusWindows(corpus, split='train', demo_balance=args.demo_balance, **kw)
+    held = CorpusWindows(corpus, split='eval', demo_weights=train.demo_weights, **kw)
+    report = {'corpus': args.corpus, 'holdout': args.holdout,
               'demo_balance': args.demo_balance, 'demo_weights': train.demo_weights,
               'train_demos': train.demo_counts, 'eval_demos': held.demo_counts,
               'eval': []}
@@ -624,20 +702,38 @@ def main(argv=None):
     folder = _train_with_eval(agent, args, train, held, report)
     (folder / 'train_policy.json').write_text(json.dumps(report, indent=1))
     print('Saved', folder)
+  elif args.command == 'train-value':
+    from .value import QWindows
+    cf = Path(args.cf)
+    meta = json.loads((cf / 'meta.json').read_text())
+    kw = dict(holdout=args.holdout, burnin=ts.q_burnin)
+    train = QWindows(meta['collection'], cf / 'targets.npz', 'train',
+                     cf_boost=args.cf_boost, seed=args.seed, **kw)
+    held = QWindows(meta['collection'], cf / 'targets.npz', 'eval', **kw)
+    constant = train.constant()
+    report = {'cf': str(cf), 'policy': meta['policy'], 'holdout': args.holdout,
+              'cf_boost': args.cf_boost, 'constant': constant,
+              'train_pairs': train.kappa()[1], 'eval_pairs': held.kappa()[1], 'eval': []}
+    print('Q targets', {k: report[k] for k in ('constant', 'train_pairs', 'eval_pairs')})
+    folder = _train_with_eval(agent, args, train, held, report, constant)
+    (folder / 'train_value.json').write_text(json.dumps(report, indent=1))
+    print('Saved', folder)
   elif args.command == 'freeze':
     teaching = {}
-    report = latest(args.run) / 'train_policy.json'
-    if report.exists():
-      teaching = {k: v for k, v in json.loads(report.read_text()).items()
-                  if k != 'eval'}
-      teaching['final_eval'] = json.loads(report.read_text())['eval'][-1]
+    for name in ('train_policy', 'train_value'):
+      report = latest(args.run) / f'{name}.json'
+      if report.exists():
+        data = json.loads(report.read_text())
+        teaching[name] = {k: v for k, v in data.items() if k != 'eval'}
+        teaching[name]['final_eval'] = data['eval'][-1]
+    if anchor:
+      teaching['value_anchor'] = anchor
     print('Frozen', freeze(agent, args.run, args.name, args.preset, args.corpus, teaching))
   else:
-    env, options = corpus_env(args.corpus) if args.corpus else fixture_env(args.fixture)
     out = Path(args.run) / 'rollouts'
     out.mkdir(parents=True, exist_ok=True)
     with (out / f'rollout_{int(agent.n_actions):09d}.jsonl').open('w') as f:
-      _, rows = rollout(agent, env, args.steps, args.mode, options, record=f)
+      _, rows = rollout(agent, corpus_env(args.corpus), args.steps, args.mode, record=f)
     adds = sum(r['executed'] == 1 for r in rows)
     print(f'rollout steps={len(rows)} adds={adds} '
           f'reward={sum(r["reward"] for r in rows):.3f}')

@@ -63,3 +63,55 @@
 - 两个仓库都不兼容旧 S3 功能。
 - Checkpoint 和教材默认继承，由开发人员处理语义适配，不设代码或数据 Hash 门禁。
 - 每个切片完成的标志是一段可运行的功能、真实的学习活动和一项薄验证。不以盈利或 AUC 设门槛。
+
+## 实现状态（2026-10-23：Review 修正、教材重建、S3）
+详见 `R_M_RECORD_20261023.md` 与 `S3_RECORD_20261023.md`。
+
+**账户输入与 Outcome**
+- `account_native` 14 维，字段表为 gym `ts_v1_account.ACCOUNT_NATIVE_FIELDS`。新增 4 个字段：
+  - `to_add_deadline`、`to_forced_exit`：事前已知的日历分钟；
+  - `funds_cover`、`margin_cover`：资金充足时饱和，所以空仓账户的输入只取决于 cursor。
+- Outcome 34 类：TP / SL / OTHER_EXIT 各 11 个时间桶，加 OPEN_AT_H（H=2760 分钟）。
+  - RIGHT_CENSORED 按删失处理，不单独成类。
+  - 答卷字段为 `p_tp_h` / `p_sl_h` / `p_other_h` / `p_open_h`。
+  - evidence 40 维，未受监督的 latent 不在其中。
+
+**环境**
+- TS env 没有 CHUNK_END（`chunk_steps=0`）。
+- 市场记忆从第一分钟连续运行到真终止。训练窗口从零状态起步并有 burn-in，这不代表数据断档。
+
+**教材**
+- 按“合约 × cursor”分表：`market/`、`facts/`、`strict/` 每个合约一份；`behaviors/<P>/` 只存 P0–P4 的账户侧数据。
+- 标签只取 P0 账户。只在合法空仓、权益不低于资金下限的行上给标签。
+- `source.json` 只记来源、`ready_at` 和计数，没有 Hash 或 manifest。
+
+**折扣与 CF（F-02 的实现）**
+- 折扣：γ = 332/333，按有效市场分钟计。
+  - 决策 t 的回报为 G(t) = r_t + γ^{advance(t,t+1)} · G(t+1)，终点是合约真终止。
+- 分支的终点：分支与 π_k 自己的完整 TRAIN 正式轨迹在汇合点 c 汇合。汇合点需同时满足：
+  - 两边同时空仓；
+  - `position_state` / `action_mask` / `account_native` 逐位相等；
+  - 资金不构成约束。
+- 回报精确，不需要尾值：G = Σ_{t≤i<c} γ^{advance(t,i)} · r_i + γ^{advance(t,c)} · G_ref(c)。
+- 汇合处由同一个编译后的策略复核一次决策。
+- 状态：
+  - 汇合或到达真终止 → `VALID_COMPLETE`；
+  - 数据截断或超过步数上限 → `NOT_COMPARABLE`，不给数值标签；
+  - 本版不产生 `VALID_ESTIMATED`。
+- CF 必须在快照记录的设备和精度上运行。每个 worker 先重放主轨迹，动作或奖励与采集不一致就报错。
+
+**Q 目标与 L4**
+- Q 目标只属于产生它们的 π_k：
+  - `q_real`：已执行动作的完整回报，来源 `STUDENT_EXECUTED_NATIVE`；
+  - `q_cf`：fork 点另一动作的分支回报，来源 `VERIFIED_CF_NATIVE`。
+- L4：
+  - `opt_l4` 只更新 value 组。
+  - 三项损失：`L_q_real`、`L_q_cf`、`L_q_pair`（ΔQ 回归到 ΔG）。上游全部 SG，带 burn-in。
+  - 不用 target copy（回报完整），没有 Actor 损失。
+
+**下一版快照与加载**
+- π_{k+1} 的快照写入 β_Q 和 κ_Q；`auto` 时 κ_Q = 训练段有效对 ΔG 的标准差。
+- Q 只通过 β_Q · clip(ΔQ/κ_Q, ±3) 进入动作。
+- 加载快照：
+  - 非优化器参数必须完全一致；
+  - 后加阶段的优化器状态（例如旧快照没有的 `opt_l4`）重新初始化，并逐项列出。

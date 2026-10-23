@@ -40,11 +40,34 @@
 - [x] 最小验证（短自主回放 + 一次 Actor 梯度更新；正式决策与 CF/考试规则一致；Mask、TP/SL 正确；记录 ADD 比例，不设门槛），并写记录（`run check`：34263 行，规则、Mask、TP/SL 点数都无违规。50 笔交易与 teacher“现在 ADD 后持有”的独立事实 50/50 一致，Native reward 之和与 teacher 的逐位相等。正式 π0 的 ADD 比例 11.8%。π0 与随机入场相当，没有优势。S0+S1+S2+账户+env/obs 共 32 passed。见 `S2_RECORD_20261023.md`）
 - [x] 提交 dreamerv3 和 gym 两个仓库（gym `fb7481d`；dreamerv3 见包含本行的提交）
 
+## 2026-10-23 计划：Review 修正 + 教材重建 → S3
+计划全文：`PLAN_R_M_S3_20261023.md`（编号与下面一致）。依据：`FG_S3_TS_S0_S2_Source_Review_20261023.md`、C3_20261023 §5/§5.9。
+- [x] 第 0 步：同步设计文档（Review、C3_20261023 拷入，删除 C3_20261022 副本）；写计划文档；本 TODO 新增 R/M 节并改写 S3
+
+## R — Review 修正
+- [x] R1：TS 环境不走旧 E-Data 认证 / Hash 链（新 `native_env`；env 去掉行情源 SHA、每步 fingerprint / array hash、快照 prefix_hash 与 identity 比对；同一进程复用行情与 env 实例）（`entry_env.py` 删除 `_validate_e_market_source`、`e_observation_identity`、`e_snapshot`、`_prefix_hash`；`ts_v1_corpus.native_env/corpus_env` 只用 `contracts` + 常量 identity 的轻量 E profile；gym `test_ts_v1_corpus.py` 8 passed、`test_ts_v1_account.py` 3 passed）
+- [x] R2：Outcome 34 类（TP / SL / OTHER_EXIT 各 11 桶 + OPEN_AT_H），RIGHT_CENSORED 独立删失；答卷字段 `p_tp_h` / `p_sl_h` / `p_other_h` / `p_open_h`，快照记录 `outcome_horizon_minutes`（`labels.py` 34 类、`allowed_classes`；`policy.json` 的 `outcome.horizon_minutes=2760` 与 34 个类名；`test_ts_v1_s1.py` 11 passed，含 OTHER_EXIT、删失、未成交 ADD）
+- [x] R3：`account_native` 14 维（`to_add_deadline`、`to_forced_exit`、`funds_cover`、`margin_cover`）（`ts_v1_account.ACCOUNT_NATIVE_FIELDS`；Dreamer 观测空间直接取 `ACCOUNT_NATIVE_SHAPE`；教材生成时直接记录，删除 `replay_account_native`）
+- [x] R4：TS env `chunk_steps=0`；自主运行不因 CHUNK_END 重置市场 RSSM；训练窗口零状态起步 + burn-in，注明不是真实断档（`Autonomous` 遇到 `chunk_steps != 0` 的 env 直接报错；`policy.json` 记录 `rssm_initialization`；`CorpusWindows` 文档写明 burn-in 不是数据断档；s2 采集测试断言只有首行 `first`）
+- [x] R5（低优先级）：未监督的 latent 移出 evidence；`reason_pref` 在记录与答卷说明中标注“S4 前未训练”（evidence 40 维 = 34 + 2 + 3 + 1；`policy.json` 的 `untrained.reason_pref`）
+- [x] R6：S2 ckpt 迁移 `--migrate r2r3`（逐项列出 reused / remapped / initialized / dropped）（`transfer.r2r3`；s1 迁移测试；FG809 实跑 `S3_FG809_20261023/inherit.json`：reused 311、remapped 6、reshaped 10（优化器矩）、initialized 0、dropped 6（latent））
+
+## M — 教材重建（去审计、无兼容）
+- [x] M1：Gym `ts_v1_corpus.py` 生产者（market / facts / strict / behaviors P0–P4，`source.json` 只记来源与计数）+ 合成行情测试（facts = 原生逐分钟，P4 = 严格计划，无重复 cursor）（另：生产时抽 32 个 cursor 原生逐分钟核对，不一致即报错；严格平局用精确规则；`source.json` 记录各标签来源与 `ready_at`；gym `test_ts_v1_corpus.py` 8 passed，含精确 DP 的 ADD/WAIT/平局与搬目录后可读）
+- [x] M2：Dreamer 新 Reader / 标签 / run.py 接入（删除 `prepare-corpus` 与旧 corpus 路径），S0–S2 测试改用新生产者（`corpus.py` 的 `TSCorpus` / `CorpusWindows`；标签只取 P0 账户（C3 EDU-R10）；Reader 检查表长、有限值与 ADD 合法性；s0 5、s1 11、s2 8 passed）
+- [x] M3：生成 FG809 新教材（`/data/logdir/fg_single3/thinking_student/corpus/CZCE.FG809/`，记录耗时和大小）（169 MB、2 分 42 秒：facts 75.8 s、原生核对 23.7 s（32/32）、strict 0.2 s、behaviors 61.5 s；28264 行；严格示范 valid 28263：ADD 304、WAIT 27283、平局 676）
+- [x] M4：一次性对照：新 facts / strict 与旧 P0 sidecar 按 cursor 比较；64 个 cursor 原生逐分钟核对（`CZCE.FG809.m4_compare.json`：L1 比较 28240 笔全部字段一致，另 27 行是旧 CHUNK_END 重复行；L2 28263 行全部一致；原生 64/64 一致。对照发现并修掉两个生产者问题：输入 YAML 写了 `.tmp` 绝对路径、零反馈交易误判为平局）
+- [x] M5：新教材上重训 L1 → L2 → L3（GPU），冻结 `pi0r`，正式 TRAIN 采集 + `check`（`S3_FG809_20261023/`，整链 10 分 55 秒：L1 1000、L2 3000、L3 3000 次更新；pi0r 采集 28263 步到 MAIN_ROLL 真终止，合法 1211、ADD 53（4.4%），53 笔 TP 39 / SL 13 / MAIN_ROLL 1；规则、正式、Mask、点数违规均 0；与新 facts 逐笔 53/53 一致。留出评估如实记录：L2 留出集是合约最后 2048 分钟，539 个 OTHER_EXIT 全在这里、训练段为 0；按类型 NLL（`l2_heldout_by_event.json`）TP5 2.72（常数 2.48）、SL30 2.00（常数 2.99）、OTHER_EXIT 8.18（常数 10.17）。L3 留出示范损失 1.86，差于常数 0.84）
+- [x] M6：删除旧审计代码闭包（两仓），剩余模块可导入、剩余测试通过（Gym 删 195 个文件、Dreamer 删 38 个（含旧 C3_20261022 副本）；剩余模块逐个导入通过。全量 150 个测试文件逐文件并行跑：132 通过；其余已分类，见 `R_M_RECORD_20261023.md` §M6：11 个在 S2 基线（`fb7481d`/`46763e2`）同样失败（其中 1 个文件里没有可收集的测试），属旧问题；embodied 的 2 个 perf 文件是 `while True` 基准，被终止；1 个（`test_fg_s3_v2_artifacts`）缺真实 GPU checkpoint 工件，未在基线复现；4 个由本轮删除/R1 引起，已修。修法：补删 R1 遗留的 E 来源引用（`entry_market_cache`、`fg_replay`、`quality_teacher_v2`、`native_account`、无用的 `NativeEObservationCache`），并删掉断言已删审计或已删旧入口的测试片段。按用户 2026-10-23 指示，与 TS 无关的旧测试不再维护；TS 相关测试全部通过：gym `test_ts_v1_{account,corpus,cf}`、`test_s3_e_native_env`、`test_wp02_macd`、`test_entry_market_cache`，dreamer `test_ts_v1_s0`–`s3`）
+- [x] M7：删除旧教材数据（`/data/s3_corpus/` 全部 6 个目录；`thinking_student/{corpus_cache,label_cache}`），删除前 `lsof` 确认无占用（2026-10-23：`lsof +D` 三处均无占用；确认新 FG809 教材与 TS 代码不引用旧数据；删除 64 GB + 60 MB + 24 MB，`/data` 可用由 310G 变为 375G；保留行情 CSV、合约 YAML、`fg_s3_market_minute/.../inputs/C1/` 与全部旧 Run）
+- [x] M8：写 `R_M_RECORD_20261023.md`，提交两仓（记录含 R1–R6、M1–M7 的命令、计数、路径和测试分类；`INTERFACE_SUMMARY.md` 新增实现状态一节；两仓各一个提交，未推送；S3 代码与单元测试同在此提交）
+
 ## S3 — 策略条件 Q + 同策略 CF 老师
-- [ ] Gym：同初态 ADD/WAIT 双分支 runner（`export_state`/`import_state`，注入冻结 π_k 回调）
-- [ ] F-02：统一评价终点和折扣；状态分为 VALID_COMPLETE / VALID_ESTIMATED / NOT_COMPARABLE
-- [ ] `L_q_real` 与 `L_q_cf`；`opt_l4` 只更新 value 组；Q 有了策略条件监督后逐步启用 `β_Q`（记入快照），得到候选 π1；不用同一 CF 差距训练 Actor 偏好
-- [ ] 最小验证，并写记录
+- [x] S3-1：Gym `ts_v1_cf.py`：同初态 ADD/WAIT 双分支，注入冻结 π_k 回调；与 π_k 参考轨迹汇合得到精确回报；状态 VALID_COMPLETE / NOT_COMPARABLE（VALID_ESTIMATED 保留、本轮不生成）；合成测试（汇合 G = 跑到终止的 G；截断 → NOT_COMPARABLE）（gym `test_ts_v1_cf.py` 4 项通过：规则策略下汇合 G 与跑到真终止的 G 相对误差 ≤1e-9、两种首动作都有、长汇合分支、CAP 与 REFERENCE_INCOMPLETE、汇合时必须经策略见证；Dreamer `test_ts_v1_s3.py` 用真实小学生再验一次）
+- [ ] S3-2：F-02 统一折扣 γ=332/333 每有效市场分钟、终点为合约真终止；Dreamer `value.py`：参考 G_ref、GPU 多进程 CF、`targets.npz`
+- [ ] S3-3：L4：`L_q_real`、`L_q_cf`、`L_q_pair`；`opt_l4` 只更新 value 组；`train-value`；不用同一 CF 差距训练 Actor 偏好
+- [ ] S3-4：候选 π1：β_Q=1、κ_Q=std(ΔG) 记入快照；正式 TRAIN 采集；决策依赖检查（z − z(β=0) = anchor）
+- [ ] S3-5：最小验证（一个完整对 + 交易、一个 NOT_COMPARABLE、真实数据 2 个汇合分支跑到终止核对），写 `S3_RECORD_20261023.md`，提交两仓
 
 ## S4 — Reasoning 与策略改进
 - [ ] `L_reason`（L2 示范 / Outcome 证据的辅助理解）与 `L_policy_demo` 先验刷新（中性 Q 锚点的教学视图）；Q→Reasoning 投影开始学习；V1 不实现 `L_policy_pref`、`L_align`、`L_policy_rl`

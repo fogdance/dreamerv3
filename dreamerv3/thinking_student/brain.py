@@ -13,7 +13,8 @@ import embodied.jax
 import embodied.jax.nets as nn
 import optax
 
-from .labels import MAE_HORIZONS, NBINS, OUTCOME_BINS, OUTCOME_CLASSES, RISK_FLAGS
+from .labels import (MAE_HORIZONS, NBINS, OPEN_AT_H, OUTCOME_BINS,
+                     OUTCOME_CLASSES, RISK_FLAGS)
 
 sg = jax.lax.stop_gradient
 f32 = jnp.float32
@@ -54,11 +55,13 @@ class SharedFusion(nj.Module):
 
 
 class OutcomeBrain(nj.Module):
-  """Competing-risk first TP/SL time distribution + path risk + quality."""
+  """First ending of the trade "ADD now, then hold" -- TP, SL or another
+  forced exit in a market-minute bin, or still open at H -- plus path risk
+  and quality. Every answer is conditional on the horizon H; evidence holds
+  only supervised answers (34 classes, 2 risks, 3 MAEs, quality)."""
 
   units: int = 256
   layers: int = 2
-  evidence: int = 32
   act: str = 'silu'
   norm: str = 'rms'
 
@@ -69,19 +72,18 @@ class OutcomeBrain(nj.Module):
     risk_logits = f32(self.sub('risk', nn.Linear, len(RISK_FLAGS))(h))
     mae = f32(self.sub('mae', nn.Linear, len(MAE_HORIZONS))(h))
     quality = f32(self.sub('quality', nn.Linear, 1)(h))[..., 0]
-    latent = jnp.tanh(f32(self.sub('latent', nn.Linear, self.evidence)(h)))
     probs = jax.nn.softmax(event_logits, -1)
-    stats = jnp.concatenate([
-        probs, jax.nn.sigmoid(risk_logits), mae, quality[..., None]], -1)
     valid = f32(legal)
-    evidence = jnp.concatenate([stats, latent], -1) * valid[..., None]
+    evidence = jnp.concatenate([
+        probs, jax.nn.sigmoid(risk_logits), mae, quality[..., None]], -1)
+    evidence = evidence * valid[..., None]
+    event = lambda e: probs[..., e * NBINS:(e + 1) * NBINS].sum(-1) * valid
     return dict(
         event_logits=event_logits, risk_logits=risk_logits, mae=mae,
         quality=quality, valid=valid, evidence=evidence,
-        p_tp=probs[..., :NBINS].sum(-1) * valid,
-        p_tp_15=probs[..., :QUICK_TP_BINS].sum(-1) * valid,
-        p_sl=probs[..., NBINS:2 * NBINS].sum(-1) * valid,
-        p_open=probs[..., -1] * valid)
+        p_tp_h=event(0), p_sl_h=event(1), p_other_h=event(2),
+        p_open_h=probs[..., OPEN_AT_H] * valid,
+        p_tp_15=probs[..., :QUICK_TP_BINS].sum(-1) * valid)
 
 
 def masked_mean(x, mask):
@@ -92,9 +94,10 @@ def outcome_loss(out, data, weight):
   """L_outcome on teacher labels; only legal-ADD states with valid labels count.
 
   Event term: discrete-time competing-risk likelihood. The label lists every
-  class consistent with the native trace (one class for an observed TP/SL,
-  the later bins plus survival for a censored trade), so the NLL is
-  -log sum(p[allowed]) and a trade with no informative age contributes 0.
+  class consistent with the native trace (one class for a trade that ended or
+  was still open at H, the later bins of every ending plus OPEN_AT_H for a
+  censored trade), so the NLL is -log sum(p[allowed]) and a trade with no
+  informative age contributes 0.
   """
   valid = data['outcome_valid'] * weight * out['valid']
   logp = jax.nn.log_softmax(out['event_logits'], -1)
@@ -113,7 +116,7 @@ def outcome_loss(out, data, weight):
           jnp.square(out['quality'] - data['outcome_quality']), quality_mask),
   }
   labelled = data['outcome_valid'] * weight
-  # Rows whose first termination was observed as a TP or an SL.
+  # Rows whose first ending within H was observed as a TP or an SL.
   observed = valid * (data['outcome_allowed'].sum(-1) == 1)
   tp = observed * data['outcome_allowed'][..., :NBINS].sum(-1)
   sl = observed * data['outcome_allowed'][..., NBINS:2 * NBINS].sum(-1)
@@ -122,11 +125,13 @@ def outcome_loss(out, data, weight):
       'outcome/label_not_legal': (labelled * (1. - out['valid'])).sum(),
       'outcome/label_tp': masked_mean(tp, valid),
       'outcome/label_sl': masked_mean(sl, valid),
-      'outcome/p_tp': masked_mean(out['p_tp'], valid),
+      'outcome/p_tp_h': masked_mean(out['p_tp_h'], valid),
       'outcome/p_tp_15': masked_mean(out['p_tp_15'], valid),
-      'outcome/p_sl': masked_mean(out['p_sl'], valid),
-      'outcome/p_tp_on_tp': masked_mean(out['p_tp'], tp),
-      'outcome/p_tp_on_sl': masked_mean(out['p_tp'], sl),
+      'outcome/p_sl_h': masked_mean(out['p_sl_h'], valid),
+      'outcome/p_other_h': masked_mean(out['p_other_h'], valid),
+      'outcome/p_open_h': masked_mean(out['p_open_h'], valid),
+      'outcome/p_tp_on_tp': masked_mean(out['p_tp_h'], tp),
+      'outcome/p_tp_on_sl': masked_mean(out['p_tp_h'], sl),
       # Denominators of the masked means, so evaluations can pool batches.
       'outcome/n_risk': risk_mask.sum(), 'outcome/n_mae': mae_mask.sum(),
       'outcome/n_quality': quality_mask.sum(), 'outcome/n_tp': tp.sum(),

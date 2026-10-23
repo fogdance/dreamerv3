@@ -1,26 +1,23 @@
 """Thinking Student V1 S2: demonstrated behavior prior (L3), formal pi0, the
 behavior policy mu, autonomous Native collection with resume, frozen pi0.
 
-Synthetic native Env and batches (engineering checks); the corpus check
-reads the FG809 TRAIN corpus when present.
+Synthetic native market, TS teaching material and batches (engineering checks).
 Run from gym-trading-env with PYTHONPATH=.:src:../dreamerv3:tests/entry_v1.
 """
 import json
-import shutil
-from pathlib import Path
 
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from dreamerv3.thinking_student import brain
+from dreamerv3.thinking_student import corpus as TC
 from dreamerv3.thinking_student import labels as L
 from dreamerv3.thinking_student import market
 from dreamerv3.thinking_student import run as ts_run
 from dreamerv3.thinking_student.student import GROUPS, make_agent
 
 T = 8
-CORPUS = Path('/data/s3_corpus/train_full_main_optimized_20261020_cpu20/batches/TRAIN01_FG809_FULL_MAIN')
 
 
 def small(folder, **ts):
@@ -60,11 +57,15 @@ def flat_states(agent, seed=0):
 
 
 @pytest.fixture(scope='module')
-def factory(tmp_path_factory):
-  from wp02_fixture import native_factory
-  from gym_trading_env.research.ts_v1_account import StudentEnv
-  make, _, _ = native_factory(tmp_path_factory.mktemp('native'), minutes=210, chunk=64)
-  return lambda: StudentEnv(make())
+def corpus(tmp_path_factory):
+  from wp02_fixture import ts_corpus
+  folder, _ = ts_corpus(tmp_path_factory.mktemp('ts'))
+  return folder
+
+
+@pytest.fixture(scope='module')
+def factory(corpus):
+  return lambda: ts_run.corpus_env(corpus)
 
 
 def test_formal_action_is_masked_argmax_with_wait_on_ties():
@@ -74,12 +75,11 @@ def test_formal_action_is_masked_argmax_with_wait_on_ties():
 
 
 def test_demonstrations_and_class_weights():
-  action, valid = L.demo_arrays([
-      dict(strict_action=1, teacher_valid=True, tie=False),
-      dict(strict_action=0, teacher_valid=True, tie=True),   # a tie teaches nothing
-      dict(strict_action=None, teacher_valid=False, tie=None),
-      None])
-  assert action.tolist() == [1, 0, 0, 0] and valid.tolist() == [True, False, False, False]
+  action, valid = L.demo_labels(dict(
+      valid=np.array([True, True, False, True]),  # 2: no valid teacher state
+      action=np.array([1, 1, 1, 0], np.int8),
+      tie=np.array([False, True, False, False])))  # 1: a tie teaches nothing
+  assert action.tolist() == [1, 0, 0, 0] and valid.tolist() == [True, False, False, True]
   action, valid = np.array([0.] * 99 + [1.]), np.ones(100, bool)
   w_wait, w_add = L.class_weights(action, valid)
   assert np.isclose(99 * w_wait, w_add), 'both actions carry the same total weight'
@@ -136,7 +136,15 @@ def test_q_moves_the_action_only_through_the_explicit_anchor(tmp_path):
       0.5 * np.clip(trained['answer/delta_q'], -3., 3.), rtol=1e-4, atol=1e-6)
 
 
-def test_collection_resumes_exactly_where_it_stopped(factory, tmp_path):
+def test_autonomous_runs_only_on_the_ts_env_without_chunk_end(tmp_path):
+  from wp02_fixture import native_factory
+  from gym_trading_env.research.ts_v1_account import StudentEnv
+  make, _, _ = native_factory(tmp_path / 'chunked', minutes=210, chunk=64)
+  with pytest.raises(ValueError, match='without CHUNK_END'):
+    ts_run.Autonomous(small(tmp_path / 'a'), StudentEnv(make()))
+
+
+def test_collection_resumes_exactly_where_it_stopped(corpus, factory, tmp_path):
   agent = small(tmp_path / 'a', explore_eps=0.3)
   init = agent.save()
   quiet = dict(log=lambda *_: None)
@@ -159,22 +167,30 @@ def test_collection_resumes_exactly_where_it_stopped(factory, tmp_path):
   meta = json.loads((split / 'meta.json').read_text())
   assert meta['steps'] == 150 and meta['resumed'] == 1 and meta['explored'] > 0
   rows = [json.loads(line) for name in names for line in (split / 'steps' / name).open()]
-  assert any(r['first'] for r in rows[1:]), 'market memory restarts after CHUNK_END'
-  report = ts_run.check_collection(split)
+  assert rows[0]['first'] and not any(r['first'] for r in rows[1:]), \
+      'market memory runs on from the first minute (no CHUNK_END)'
+  report = ts_run.check_collection(split, corpus)
   assert report['adds'] > 0 and report['closed'] > 0
   for key in ('rule_violations', 'formal_violations', 'masked_adds', 'point_violations'):
     assert report[key] == [], key
+  # Every student ADD from a funded flat account trades exactly its cursor's fact.
+  assert report['facts']['disagree'] == [] and report['facts']['agree'] > 0
 
 
-def test_frozen_policy_records_and_reloads_what_decides_actions(tmp_path):
+def test_frozen_policy_records_and_reloads_what_decides_actions(corpus, tmp_path):
   agent = small(tmp_path / 'a', **{'decision.beta_q': 0.25})
   run = tmp_path / 'run'
   ts_run.save(agent, run)
-  folder = ts_run.freeze(agent, run, 'pi0', 'small')
+  folder = ts_run.freeze(agent, run, 'pi0', 'small', corpus)
   meta = json.loads((folder / 'policy.json').read_text())
+  source = json.loads((corpus / 'source.json').read_text())
   assert meta['action_selection'] == 'DETERMINISTIC_MASKED_ARGMAX'
   assert meta['ts']['decision.beta_q'] == 0.25 and meta['preset'] == 'small'
   assert meta['inference'] == {'platform': 'cpu', 'compute_dtype': 'float32'}
+  assert meta['outcome']['horizon_minutes'] == 2760 and len(meta['outcome']['classes']) == 34
+  assert 'no CHUNK_END' in meta['rssm_initialization']
+  assert meta['reward_version'] == source['inputs']['reward_schema']
+  assert meta['teacher']['funds_floor'] == source['funds_floor']
   loaded, _ = ts_run.load_policy(folder)
   assert loaded.config.ts.decision.beta_q == 0.25
   for k, v in agent.params.items():
@@ -188,23 +204,18 @@ def test_frozen_policy_records_and_reloads_what_decides_actions(tmp_path):
   np.testing.assert_allclose(outs[0]['answer/z'], outs[1]['answer/z'], rtol=1e-6)
 
 
-@pytest.mark.skipif(not CORPUS.exists(), reason='FG809 TRAIN corpus not present')
-def test_corpus_demonstrations_are_class_weighted_on_legal_flat_states(tmp_path):
-  from dreamerv3.thinking_student import corpus
-  shared = corpus.default_cache(CORPUS)
-  for name in ('P0.l1_facts.pkl', 'P0.account_native.npz'):
-    if (shared / name).exists():
-      shutil.copy(shared / name, tmp_path / name)
-  train = corpus.CorpusWindows(CORPUS, tmp_path, policies=['P0'], split='train', weight='demo')
-  held = corpus.CorpusWindows(CORPUS, tmp_path, policies=['P0'], split='eval', weight='demo',
-                              demo_weights=train.demo_weights)
+def test_corpus_demonstrations_are_class_weighted_on_legal_flat_states(corpus):
+  tc = TC.TSCorpus(corpus)
+  kw = dict(weight='demo', burnin=2, holdout=64, accounts=[TC.LABEL_ACCOUNT])
+  train = TC.CorpusWindows(tc, split='train', **kw)
+  held = TC.CorpusWindows(tc, split='eval', demo_weights=train.demo_weights, **kw)
   assert train.demo_counts['add'] > 0 and train.demo_counts['wait'] > train.demo_counts['add']
   w_wait, w_add = train.demo_weights
   assert np.isclose(w_wait * train.demo_counts['wait'], w_add * train.demo_counts['add'])
   assert held.demo_weights == train.demo_weights
-  data = train.sample(4, 64)
+  data = train.sample(4, 16)
   demo = data['demo_weight'] > 0
-  assert demo.any()
+  assert demo[:, 2:].any(-1).all(), 'windows are drawn by their demonstrations'
   assert (data['action_mask'][..., 1][demo] > 0.5).all()
   assert (data['position_state'][..., 1][demo] == 0).all()
   assert np.isin(data['demo_weight'][demo], np.float32([w_wait, w_add])).all()

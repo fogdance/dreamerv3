@@ -40,10 +40,12 @@ GROUPS = {
 def stage_groups(ts):
   """A6 2.2: the groups each stage optimizer may update. L_outcome adapts
   SharedFusion only when the config declares it; L_policy_demo trains only
-  the decision group (Intuition/Reasoning/Gate/Integrator/Final)."""
+  the decision group (Intuition/Reasoning/Gate/Integrator/Final); the Q
+  losses of L4 train only the Value Brain."""
   return {'L1': ('market', 'account'),
           'L2': ('outcome', 'fusion') if ts.l2_fusion else ('outcome',),
-          'L3': ('decision',)}
+          'L3': ('decision',),
+          'L4': ('value',)}
 
 
 def warm(reset, burnin):
@@ -113,11 +115,11 @@ class StudentModel(embodied.jax.Agent):
   @property
   def ext_space(self):
     # account_valid: 0 where a data source has no exact account_native.
-    # outcome_*, demo_*: TRAIN teacher labels for L_outcome / L_policy_demo,
-    # never a policy input.
+    # outcome_*, demo_*: TRAIN teacher labels for L_outcome / L_policy_demo;
+    # q_*: Q^{pi_k} targets for L4. Never a policy input.
     spaces = {'account_valid': elements.Space(np.float32, ())}
     spaces.update({k: elements.Space(np.float32, shape) for k, shape in {
-        **labels.LABEL_SPACE, **labels.DEMO_SPACE}.items()})
+        **labels.LABEL_SPACE, **labels.DEMO_SPACE, **labels.Q_SPACE}.items()})
     return spaces
 
   def init_policy(self, batch_size):
@@ -295,6 +297,46 @@ class StudentModel(embodied.jax.Agent):
     mets.update({f'loss/{k}': v for k, v in losses.items()})
     return loss, ({'market': mcarry}, mets)
 
+  def l4_loss(self, carry, data, training):
+    """L_q_real, L_q_cf and L_q_pair (A6 L4) on the targets of one frozen
+    pi_k. Every upstream output enters stopped, so only the Value Brain
+    learns Q^{pi_k}; the targets are complete Native returns, so there is
+    no bootstrap and no target copy. No Actor loss: Q reaches the decision
+    only through the A5 anchor once beta_Q is raised in a new snapshot."""
+    reset = data['is_first']
+    tokens = self.market_enc(data, reset, training)
+    mcarry, _, feat = self.market_dyn.observe(
+        carry['market'], tokens, reset, training)
+    t = self.think(sg(feat), data, data['account_valid'], stop_state=True)
+    q, legal = t['q'], f32(t['legal'])
+    warmed = warm(reset, self.config.ts.q_burnin)
+    action = data['action'].astype(jnp.int32)
+    own = jnp.take_along_axis(q, action[..., None], -1)[..., 0]
+    other = jnp.take_along_axis(q, (1 - action)[..., None], -1)[..., 0]
+    real = warmed * data['q_real_valid']
+    cf = warmed * data['q_cf_valid'] * legal
+    dq = q[..., brain.ADD] - q[..., brain.WAIT]
+    dg = jnp.where(action == brain.ADD, data['q_real'] - data['q_cf'],
+                   data['q_cf'] - data['q_real'])
+    losses = {
+        'q_real': brain.masked_mean(jnp.square(own - data['q_real']), real),
+        'q_cf': brain.masked_mean(jnp.square(other - data['q_cf']), cf),
+        'q_pair': brain.masked_mean(jnp.square(dq - dg), cf),
+    }
+    loss = sum(self.scales[k] * v for k, v in losses.items())
+    signed = cf * f32(dg != 0)
+    mets = {f'loss/{k}': v for k, v in losses.items()}
+    mets.update({
+        'q/n_real': real.sum(), 'q/n_cf': cf.sum(), 'q/n_sign': signed.sum(),
+        'q/target_real': brain.masked_mean(data['q_real'], real),
+        'q/pred_real': brain.masked_mean(own, real),
+        'q/delta_g': brain.masked_mean(dg, cf),
+        'q/delta_q_on_cf': brain.masked_mean(dq, cf),
+        'q/sign_agree': brain.masked_mean(f32(jnp.sign(dq) == jnp.sign(dg)), signed),
+        'brain/delta_q_abs': brain.masked_mean(jnp.abs(dq), legal * warmed),
+    })
+    return loss, ({'market': mcarry}, mets)
+
 
 def answer_sheet(t, dist):
   """B1.2 student answer recorded before the action is executed."""
@@ -310,10 +352,11 @@ def answer_sheet(t, dist):
       'answer/correction': d['correction'],
       'answer/reason_pref': d['reason_pref'],
       'answer/outcome_valid': o['valid'],
-      'answer/p_tp': o['p_tp'],
+      'answer/p_tp_h': o['p_tp_h'],
       'answer/p_tp_15': o['p_tp_15'],
-      'answer/p_sl': o['p_sl'],
-      'answer/p_open': o['p_open'],
+      'answer/p_sl_h': o['p_sl_h'],
+      'answer/p_other_h': o['p_other_h'],
+      'answer/p_open_h': o['p_open_h'],
       'answer/quality': o['quality'] * o['valid'],
   }
 

@@ -11,12 +11,10 @@ import numpy as np
 
 from ..configuration import read_config_yaml
 
-ACCOUNT_NATIVE_DIM = 10
-
 TS_DEFAULTS = {
     'account': {'units': 1024, 'layers': 2},
     'fusion': {'units': 1024},
-    'outcome': {'units': 1024, 'layers': 2, 'evidence': 32},
+    'outcome': {'units': 1024, 'layers': 2},
     'value': {'units': 1024, 'layers': 2},
     # beta_q = 0: the value anchor contributes nothing to pi0 (A6 L3); S3
     # raises it once Q has policy-conditioned supervision.
@@ -24,15 +22,16 @@ TS_DEFAULTS = {
                  'beta_q': 0.0, 'kappa_q': 1.0, 'clip_q': 3.0, 'clip_d': 5.0},
     # Training stage (A6) whose optimizer `train` steps. L2 adapts SharedFusion
     # only when declared; burn-in rows after a market reset carry no L_outcome
-    # (outcome_burnin) or L_policy_demo (demo_burnin).
+    # (outcome_burnin), L_policy_demo (demo_burnin) or Q loss (q_burnin).
     'stage': 'L1', 'l2_fusion': True, 'outcome_burnin': 16, 'demo_burnin': 16,
+    'q_burnin': 16,
     # Behavior policy mu of mode='explore': a uniform legal action with
     # probability explore_eps, else the formal pi_k action.
     'explore_eps': 0.05,
     'loss_scales': {'dyn': 1.0, 'rep': 0.1, 'rec': 1.0, 'account': 1.0,
                     'outcome_event': 1.0, 'outcome_risk': 1.0,
                     'outcome_mae': 1.0, 'outcome_quality': 1.0,
-                    'policy_demo': 1.0},
+                    'policy_demo': 1.0, 'q_real': 1.0, 'q_cf': 1.0, 'q_pair': 1.0},
 }
 
 SMALL = {
@@ -42,9 +41,9 @@ SMALL = {
     'agent.dyn.rssm.stoch': 2, 'agent.dyn.rssm.classes': 4,
     'agent.dyn.rssm.blocks': 4,
     'agent.ts.account.units': 16, 'agent.ts.fusion.units': 16,
-    'agent.ts.outcome.units': 16, 'agent.ts.outcome.evidence': 4,
+    'agent.ts.outcome.units': 16,
     'agent.ts.value.units': 16, 'agent.ts.decision.units': 16,
-    'agent.ts.outcome_burnin': 2, 'agent.ts.demo_burnin': 2,
+    'agent.ts.outcome_burnin': 2, 'agent.ts.demo_burnin': 2, 'agent.ts.q_burnin': 2,
 }
 
 
@@ -73,11 +72,12 @@ def make_config(preset='size12m', seed=0, batch_size=8, batch_length=64,
 
 def observation_space():
   from gym_trading_env.research.fg_s3_e_observation import E_FIELDS_V2
+  from gym_trading_env.research.ts_v1_account import ACCOUNT_NATIVE_SHAPE
   keys = ('market_seq_e_shared', 'market_context_15m', 'market_macd_5m',
           'position_state', 'action_mask', 'reward', 'is_first', 'is_last',
           'is_terminal')
   spaces = {k: elements.Space(E_FIELDS_V2[k][1], E_FIELDS_V2[k][0]) for k in keys}
-  spaces['account_native'] = elements.Space(np.float32, (ACCOUNT_NATIVE_DIM,))
+  spaces['account_native'] = elements.Space(np.float32, ACCOUNT_NATIVE_SHAPE)
   return spaces
 
 

@@ -25,10 +25,9 @@ def small(folder):
 
 @pytest.fixture(scope='module')
 def factory(tmp_path_factory):
-  from wp02_fixture import native_factory
-  from gym_trading_env.research.ts_v1_account import StudentEnv
-  make, _, _ = native_factory(tmp_path_factory.mktemp('native'), minutes=210, chunk=64)
-  return lambda: StudentEnv(make())
+  from wp02_fixture import ts_corpus
+  folder, _ = ts_corpus(tmp_path_factory.mktemp('native'))
+  return lambda: ts_run.corpus_env(folder)
 
 
 @pytest.fixture(scope='module')
@@ -48,10 +47,8 @@ def collect(env, actions):
   for t, rule in enumerate(actions):
     out.append(ts_run.student_obs(obs, 0., t == 0, False, False))
     action = int(rule and obs['action_mask'][1] > 0.5)
-    obs, _, term, trunc, info = env.step(action)
-    if info['status'] == 'CHUNK_END':
-      obs, _ = env.reset()
-    elif term or trunc:
+    obs, _, term, trunc, _ = env.step(action)
+    if term or trunc:
       break
   return out
 
@@ -78,7 +75,7 @@ def test_native_rollout_single_policy(agent, factory, tmp_path):
   # Outcome exists only for a legal ADD from flat (C1-07).
   for r in rows:
     if r['mask'][1] < 0.5:
-      assert r['outcome_valid'] == 0. and r['p_tp'] == 0.
+      assert r['outcome_valid'] == 0. and r['p_tp_h'] == 0.
   assert any(r['outcome_valid'] == 1. for r in rows)
   assert any(r['reward'] != 0. for r in rows), 'no native TP/SL reward observed'
   # mu is recorded around the formal action of the same policy forward.
@@ -155,11 +152,14 @@ def test_l1_update_save_resume(agent, factory, tmp_path):
   assert ts_run.resume(other, run) is not None
   for k, v in agent.params.items():
     np.testing.assert_array_equal(np.asarray(v), np.asarray(other.params[k]), err_msg=k)
+  # With jax.sync_train_metrics the embodied agent hands trained parameters
+  # to its policy only on load; frozen snapshots and collections always load.
+  agent.load(agent.save())
   obs = rows[0]
   _, a1, o1 = agent.policy(agent.init_policy(1), obs, mode='policy')
   _, a2, o2 = other.policy(other.init_policy(1), obs, mode='policy')
   assert int(a1['action'][0]) == int(a2['action'][0])
-  np.testing.assert_allclose(o1['answer/p_add'], o2['answer/p_add'], rtol=1e-5)
+  np.testing.assert_array_equal(o1['answer/p_add'], o2['answer/p_add'])
 
 
 @pytest.mark.skipif(not F1.exists(), reason='formal F1 checkpoint not present')

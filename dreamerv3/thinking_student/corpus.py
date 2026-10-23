@@ -1,323 +1,216 @@
-"""FG809 P0-P4 corpus as Thinking Student teaching material.
+"""Thinking Student teaching material (gym ts_v1_corpus) as training windows.
 
-Natural replay windows feed L1. The TRAIN teacher sidecar adds, row for row,
-the Native "ADD now, then hold" facts that L_outcome learns from (A6 L2) and
-the strict L2 demonstrations that L_policy_demo learns from (A6 L3). Sidecar
-rows align with the replay NPZ by stepid; a mismatch, or a label on a state
-where ADD was not legal, is a data error and raises. Labels are teaching
-data only and never enter the policy input.
+A TS corpus holds, per TRAIN contract and market cursor, the causal market
+observation (market/), the Native "ADD now, then hold" facts (facts/) and the
+strict TRAIN oracle's WAIT/ADD (strict/) of a flat funded account, plus the
+account side of the behavior accounts P0-P4 (behaviors/<P>/, one row per
+cursor from the first market minute to the true terminal).
 
-Replay rows record position_state but not the account snapshot the student
-reads at inference (account_native). `prepare` rebuilds it exactly, once per
-policy, by replaying the recorded actions through the Native env, so training
-and inference see the same account input on flat and held rows alike.
+A window is T consecutive rows of one behavior account joined by cursor with
+the market rows. Outcome labels and demonstrations sit exactly on the rows
+where that account is flat, may ADD, keeps the funds floor and is not at its
+terminal: there the cursor's facts and strict choice are this account's own,
+because the market alone decides them. Labels are teaching data only and
+never enter the policy input.
+
+Every account replays the same market minutes, and a label row reads the
+same flat account and market at its cursor in every account. Label windows
+therefore come from LABEL_ACCOUNT, the always-WAIT account that is flat at
+every cursor: each market cursor's label counts exactly once (C3 EDU-R10),
+while L1 reads every account for the held account states.
 """
-import contextlib
-import gzip
 import json
-import multiprocessing
-import os
-import pickle
-import time
-from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
 
-try:
-  from orjson import loads
-except ImportError:
-  from json import loads
+from gym_trading_env.research import ts_v1_corpus as C
 
 from . import labels as L
-from .config import observation_space
 
-POLICY_OBS = tuple(observation_space())
-REPLAY_KEYS = (*(k for k in POLICY_OBS if k != 'account_native'), 'action')
-CACHE_ROOT = Path('/data/logdir/fg_single3/thinking_student/corpus_cache')
-
-
-def default_cache(corpus):
-  return CACHE_ROOT / Path(corpus).name
+ACCOUNT_KEYS = ('position_state', 'action_mask', 'account_native', 'is_last',
+                'is_terminal')
+LABEL_ACCOUNT = 'P0'
 
 
-def policy_names(corpus):
-  return sorted(p.name for p in (Path(corpus) / 'policies').iterdir() if p.is_dir())
+class TSCorpus:
+  """One contract's teaching material, loaded once and shared by windows."""
+
+  def __init__(self, folder, behaviors=None):
+    self.folder = Path(folder)
+    self.source = json.loads((self.folder / 'source.json').read_text())
+    self.market = C.load_arrays(self.folder / 'market')
+    rows = self.source['rows']
+    for k in C.MARKET_KEYS:
+      _table_check(f'market/{k}', self.market[k], rows)
+    facts = C.load_arrays(self.folder / 'facts')
+    self.outcome = L.outcome_labels(facts, C.KINDS)
+    self.demo_action, self.demo_valid = L.demo_labels(
+        C.load_arrays(self.folder / 'strict'))
+    floor = self.source['funds_floor']
+    self.behaviors, self.labelled = {}, {}
+    for name in behaviors or self.source['behaviors']:
+      b = C.load_arrays(self.folder / 'behaviors' / name)
+      for k in ('cursor', 'equity', 'action', 'reward', 'is_first', *ACCOUNT_KEYS):
+        _table_check(f'{name}/{k}', b[k], rows)
+      funded = (b['position_state'][:, 1] == 0) & (b['equity'] >= floor) & ~b['is_last']
+      legal = b['action_mask'][:, 1] > 0.5
+      # The cursor's facts are this account's only if a funded flat account
+      # may ADD exactly where the fact says the ADD is eligible.
+      bad = np.flatnonzero(funded & (legal != facts['eligible'][b['cursor']]))
+      if len(bad):
+        raise ValueError(f'{name}: ADD legality differs from the facts at '
+                         f'{len(bad)} funded flat rows, first cursor {b["cursor"][bad[0]]}')
+      # The observation of a row carries the reward of the previous action.
+      b['obs_reward'] = np.concatenate([[0.], b['reward'][:-1]]).astype(np.float32)
+      self.behaviors[name] = b
+      self.labelled[name] = funded & legal
+
+  @property
+  def rows(self):
+    return self.source['rows']
+
+  def window(self, name, lo, hi):
+    """Student inputs, actions and labels of rows [lo, hi) of one account;
+    `demo_valid` marks the rows whose demonstration counts."""
+    b = self.behaviors[name]
+    cursor = b['cursor'][lo:hi]
+    on = self.labelled[name][lo:hi]
+    data = {k: self.market[k][cursor] for k in C.MARKET_KEYS}
+    data.update({k: b[k][lo:hi] for k in ACCOUNT_KEYS})
+    data.update(
+        reward=b['obs_reward'][lo:hi], is_first=b['is_first'][lo:hi].copy(),
+        action=b['action'][lo:hi].astype(np.int32),
+        account_valid=np.ones(hi - lo, np.float32))
+    for k, v in self.outcome.items():
+      data[k] = v[cursor] * on.reshape((-1,) + (1,) * (v.ndim - 1))
+    data['demo_valid'] = on & self.demo_valid[cursor]
+    data['demo_action'] = np.where(
+        data['demo_valid'], self.demo_action[cursor], 0.).astype(np.float32)
+    # Behavior accounts are not pi_k: no Q^{pi_k} targets (A6 2.4).
+    data.update({k: np.zeros(hi - lo, np.float32) for k in L.Q_SPACE})
+    return data
 
 
-def read_replay(corpus, policy):
-  """Chunk files, stepids, action masks, position states and chunk row bounds."""
-  files = sorted((Path(corpus) / 'policies' / policy / 'replay').glob('*.npz'))
-  if not files:
-    raise FileNotFoundError(f'No replay chunks for {policy} under {corpus}')
-  ids, mask, pos, bounds = [], [], [], []
-  for file in files:
-    with np.load(file) as d:
-      ids += [bytes(row).hex() for row in d['stepid']]
-      mask.append(d['action_mask'])
-      pos.append(d['position_state'])
-    bounds.append((len(ids) - len(mask[-1]), len(ids)))
-  return files, ids, np.concatenate(mask), np.concatenate(pos), bounds
-
-
-def corpus_factory(corpus):
-  """Native E env on the corpus TRAIN source, as the traces were recorded."""
-  from e_data_v1.provider import ETrainAdmission
-  from gym_trading_env.envs.entry_env import FixedDirectionEntryEnv
-  corpus = Path(corpus)
-  lock = json.loads((corpus / 'source_lock.json').read_text())
-  profile = ETrainAdmission.from_train_pool(
-      lock['source_pool']['path'], corpus / 'e_source',
-      corpus / 'selected_train_pool.json', contracts=[lock['contract']])
-  config = corpus / 'inputs' / lock['contract'] / 'env.yaml'
-  return lambda: FixedDirectionEntryEnv(config_path=config, e_profile=profile)
-
-
-def read_facts(path, stepids):
-  """Compact teacher L1 facts, strict L2 demonstrations and the Native
-  legal_add flag per replay row."""
-  facts, demos, legal = [], [], []
-  with gzip.open(path, 'rb') as f:
-    for i, line in enumerate(f):
-      row = loads(line)
-      if i >= len(stepids) or row['stepid'] != stepids[i]:
-        raise ValueError(f'{path}: row {i} does not align with the replay stepids')
-      teacher = row.get('teacher') or {}
-      l1, l2 = teacher.get('L1'), teacher.get('L2')
-      facts.append({k: l1.get(k) for k in L.L1_FIELDS} if l1 else None)
-      demos.append({k: l2.get(k) for k in L.L2_FIELDS} if l2 else None)
-      legal.append(bool(row['legal_add']))
-  if len(facts) != len(stepids):
-    raise ValueError(f'{path}: {len(facts)} rows for {len(stepids)} replay steps')
-  return facts, demos, np.array(legal)
-
-
-def policy_facts(corpus, policy, stepids, cache=None):
-  """`read_facts` behind an optional pickle cache; the cache is rebuilt when
-  it was made from other replay rows or other fact fields."""
-  source = Path(corpus) / 'teacher_sidecar' / policy / 'steps.jsonl.gz'
-  file = Path(cache) / f'{policy}.l1_facts.pkl' if cache else None
-  fields = (L.L1_FIELDS, L.L2_FIELDS)
-  if file and file.exists():
-    with file.open('rb') as f:
-      data = pickle.load(f)
-    if data['stepids'] == stepids and data['fields'] == fields:
-      return data['facts'], data['demos'], data['legal']
-    print(f'Rebuilding stale label cache {file}')
-  facts, demos, legal = read_facts(source, stepids)
-  if file:
-    file.parent.mkdir(parents=True, exist_ok=True)
-    tmp = file.with_suffix('.tmp')
-    with tmp.open('wb') as f:
-      pickle.dump(dict(stepids=stepids, fields=fields, facts=facts,
-                       demos=demos, legal=legal), f)
-    tmp.rename(file)
-  return facts, demos, legal
-
-
-def policy_accounts(corpus, policy, stepids, cache, factory=None):
-  """Exact account_native of every replay row of one policy, from one Native
-  replay of its recorded actions; the cache is rebuilt when it was made from
-  other replay rows."""
-  file = Path(cache) / f'{policy}.account_native.npz'
-  if file.exists():
-    with np.load(file) as d:
-      if d['stepids'].tolist() == stepids:
-        return d['account_native']
-    print(f'Rebuilding stale account cache {file}')
-  from gym_trading_env.research.ts_v1_account import replay_account_native
-  ids, native = replay_account_native(
-      Path(corpus) / 'policies' / policy, factory or corpus_factory(corpus))
-  if [bytes(row).hex() for row in ids] != stepids:
-    raise ValueError(f'{policy}: Native replay rows do not align with the replay chunks')
-  file.parent.mkdir(parents=True, exist_ok=True)
-  tmp = file.with_suffix('.tmp.npz')
-  np.savez(tmp, stepids=np.array(stepids), account_native=native)
-  tmp.rename(file)
-  return native
-
-
-def account_check(name, native, position_state):
-  """The replayed account must agree with the position facts that the same
-  replay rows recorded: flat flag, direction, held lots, TP distance, age."""
-  held = position_state[:, 1] != 0
-  checks = dict(
-      flat=native[:, 0] == ~held,
-      direction=native[:, 1] == position_state[:, 0],
-      held_ratio=np.isclose(native[:, 2], position_state[:, 1]),
-      tp_distance=~held | np.isclose(native[:, 3], position_state[:, 4], rtol=1e-5),
-      held_minutes=~held | np.isclose(native[:, 6], position_state[:, 5], rtol=1e-5))
-  for key, ok in checks.items():
-    if not ok.all():
-      raise ValueError(f'{name}: replayed account {key} disagrees with '
-                       f'position_state at row {np.flatnonzero(~ok)[0]}')
-  return native
-
-
-def _prepare_policy(job):
-  corpus, cache, name, labels = job
-  began = time.monotonic()
-  _, ids, _, pos, _ = read_replay(corpus, name)
-  if labels:
-    policy_facts(corpus, name, ids, cache)  # facts and demonstrations
-  native = account_check(name, policy_accounts(corpus, name, ids, cache), pos)
-  return dict(policy=name, rows=len(ids), held=int((native[:, 0] == 0).sum()),
-              seconds=round(time.monotonic() - began, 1))
-
-
-@contextlib.contextmanager
-def _cpu_workers():
-  """Environment inherited by spawned workers: CPU only, one native thread."""
-  keys = dict(JAX_PLATFORMS='cpu', OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1',
-              MKL_NUM_THREADS='1')
-  saved = {k: os.environ.get(k) for k in keys}
-  os.environ.update(keys)
-  try:
-    yield
-  finally:
-    for k, v in saved.items():
-      if v is None:
-        os.environ.pop(k, None)
-      else:
-        os.environ[k] = v
-
-
-def prepare(corpus, cache, policies=None, labels=True, workers=None):
-  """Build the label and exact-account caches, one spawned CPU process per
-  policy (a policy's account replay is sequential; policies are independent)."""
-  jobs = [(str(corpus), str(cache), name, labels)
-          for name in policies or policy_names(corpus)]
-  workers = min(len(jobs), workers or os.cpu_count())
-  with _cpu_workers(), ProcessPoolExecutor(
-      workers, mp_context=multiprocessing.get_context('spawn')) as pool:
-    return list(pool.map(_prepare_policy, jobs))
+def _table_check(name, array, rows):
+  if len(array) != rows:
+    raise ValueError(f'{name}: {len(array)} rows for {rows} market cursors')
+  if array.dtype.kind == 'f' and not np.isfinite(array).all():
+    raise ValueError(f'{name}: values are not finite')
 
 
 class CorpusWindows:
-  """T-step windows inside one replay chunk, with exact Native accounts,
-  Outcome labels and strict L2 demonstrations.
+  """T-step windows of the behavior accounts with their labels.
 
-  All policies replay the same market minutes with the same chunk layout,
-  so split='train' (all but the last `holdout` chunks of each policy) and
-  split='eval' (those chunks) separate one late market period. With labels,
-  chunks are sampled in proportion to their Outcome labels (weight='outcome')
-  or demonstrations (weight='demo'). Demonstrations carry class weights
-  (`L.class_weights` over the selected chunks unless `demo_weights` is
-  given, e.g. the train split's for an eval split). Missing caches are
-  built first with `prepare`.
+  Every account replays the same market minutes, so split='train' (windows
+  ending before the last `holdout` cursors) and split='eval' (windows inside
+  them) separate one late market period; split='all' uses every cursor. A
+  window starts from the zero market state (is_first) like the policy at the
+  first market minute: an encoder warm-up on a slice of one continuous trace,
+  not a data break; its first `burnin` rows carry no label loss.
+  weight='outcome' / 'demo' samples windows in proportion to their labelled
+  rows after the burn-in, weight=None uniformly. `accounts` selects the
+  behavior accounts (default: all). Demonstrations carry class weights
+  (`L.class_weights` over the split's demonstrations unless `demo_weights`
+  is given, e.g. the train split's for an eval split).
   """
 
-  def __init__(self, corpus, cache=None, policies=None, seed=0, labels=True,
-               split='all', holdout=2, workers=None, weight='outcome',
-               demo_balance=1.0, demo_weights=None):
+  def __init__(self, corpus, split='all', weight=None, burnin=0, holdout=2048,
+               seed=0, demo_balance=1.0, demo_weights=None, accounts=None):
     if split not in ('all', 'train', 'eval'):
       raise ValueError(f'Unknown corpus split {split}')
-    if weight not in ('outcome', 'demo'):
+    if weight not in (None, 'outcome', 'demo'):
       raise ValueError(f'Unknown corpus sampling weight {weight}')
-    cache = Path(cache or default_cache(corpus))
-    names = list(policies or policy_names(corpus))
-    missing = [n for n in names if not (cache / f'{n}.account_native.npz').exists()
-               or (labels and not (cache / f'{n}.l1_facts.pkl').exists())]
-    if missing:
-      print('Prepared corpus cache', cache, prepare(corpus, cache, missing, labels, workers))
-    self.chunks, self.counts, self.cache = [], [], {}
-    self.labels, self.accounts = {}, {}
-    for name in names:
-      files, ids, mask, pos, bounds = read_replay(corpus, name)
-      self.accounts[name] = account_check(
-          name, policy_accounts(corpus, name, ids, cache), pos)
-      if labels:
-        facts, demos, legal = policy_facts(corpus, name, ids, cache)
-        action, valid = L.demo_arrays(demos)
-        self.labels[name] = label_check(
-            name, {**L.label_arrays(facts), 'demo_action': action,
-                   'demo_valid': valid}, legal, mask, pos)
-      for i, (file, (lo, hi)) in enumerate(zip(files, bounds)):
-        last = i >= len(files) - holdout
-        if split == 'all' or (split == 'eval') == last:
-          self.chunks.append((name, file, lo, hi))
-          key = 'outcome_valid' if weight == 'outcome' else 'demo_valid'
-          self.counts.append(self.labels[name][key][lo:hi].sum() if labels else hi - lo)
-    total = float(sum(self.counts))
-    if not total:
-      raise ValueError('No labelled rows in the selected corpus chunks')
-    self.p = np.array(self.counts, np.float64) / total
+    n = corpus.rows
+    if not 0 < holdout < n:
+      raise ValueError(f'Holdout of {holdout} cursors does not fit {n} rows')
+    self.corpus, self.weight, self.burnin = corpus, weight, burnin
+    self.lo, self.hi = {'all': (0, n), 'train': (0, n - holdout),
+                        'eval': (n - holdout, n)}[split]
     self.rng = np.random.default_rng(seed)
-    self.demo_counts, self.demo_weights = None, None
-    if labels:
-      action, valid = (np.concatenate([
-          self.labels[name][k][lo:hi] for name, _, lo, hi in self.chunks])
-          for k in ('demo_action', 'demo_valid'))
-      self.demo_counts = dict(wait=int((valid & (action == 0)).sum()),
-                              add=int((valid & (action == 1)).sum()))
-      self.demo_weights = tuple(demo_weights) if demo_weights else (
-          L.class_weights(action, valid, demo_balance) if weight == 'demo' else (1., 1.))
+    self.names = list(accounts or corpus.behaviors)
+    self._cdf = {}
+    demos = [corpus.window(name, self.lo, self.hi) for name in self.names]
+    action = np.concatenate([d['demo_action'] for d in demos])
+    valid = np.concatenate([d['demo_valid'] for d in demos])
+    self.demo_counts = dict(wait=int((valid & (action == 0)).sum()),
+                            add=int((valid & (action == 1)).sum()))
+    self.demo_weights = tuple(demo_weights) if demo_weights else (
+        L.class_weights(action, valid, demo_balance) if weight == 'demo' else (1., 1.))
 
-  def _chunk(self, c):
-    if c not in self.cache:
-      name, file, lo, hi = self.chunks[c]
-      with np.load(file) as d:
-        data = {k: d[k] for k in REPLAY_KEYS}
-      data['account_native'] = self.accounts[name][lo:hi]
-      data['account_valid'] = np.ones(hi - lo, np.float32)
-      data.update(L.empty_labels((hi - lo,)))
-      if name in self.labels:
-        lab = {k: v[lo:hi] for k, v in self.labels[name].items()}
-        valid, action = lab.pop('demo_valid'), lab['demo_action']
-        lab['demo_weight'] = np.where(
-            valid, np.where(action == 1, self.demo_weights[1], self.demo_weights[0]),
-            0.).astype(np.float32)
-        data.update(lab)
-      self.cache[c] = data
-    return self.cache[c]
+  def _marks(self, name):
+    """Per row of one account: 1 where the sampling weight counts a label."""
+    on = self.corpus.labelled[name]
+    if self.weight is None:
+      return np.ones(len(on))
+    cursor = self.corpus.behaviors[name]['cursor']
+    if self.weight == 'outcome':
+      return on * self.corpus.outcome['outcome_valid'][cursor]
+    return on * self.corpus.demo_valid[cursor]
+
+  def _starts(self, length):
+    """Cumulative weights of every window start of every account."""
+    if length not in self._cdf:
+      if self.hi - self.lo < length:
+        raise ValueError(f'Window of {length} rows exceeds the split')
+      weights = []
+      for name in self.names:
+        marks = np.concatenate([[0.], np.cumsum(self._marks(name)[self.lo:self.hi])])
+        start = np.arange(self.hi - self.lo - length + 1)
+        weights.append(marks[start + length] - marks[np.minimum(start + self.burnin, start + length)])
+      w = np.concatenate(weights)
+      if not w.sum():
+        raise ValueError('No labelled rows in the selected corpus windows')
+      self._cdf[length] = np.cumsum(w)
+    return self._cdf[length]
 
   def _stack(self, windows, length):
-    rows = [{k: v[s:s + length] for k, v in self._chunk(c).items()}
-            for c, s in windows]
+    rows = []
+    for name, start in windows:
+      data = self.corpus.window(name, start, start + length)
+      valid, action = data.pop('demo_valid'), data['demo_action']
+      data['demo_weight'] = np.where(valid, np.where(
+          action == 1, self.demo_weights[1], self.demo_weights[0]), 0.).astype(np.float32)
+      rows.append(data)
     data = {k: np.stack([r[k] for r in rows]) for k in rows[0]}
     data['is_first'][:, 0] = True
     return data
 
   def sample(self, batch, length):
-    windows = []
-    for _ in range(batch):
-      c = int(self.rng.choice(len(self.chunks), p=self.p))
-      n = self.chunks[c][3] - self.chunks[c][2]
-      windows.append((c, int(self.rng.integers(0, n - length + 1))))
-    return self._stack(windows, length)
+    cdf = self._starts(length)
+    per = self.hi - self.lo - length + 1
+    picks = np.searchsorted(cdf, self.rng.random(batch) * cdf[-1], side='right')
+    return self._stack([(self.names[i // per], self.lo + i % per) for i in picks], length)
 
   def batches(self, batch, length):
-    """Every non-overlapping window of the sampled chunks, in full batches."""
-    windows = [(c, s) for c in range(len(self.chunks)) if self.p[c] > 0
-               for s in range(0, self.chunks[c][3] - self.chunks[c][2] - length + 1, length)]
+    """Every non-overlapping window of every account, in full batches."""
+    windows = [(name, s) for name in self.names
+               for s in range(self.lo, self.hi - length + 1, length)]
     for i in range(0, len(windows) - batch + 1, batch):
       yield self._stack(windows[i:i + batch], length)
 
+  def outcome_allowed(self):
+    """Allowed classes of every labelled row of the split."""
+    out = []
+    for name in self.names:
+      d = self.corpus.window(name, self.lo, self.hi)
+      out.append(d['outcome_allowed'][d['outcome_valid'] > 0])
+    return np.concatenate(out)
+
   def summary(self):
     out = {}
-    for name, lab in self.labels.items():
-      allowed = lab['outcome_allowed']
+    for name in self.names:
+      d = self.corpus.window(name, self.lo, self.hi)
+      allowed = d['outcome_allowed'][d['outcome_valid'] > 0]
       single = allowed.sum(-1) == 1
+      ended = allowed.argmax(-1)
       out[name] = dict(
-          rows=len(allowed), labels=int(lab['outcome_valid'].sum()),
-          tp=int((single & (allowed[:, :L.NBINS].sum(-1) == 1)).sum()),
-          sl=int((single & (allowed[:, L.NBINS:2 * L.NBINS].sum(-1) == 1)).sum()),
-          survive=int((single & (allowed[:, L.SURVIVE] == 1)).sum()),
-          censored=int(((allowed.sum(-1) > 1)).sum()),
-          quality=int(lab['outcome_quality_valid'].sum()),
-          demo_wait=int((lab['demo_valid'] & (lab['demo_action'] == 0)).sum()),
-          demo_add=int((lab['demo_valid'] & (lab['demo_action'] == 1)).sum()))
+          rows=self.hi - self.lo, labels=len(allowed),
+          **{e.lower(): int((single & (ended // L.NBINS == i)).sum())
+             for i, e in enumerate(L.EVENTS)},
+          open_at_h=int((single & (ended == L.OPEN_AT_H)).sum()),
+          censored=int((~single).sum()),
+          quality=int(d['outcome_quality_valid'].sum()),
+          demo_wait=int((d['demo_valid'] & (d['demo_action'] == 0)).sum()),
+          demo_add=int((d['demo_valid'] & (d['demo_action'] == 1)).sum()))
     return out
-
-
-def label_check(name, labels, legal, mask, position_state):
-  """Outcome and the WAIT/ADD choice exist only where a flat account may
-  legally ADD (C1-07); a label anywhere else is a data error."""
-  flat = position_state[:, 1] == 0
-  ok = legal & (mask[:, 1] > 0.5) & flat
-  for key in ('outcome_valid', 'demo_valid'):
-    bad = np.flatnonzero((labels[key] > 0) & ~ok)
-    if len(bad):
-      raise ValueError(f'{name}: {len(bad)} {key} labels on states without a '
-                       f'legal flat ADD, first row {bad[0]}')
-  return labels
