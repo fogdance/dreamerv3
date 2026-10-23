@@ -32,6 +32,8 @@ from pathlib import Path
 
 import numpy as np
 
+from gym_trading_env.research.ts_v1_config import ENV_CONFIGS
+
 from . import labels as L
 from .config import observation_space
 from .corpus import LABEL_ACCOUNT, CorpusWindows, TSCorpus
@@ -552,12 +554,13 @@ def constant_answer(train):
   return (observed.sum(0) + 1.) / (len(observed) + fit.shape[-1])
 
 
-def corpus_env(corpus):
+def corpus_env(corpus, env_config=None):
   """The Native TS env of the corpus contract from a fresh account, with the
   student's account input."""
   from gym_trading_env.research import ts_v1_corpus as C
   from gym_trading_env.research.ts_v1_account import StudentEnv
-  return StudentEnv(C.corpus_env(corpus))
+  env = C.native_env(env_config) if env_config is not None else C.corpus_env(corpus)
+  return StudentEnv(env)
 
 
 def _train_with_eval(agent, args, train, held, report, constant=None):
@@ -640,11 +643,13 @@ def main(argv=None):
   parser.add_argument('--kappa-q', default=None,
                       help="freeze: kappa_Q, a number or 'auto' = std(Delta G) of --cf train pairs")
   args = parser.parse_args(argv)
+  env_config = (ENV_CONFIGS / f"{Path(args.corpus).name.replace('.', '_')}_env.yaml"
+                if args.corpus else None)
   if args.command == 'collect':
     agent, meta = load_policy(args.policy, args.device)
     out = args.out or Path(args.policy).parents[1] / 'collect' / f"{meta['policy']}_{args.mode}"
     print('Collecting into', out)
-    collect(agent, corpus_env(args.corpus), out, args.steps, args.mode, args.chunk,
+    collect(agent, corpus_env(args.corpus, env_config), out, args.steps, args.mode, args.chunk,
             meta['policy'])
     return
   if args.command == 'check':
@@ -659,7 +664,7 @@ def main(argv=None):
     collection = args.collection or policy.parents[1] / 'collect' / f'{name}_policy'
     out = Path(args.out or policy.parents[1] / 'cf' / name)
     run_cf(policy, args.corpus, collection, out, args.forks, args.seed, args.workers,
-           args.max_steps)
+           args.max_steps, env_config=env_config)
     return
   if not args.run:
     parser.error(f'{args.command} needs --run')
@@ -737,7 +742,7 @@ def main(argv=None):
     out = Path(args.run) / 'rollouts'
     out.mkdir(parents=True, exist_ok=True)
     with (out / f'rollout_{int(agent.n_actions):09d}.jsonl').open('w') as f:
-      _, rows = rollout(agent, corpus_env(args.corpus), args.steps, args.mode, record=f)
+      _, rows = rollout(agent, corpus_env(args.corpus, env_config), args.steps, args.mode, record=f)
     adds = sum(r['executed'] == 1 for r in rows)
     print(f'rollout steps={len(rows)} adds={adds} '
           f'reward={sum(r["reward"] for r in rows):.3f}')

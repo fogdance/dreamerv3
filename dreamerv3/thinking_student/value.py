@@ -117,7 +117,8 @@ def _cf_job(job):
   from .run import Autonomous, corpus_env, load_policy
   began = time.time()
   agent, meta = load_policy(job['policy'])
-  env, branch_env = corpus_env(job['corpus']), corpus_env(job['corpus'])
+  env = corpus_env(job['corpus'], job.get('env_config'))
+  branch_env = corpus_env(job['corpus'], job.get('env_config'))
   reference, recorded = build_reference(job['collection'], env)
   forks, saved, own = set(job['forks']), {}, {}
   main = Autonomous(agent, env, 'policy')
@@ -150,19 +151,20 @@ def _cf_job(job):
 
 
 def run_cf(policy, corpus, collection, out, forks=None, seed=0, workers=4,
-           max_steps=8192, log_every=50, log=print):
+           max_steps=8192, log_every=50, log=print, env_config=None):
   """Write out/pairs.jsonl, out/targets.npz and out/meta.json."""
   from .run import corpus_env
   out = Path(out)
   out.mkdir(parents=True, exist_ok=True)
   began = time.time()
-  reference, _ = build_reference(collection, corpus_env(corpus))
+  reference, _ = build_reference(collection, corpus_env(corpus, env_config))
   if not reference.complete:
     raise ValueError('The collection did not reach the true terminal: no complete returns')
   chosen = choose_forks(reference, forks, seed)
   groups = [chosen[i::workers] for i in range(workers)]
   jobs = [dict(index=i, policy=str(policy), corpus=str(corpus), collection=str(collection),
-               forks=g, max_steps=max_steps, log_every=log_every)
+               forks=g, max_steps=max_steps, log_every=log_every,
+               env_config=str(env_config) if env_config is not None else None)
           for i, g in enumerate(groups) if g]
   log(f'CF: {len(chosen)} forks of {len(reference.forks())} legal flat decisions, '
       f'{len(jobs)} workers')
