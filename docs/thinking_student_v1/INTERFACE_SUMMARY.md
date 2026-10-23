@@ -64,8 +64,8 @@
 - Checkpoint 和教材默认继承，由开发人员处理语义适配，不设代码或数据 Hash 门禁。
 - 每个切片完成的标志是一段可运行的功能、真实的学习活动和一项薄验证。不以盈利或 AUC 设门槛。
 
-## 实现状态（2026-10-23：Review 修正、教材重建、S3、S4）
-详见 `R_M_RECORD_20261023.md`、`S3_RECORD_20261023.md` 与 `S4_RECORD_20261023.md`。
+## 实现状态（2026-10-23：Review 修正、教材重建、S3、S4、C4）
+详见 `R_M_RECORD_20261023.md`、`S3_RECORD_20261023.md`、`S4_RECORD_20261023.md` 与 `FORMAL_TRAINING_IMPLEMENTATION.md`。
 
 **账户输入与 Outcome**
 - `account_native` 14 维，字段表为 gym `ts_v1_account.ACCOUNT_NATIVE_FIELDS`。新增 4 个字段：
@@ -133,3 +133,29 @@
   - pi1 → pi2 一轮跑通，CF(pi2) 已就绪，可作为下一轮的教材；
   - ΔQ 和先验在留出集上都不优于常数，所以 pi2 是可运行的候选，不是更好的策略；
   - 同一状态下换了后续策略，约 1/5 的 ΔG 改变符号，Q 教材只属于产生它的 π_k。
+
+**C4：正式训练能力**（`FORMAL_TRAINING_IMPLEMENTATION.md`、`PLAN_C4_20261023.md`）
+- **配置只在 `dreamerv3/configs/thinking_student/`：**
+  - `student.yaml`；
+  - `formal_v1.yaml`、`c4_smoke_2c.yaml`；
+  - `markets/pool.json`：18 个 TRAIN 行 + FG409 VALIDATION 行，TEST 不列入，另有 env、合约、策略文件。
+  - 教材 `inputs/` 自包含，源码不写死路径。
+- **正式学生 size50m：** 市场脑继承自 S3-V2 E_ONLY step 1M。fusion 层为 MACD 加宽零行；TS 各头新建。
+- **多合约学习：**
+  - `MultiCorpusWindows` / `MultiQWindows` 先按合约抽、再在合约内抽窗口，窗口不跨合约。
+  - L3 类别权重在全部合约的示范上统一计算。
+  - κ_Q = 同轮全部有效 CF 对的合并 std，各合约等权；退化时用配置的下界。
+  - 混入不同 π_k 的 CF 一律拒绝。
+- **编排 `formal_train`：**
+  - 命令：`pretrain [--until Lk]`、`iterate`、`evaluate`、`run`、`status`。
+  - 每一步是一个现有 CLI 的子进程。
+  - 完成与否每次都从磁盘判断：阶段剩余次数 = 预算 − `progress.json`；已完成的采集、CF、考试跳过；冻结策略不可覆盖。
+  - 某阶段的后续阶段或 π0 已经建立在它上面时，再给它加预算会被拒绝。
+- **Teacher-free 考试 `exam`：**
+  - 标签：`DEV`（VALIDATION 行，与 TRAIN 同一条 `write_inputs`）、`TRAIN_SMOKE` 或 `DEV_NOT_CONFIGURED`。
+  - 随机入场基线：同样的分钟、同样的 Native 规则、相同的入场率。
+  - 指标附定义；`best_dev` 按 DEV 每分钟 Reward 选取。
+- **L5 = S4 先验刷新；** S5/L6 未实现，每轮记 `L6_NOT_IMPLEMENTED`。
+- **size50m 冒烟（FG005 + FG405）：**
+  - pretrain → 中断续跑的一轮 → `pi_0001`；
+  - DEV FG409：`pi_0000` 16.90、`pi_0001` 18.62，随机基线分别为 13.12、16.86。只是工程贯通，不说明交易能力。

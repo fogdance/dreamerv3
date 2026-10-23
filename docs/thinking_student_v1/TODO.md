@@ -117,6 +117,118 @@
     - Q 目标随策略的变化：在 927 个两策略都空仓的同一 cursor 上（Outcome 答案逐位相同），ΔG^{pi1} 与 ΔG^{pi2} 相关 0.65，符号一致 82%。下一轮必须用 `cf/pi2` 重做 L4。
     - 文档：记录、TODO、INTERFACE_SUMMARY 与计划补充；`brain.md` 与 thinkstudent 目录同步；memory 已更新；dreamerv3 一个提交，未推送；gym 无改动。
 
+## C4 — 正式训练能力（计划：`PLAN_C4_20261023.md`；实跑只用 FG005 + FG405，不启动 18 合约正式训练）
+- [x] C4-0：同步 C4 文档，写计划文件，新增本节（C4 文档已拷入本目录，其余 thinkstudent 文档与项目副本逐字节相同；计划写入 `PLAN_C4_20261023.md`）
+- [x] C4-1：F0 多合约教材读取（`discover`、`MultiCorpusWindows`、market mmap、全局示范权重、holdout 0）
+  - 证据：
+    - `corpus.py`：`discover` / `corpus_sources`（只收 TRAIN，reward/clock/γ 不一致或合约重复时点名拒绝）、`MultiCorpusWindows`（先抽合约再抽窗口）、market 映射读取、`window(market=False)` 计数、`holdout=0`。
+    - `test_ts_v1_c4.py`：发现与拒绝、混合采样（每行与本合约窗口逐键相等，batch 内两合约混合，全局类别权重）通过。
+    - 18 合约只读检查（`C4_SMOKE_2C_20261023/load18.json`）：488,160 行、market 磁盘 2.3 GB；L1 选择 8.4 s、RSS 778 MiB；L3 合并示范 WAIT 423,749 / ADD 24,926，权重 (0.529, 9.000)。
+- [x] C4-2：F1 多合约 L1→L2→L3（可重复 `--corpus`、分段保存与 `progress.json`、续训、`freeze` 不可覆盖并记录多合约）＋ 测试 ＋ 实跑 R1（pretrain、中断续训、pi_0000、TRAIN_SMOKE、18 合约读取检查）
+  - 证据：
+    - `run.py`：`--corpus`/`--cf` 可重复、`--mix`、`--save-every`、`progress.json` 与 `progress(run)`、`_train`（holdout>0 标 `TRAIN_INTERNAL_DIAGNOSTIC`）、`freeze` 拒绝覆盖并写 `corpora` / `lineage`、`train_market.json`。
+    - 测试：`test_ts_v1_c4.py` 3 项通过（98.9 s，含中断后从第 2 次保存恢复、各阶段只改授权组、重复冻结被拒）；回归 s2 8 项、s3 4 项、s4 4 项通过。
+    - R1（`/data/logdir/fg_single3/thinking_student/C4_SMOKE_2C_20261023`，FG005 + FG405，GPU，`c4_r1_commands.sh`）：从 pi0r 继承；L1 40 次；L2 在第 20 次保存（ckpt 13080）后被杀，重跑补 40 次，进度 L2 = 60；L3 40 次；`policies/pi_0000`（β_Q 0，两合约，lineage = pi0r）。
+    - TRAIN_SMOKE：FG005 2000 步（合法 2、ADD 1）；FG405 续采到 6000 步（合法 62、ADD 34，TP 24 / SL 9 / 未平 1，奖励 −9.84）；check 违规 0，facts 1/1、34/34 一致。
+- [x] C4-2a：TS 配置统一到 `dreamerv3/configs/thinking_student/`（用户 2026-10-23 要求，只限 TS）：
+  - `student.yaml`（原 `config.py` 的 TS_DEFAULTS / SMALL）；
+  - `markets/`：pool.json，含 18 个 TRAIN 和 1 个 VALIDATION（FG409）；19 个 env、合约文件和策略 master，env 用相对路径引用；
+  - `formal_v1.yaml`、`c4_smoke_2c.yaml`、README；
+  - gym 删除写死的 `TRAIN_POOL`（改为必填 `--pool`），`write_inputs` 把合约文件拷进教材 inputs（教材自包含），18 份已有教材同样补齐。
+  - 证据：
+    - `config.py` 改读 `student.yaml` 后，`make_config` 的结果与改动前的快照逐项相同（small 与 size12m/size50m）。
+    - `markets/`：envs 19 个、contracts 19 个；用 pool 写出的 19 份 inputs 与原 env 内容一致；`train_row` 拒绝 VALIDATION 行，`dev_row` 拒绝 TRAIN 行，pool 中没有 TEST 行。
+    - 18 份教材的 `inputs/` 都有 `contract.yaml`（`contract_config: contract.yaml`），内容与原合约文件逐字节相同，行数与环境加载已核对。
+    - 测试：
+      - gym `test_ts_v1_corpus.py` 9 项通过，新增三项：pool 行分离；教材 inputs 搬目录后仍可加载；带策略 master 的 pool inputs 搬目录后仍可加载。
+      - `test_ts_v1_c4.py::test_thinking_student_configs_live_in_one_place` 通过，检查内容：
+        - `student.yaml` 的位置；
+        - 两份配置都能加载，size50m、DEV FG409、markets 指向同目录；
+        - pool 为 18 TRAIN + 1 VALIDATION；
+        - env 对合约和策略文件用存在的相对引用；
+        - 未知键报错。
+    - grep 两仓 TS 源码：没有其他 worktree 或 `/home/v` 路径，唯一的 `/data/logdir` 是 `ts_v1_corpus.py` 用法说明里的示例输出目录。
+- [x] C4-2b：正式模型改用 size50m（用户 2026-10-23 要求），市场脑从 S3-V2 `E_ONLY_MARKET_MINUTE_FORMAL_1M` step 1M 继承（size50m、E 观测、18 个 TRAIN 合约）；fusion 层为 MACD 加宽零行：
+  - 冒烟用 size50m 重跑，新运行目录 `C4_SMOKE_2C_50M_20261023`；
+  - 实测每次更新、采集、CF、考试的耗时与显存，据此提出正式预算；
+  - size12m 的 R1 只保留为 F0/F1 机制的记录。
+  - 证据：
+    - `transfer.plan` 新增 `widened`。真实形状下 reused 49、sliced 1、widened 1、initialized 60，写入 `foundation/inherit.json`；冻结时记入 `lineage.inherited_from`。
+    - 测试 `test_f1_from_before_the_macd_branch_is_widened_exactly` 与 s0 `test_f1_market_weights_inherited` 通过。
+    - size50m 冒烟 pretrain → R2 → R3 全部跑通，`pi_0000` 和 `pi_0001` 都是 size50m、cuda/bf16。
+    - 18 合约测速（`C4_SPEED_50M_20261023/speed.json`）：
+      - L1 0.199 / 0.204 s/次（batch 8 / 16），L2 0.095 / 0.096 s/次；
+      - 采集约 100 步/s；CF 每个 worker 重放约 4.5–5 分钟；DEV 考试 330–370 s；每份 checkpoint 388 MB。
+    - 正式预算写入 `formal_v1.yaml`：batch 16×64，L1 10,000 次，L2 12,000 次，每 1000 次保存。依据见 `FORMAL_TRAINING_IMPLEMENTATION.md`。
+- [x] C4-3：F2 多合约同策略 Q（`MultiQWindows`、同策略检查、合并 κ_Q 及下界、多个 `--cf`、RSSM 短窗诊断 `state-check`）＋ 测试
+  - 证据：
+    - 测试 `test_q_targets_of_one_policy_on_two_contracts` 通过，覆盖：
+      - 合并 κ 与手算一致；
+      - 另一策略的 CF 被拒绝；
+      - NOT_COMPARABLE 行没有 Q 监督；
+      - 退化时无下界报错、有下界取下界；
+      - `train-value` 两个 `--cf` 只改 value 组；
+      - 冻结后锚点生效。
+    - 真实数据（size50m 冒烟 R2，π_0000 的 CF）：
+      - FG005 76 对（68 ADD + 8 WAIT），75 对有效，1 对 NOT_COMPARABLE/CAP；ΔG std 0.309。
+      - FG405 315 对，全部有效；ΔG std 0.651。
+      - 每个 worker 的重放与采集逐位一致（`z_differs` 0）。
+      - L4 用两个 `--cf` 训练 40 次。
+      - `pi_0001` 的 κ_Q = 0.5098：390 对、两合约等权的合并 std，未触及下界 0.05；β_Q = 1。
+    - state-check（FG005，16 个 64 行窗口，burn-in 16）：
+      - 从第 0 步起的对照窗口与连续路径完全一致（0.0）；重放与采集记录一致（0.0）。
+      - burn-in 之后：`p_tp_h` 平均差 0.00013（连续路径 std 0.048）；`z` 平均差 0.49（std 2.20），48–64 行仍有 0.44。
+      - 结论：短窗口没有复现连续路径的决策状态。
+      - π_0000 的 Q 为 0，ΔQ 一项要到下一轮才有意义。
+- [x] C4-4：F3 编排器 `formal_train.py`（pretrain / iterate / evaluate / run / status、`run_state.json`、跳过已完成的 collect/CF）＋ 测试 ＋ 实跑 R2（一轮 pi_0000 → pi_0001、中断续跑）
+  - 证据：
+    - 测试 `test_orchestrator_rounds_resume_from_the_disk` 通过（182 s），覆盖：
+      - `pretrain --until L2` 只训练 L1、L2；
+      - 第二次 `pretrain` 只训练 L3 并冻结；
+      - 冻结后加 L1 预算被拒绝；
+      - L4 失败后重跑，不再调用 collect、check、cf、state-check，experience 文件不变；
+      - `status` 只读。
+    - R2（`C4_SMOKE_2C_50M_20261023`，size50m，GPU）：
+      - 23:13:18 起两合约并行正式采集约 4 分钟：FG005 20504 步、ADD 68；FG405 26429 步、ADD 307。
+      - check 违规 0，facts 一致 68/68、307/307。
+      - 中断：23:26:04 FG005 的 CF 写出 `meta.json` 时，对编排器进程组发 SIGKILL。被杀的有编排器、FG405 的 cf 命令、3 个 spawn worker 和 resource tracker；退出码 137，无残留进程，GPU 回到桌面占用。
+      - 23:26:32 重跑：只调用了 FG405 的 cf。collect、check、FG005 的 CF 没有再调用；中断前的 103 个 experience 文件字节和 mtime 都不变，只新增 `state_check.json`。
+      - 之后依次完成 state-check、L4 40 次、L5 20 次、冻结 `pi_0001`、DEV 考试，23:42:55 退出码 0。
+    - `run_state.json` 第 1 轮记录：
+      - 合约、collected、check `ok`、各合约 CF 摘要；
+      - `L5: S4_PRIOR_REFRESH`、`L6: L6_NOT_IMPLEMENTED`、`updates {L4: 40, L5: 20}`；
+      - `best_dev = pi_0001`。
+    - `pi_0001` 的 lineage：`inherited_from` 为 pi_0000，`q_teacher_policy` 为 [pi_0000]，cf 为两合约。
+- [x] C4-5：F4 Teacher-free 评估（gym `dev_row` + `write_inputs`、`exam.py`、随机基线、DEV / TRAIN_SMOKE / DEV_NOT_CONFIGURED）＋ 测试 ＋ 实跑 R3（DEV FG409）
+  - 证据：
+    - 测试：
+      - `test_exam_is_teacher_free_and_names_its_market`，覆盖：
+        - TRAIN_SMOKE 标 `teacher_free`、不训练、不完整；
+        - 随机基线与学生同分钟数，入场概率 = ADD / 合法，单个 seed 可复现；
+        - DEV 只接受 VALIDATION 行，train 和 test 行被拒绝；
+        - DEV 跑到真终止。
+      - `test_exam_numbers_have_defined_denominators`：每项指标与手算一致。
+      - gym `test_pool_rows_keep_train_and_dev_apart`。
+      - 编排测试中，没有 DEV 时写 `DEV_NOT_CONFIGURED`。
+    - R3（DEV CZCE.FG409，整段 31034 个市场分钟、91 个交易日，size50m）：
+      - `pi_0000`：Reward 16.90（每分钟 0.000545），ADD 290 / 合法 1257，TP 234 / SL 55 / 其他 1，占仓 0.959，最大回撤 36,321 元，净盈亏 −34,611 元。随机基线 13.12 ± 2.02（5 seeds）。用时 368 s。
+      - `pi_0001`：Reward 18.62（每分钟 0.000600），ADD 292 / 合法 1460，TP 236 / SL 55 / 其他 1，占仓 0.953，最大回撤 36,009 元，净盈亏 −34,047 元。随机基线 16.86 ± 3.22。用时 329 s。
+      - 两者 Reward 为正、净盈亏为负：Quality TP Reward 不等于账户盈亏，两项分开报告。
+      - 两次考试都跑到真终止；`best_dev` 按每分钟 Reward 取 `pi_0001`。
+    - TRAIN_SMOKE（`pi_0000`，前 6000 步，`complete` false）：FG005 Reward −7.31（随机 −6.33 ± 0.66）；FG405 Reward −7.86（随机 −9.56 ± 2.51）。
+- [x] C4-6：F5 接入（S4 先验刷新作为 L5；`L6_NOT_IMPLEMENTED`）
+  - 证据：
+    - `iterate` 在 L4 之后用全部 TRAIN 教材跑 `train-policy`（S4：`L_policy_demo` + `L_reason`，中性锚点教学视图），R2 中 20 次；`prior_refresh_updates: 0` 时记 `L5_SKIPPED_BY_CONFIG`。
+    - 每轮记 `L6: L6_NOT_IMPLEMENTED`。S5 的接口位置是 `iterate` 中 L5 与 freeze 之间，没有写空循环。
+- [x] C4-7：`FORMAL_TRAINING_IMPLEMENTATION.md`、INTERFACE_SUMMARY、memory，两仓提交（不推送）
+  - 证据：
+    - 代码提交：gym `0056296`，dreamerv3 `89597ec`（C4 代码、configs、测试），文档随本条提交。
+    - 最终回归（CPU，`JAX_PLATFORMS=cpu`），共 57 项通过：
+      - c4 9 项（368 s）；s0 5、s1 11、s2 8、s3 4、s4 4；
+      - gym corpus 9、account 3、cf 4。
+    - 回归之后改了 `formal_train`（`--until` 与阶段先后保护），只影响编排测试和配置测试，这两项随后重跑通过。
+- [ ] C4-8：正式训练第一段（用户 2026-10-23 授权，开发全部完成后启动）：18 合约 L1 + L2，`formal_train pretrain --config formal_v1.yaml --until L2`，在 tmux 会话 `d3` 中启动，后台跑完，不监控
+
 ## S5 — 自主教学循环 + Teacher-free 考试
 - [ ] B1 教学题生命周期，含 `ready_at` 成熟反馈
 - [ ] B2 课程循环：自然教材、多行为教材、学生自采、错题补课
