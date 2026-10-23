@@ -164,10 +164,13 @@ class DecisionBrain(nj.Module):
   """Intuition + structured Reasoning + bounded gate + one Final Actor head.
 
   Q reaches Reasoning and the gate only as stopped decision context through
-  zero-initialized projections (A5, S2->S3): neither an untrained nor a newly
-  trained Q can move the demonstrated behavior prior. Q changes the action
-  through the explicit anchor beta_Q * clip(dQ / kappa_Q); Reasoning learns
-  to use the Q context only from later independent demonstrations (S4).
+  zero-initialized projections (A5, S2->S3): an untrained or newly trained
+  Q cannot move the demonstrated behavior prior until independent
+  demonstrations (L_policy_demo and L_reason, S4) teach these projections
+  to use it; nothing trains them on Q or Delta G itself. Q changes the
+  action through the explicit anchor beta_Q * clip(dQ / kappa_Q).
+  reason_pref is the Reasoning path's answer to "the strict oracle prefers
+  ADD" (L_reason), a teaching diagnostic that is never part of z.
   """
 
   units: int = 256

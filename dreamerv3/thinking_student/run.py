@@ -12,6 +12,10 @@ policy snapshots and autonomous Native experience.
   python -m dreamerv3.thinking_student.run train-value --run DIR --init-from POLICY --cf DIR
   python -m dreamerv3.thinking_student.run freeze  --run DIR --name pi1 --beta-q 1 --kappa-q auto --cf DIR
 
+One policy improvement round (S4) runs in one directory: train-value from
+the frozen pi_k on its CF targets, train-policy to refresh the prior
+(L_policy_demo with a neutral anchor + L_reason), then freeze pi_{k+1}.
+
 --corpus is one contract folder of gym ts_v1_corpus (teaching material and
 the TS env inputs: Quality TP reward, no CHUNK_END).
 
@@ -70,6 +74,18 @@ def resume(agent, run):
   with (folder / 'agent.pkl').open('rb') as f:
     agent.load(pickle.load(f))
   return folder
+
+
+def reports(run, names=('train_policy', 'train_value')):
+  """The newest report of each training command among the run's
+  checkpoints: one improvement round trains L4 and then refreshes L3."""
+  found, ckpt = {}, Path(run) / 'ckpt'
+  folders = sorted(p for p in ckpt.iterdir() if p.is_dir()) if ckpt.exists() else []
+  for folder in folders:
+    for name in names:
+      if (folder / f'{name}.json').exists():
+        found[name] = json.loads((folder / f'{name}.json').read_text())
+  return found
 
 
 def build(run, preset, device, init_f1=None, init_from=None, migrate=None, **kwargs):
@@ -146,7 +162,10 @@ def freeze(agent, run, name, preset, corpus=None, teaching=None):
                    classes=[*(f'{e}_bin{k}' for e in L.EVENTS for k in range(L.NBINS)),
                             'OPEN_AT_H'],
                    answers='p_tp_h, p_sl_h, p_other_h, p_open_h: first ending within H'),
-      untrained=dict(reason_pref='diagnostic only; L_reason trains it from S4'),
+      reasoning=dict(reason_pref=(
+          'logit of the Reasoning answer "the strict TRAIN oracle prefers ADD"; '
+          'L_reason in L3 runs trains it (teaching.train_policy, loss/reason); '
+          'a diagnostic, never part of z')),
       preset=preset, ts=_flat(dict(agent.config.ts), ''),
       # z near 0 can change sign between compute dtypes; collection, CF and
       # exams load the policy on the device and dtype recorded here.
@@ -439,8 +458,9 @@ LOG_KEYS = {
     'L2': ('opt_l2/loss', 'loss/outcome_event', 'loss/outcome_risk',
            'loss/outcome_mae', 'loss/outcome_quality', 'outcome/labels',
            'outcome/p_tp_on_tp', 'outcome/p_tp_on_sl', 'outcome/p_other_h'),
-    'L3': ('opt_l3/loss', 'loss/policy_demo', 'policy/n_add',
+    'L3': ('opt_l3/loss', 'loss/policy_demo', 'loss/reason', 'policy/n_add',
            'policy/p_add_on_add', 'policy/p_add_on_wait', 'policy/add_rate',
+           'policy/formal_add_rate', 'reason/acc_add', 'reason/acc_wait',
            'brain/alpha'),
     'L4': ('opt_l4/loss', 'loss/q_real', 'loss/q_cf', 'loss/q_pair', 'q/n_cf',
            'q/delta_q_on_cf', 'q/delta_g', 'q/sign_agree', 'brain/delta_q_abs'),
@@ -477,10 +497,12 @@ POOL = {
         'loss/outcome_risk': 'outcome/n_risk', 'loss/outcome_mae': 'outcome/n_mae',
         'loss/outcome_quality': 'outcome/n_quality',
         'outcome/p_tp_on_tp': 'outcome/n_tp', 'outcome/p_tp_on_sl': 'outcome/n_sl'}),
-    'L3': (('loss/', 'policy/'), 'policy/n_demo', {
+    'L3': (('loss/', 'policy/', 'reason/'), 'policy/n_demo', {
         'policy/p_add_on_add': 'policy/n_add', 'policy/acc_add': 'policy/n_add',
         'policy/p_add_on_wait': 'policy/n_wait', 'policy/acc_wait': 'policy/n_wait',
-        'policy/add_rate': 'policy/n_legal'}),
+        'policy/add_rate': 'policy/n_legal', 'policy/formal_add_rate': 'policy/n_legal',
+        'reason/p_add_on_add': 'policy/n_add', 'reason/acc_add': 'policy/n_add',
+        'reason/p_add_on_wait': 'policy/n_wait', 'reason/acc_wait': 'policy/n_wait'}),
     'L4': (('loss/', 'q/', 'brain/'), 'q/n_real', {
         'loss/q_cf': 'q/n_cf', 'loss/q_pair': 'q/n_cf', 'q/delta_g': 'q/n_cf',
         'q/delta_q_on_cf': 'q/n_cf', 'q/sign_agree': 'q/n_sign'}),
@@ -512,9 +534,11 @@ def evaluate(agent, windows, constant=None):
       nll = -np.log((data['outcome_allowed'] * constant).sum(-1) + (w == 0))
       pool('constant/outcome_event', (nll * w).sum() / max(w.sum(), 1.), w.sum())
     if stage == 'L3':
+      # The uniform answer scores log 2 on both class-weighted terms.
       w = np.asarray(warm(data['is_first'], ts.demo_burnin)) * data['demo_weight']
       n = float((w > 0).sum())
-      pool('constant/policy_demo', np.log(2.) * w.sum() / max(n, 1.), n)
+      for key in ('policy_demo', 'reason'):
+        pool(f'constant/{key}', np.log(2.) * w.sum() / max(n, 1.), n)
     if stage == 'L4' and constant is not None:
       w = np.asarray(warm(data['is_first'], ts.q_burnin))
       real, cf = w * data['q_real_valid'], w * data['q_cf_valid']
@@ -724,12 +748,9 @@ def main(argv=None):
     print('Saved', folder)
   elif args.command == 'freeze':
     teaching = {}
-    for name in ('train_policy', 'train_value'):
-      report = latest(args.run) / f'{name}.json'
-      if report.exists():
-        data = json.loads(report.read_text())
-        teaching[name] = {k: v for k, v in data.items() if k != 'eval'}
-        teaching[name]['final_eval'] = data['eval'][-1]
+    for name, data in reports(args.run).items():
+      teaching[name] = {k: v for k, v in data.items() if k != 'eval'}
+      teaching[name]['final_eval'] = data['eval'][-1]
     if anchor:
       teaching['value_anchor'] = anchor
     print('Frozen', freeze(agent, args.run, args.name, args.preset, args.corpus, teaching))

@@ -40,8 +40,9 @@ GROUPS = {
 def stage_groups(ts):
   """A6 2.2: the groups each stage optimizer may update. L_outcome adapts
   SharedFusion only when the config declares it; L_policy_demo trains only
-  the decision group (Intuition/Reasoning/Gate/Integrator/Final); the Q
-  losses of L4 train only the Value Brain."""
+  the decision group (Intuition/Reasoning/Gate/Integrator/Final) and
+  L_reason only its Reasoning path; the Q losses of L4 train only the
+  Value Brain."""
   return {'L1': ('market', 'account'),
           'L2': ('outcome', 'fusion') if ts.l2_fusion else ('outcome',),
           'L3': ('decision',),
@@ -240,43 +241,65 @@ class StudentModel(embodied.jax.Agent):
     return loss, ({'market': mcarry}, mets)
 
   def l3_loss(self, carry, data, training):
-    """L_policy_demo (A6 L3) on strict L2 demonstrations. Upstream outputs
-    enter stopped, so only the decision group learns the behavior prior; Q
-    stays neutral and reaches the decision only through its stopped paths."""
+    """The behavior prior (A6 L3, refreshed in L5) on strict L2
+    demonstrations. L_policy_demo trains the decision group on the teaching
+    view [0, correction]: the value anchor is neutral there, so the residual
+    learns the demonstrations and never the Q signal (A6 2.3). L_reason
+    trains the Reasoning path to answer "the strict oracle prefers ADD"
+    (reason_pref, never part of z). Upstream outputs enter stopped; once Q
+    is supervised, its stopped context reaches Reasoning and the gate, and
+    only these independent demonstrations teach them to use it."""
     reset = data['is_first']
     tokens = self.market_enc(data, reset, training)
     mcarry, _, feat = self.market_dyn.observe(
         carry['market'], tokens, reset, training)
     t = self.think(sg(feat), data, data['account_valid'], stop_state=True)
+    d = t['decision']
     # Native WAIT is always legal; zero dummy batches at init carry no mask.
     mask = data['action_mask'].at[..., brain.WAIT].set(1.)
-    dist = brain.masked_policy(t['decision']['logits'], mask)
+    prior = d['correction']
+    dist = brain.masked_policy(jnp.stack([jnp.zeros_like(prior), prior], -1), mask)
     demo = (data['demo_weight'] > 0) & t['legal']
     action = jnp.where(demo, data['demo_action'], 0.).astype(jnp.int32)
-    weight = warm(reset, self.config.ts.demo_burnin) * data['demo_weight'] * f32(demo)
-    nll = -dist.logp(action)
+    warmed = warm(reset, self.config.ts.demo_burnin)
+    weight = warmed * data['demo_weight'] * f32(demo)
     n = jnp.maximum(f32(weight > 0).sum(), 1.)
-    loss = (weight * nll).sum() / n
+    losses = {
+        'policy_demo': (weight * -dist.logp(action)).sum() / n,
+        'reason': (weight * optax.sigmoid_binary_cross_entropy(
+            d['reason_pref'], f32(action))).sum() / n,
+    }
+    loss = sum(self.scales[k] * v for k, v in losses.items())
+    rate = lambda x, w: (w * x).sum() / jnp.maximum(w.sum(), 1.)
     p_add = dist.prob(jnp.ones(reset.shape, jnp.int32))
+    p_reason = jax.nn.sigmoid(d['reason_pref'])
     adds = f32(weight > 0) * data['demo_action']
     waits = f32(weight > 0) * (1 - data['demo_action'])
-    decide = f32(t['legal'] & (warm(reset, self.config.ts.demo_burnin) > 0))
-    take = f32(brain.formal_action(t['decision']['z'], mask) == brain.ADD)
+    decide = f32(t['legal'] & (warmed > 0))
+    take = f32(brain.formal_action(prior, mask) == brain.ADD)
+    formal = f32(brain.formal_action(d['z'], mask) == brain.ADD)
+    reason = f32(d['reason_pref'] > 0)
     mets = {
-        'loss/policy_demo': loss,
+        'loss/policy_demo': losses['policy_demo'], 'loss/reason': losses['reason'],
         'policy/n_demo': f32(weight > 0).sum(),
         'policy/n_add': adds.sum(), 'policy/n_wait': waits.sum(),
         'policy/n_legal': decide.sum(),
-        'policy/p_add_on_add': (adds * p_add).sum() / jnp.maximum(adds.sum(), 1.),
-        'policy/p_add_on_wait': (waits * p_add).sum() / jnp.maximum(waits.sum(), 1.),
-        'policy/acc_add': (adds * take).sum() / jnp.maximum(adds.sum(), 1.),
-        'policy/acc_wait': (waits * (1 - take)).sum() / jnp.maximum(waits.sum(), 1.),
-        'policy/add_rate': (decide * take).sum() / jnp.maximum(decide.sum(), 1.),
-        'brain/alpha': t['decision']['alpha'].mean(),
-        'brain/correction_abs': jnp.abs(t['decision']['correction']).mean(),
-        'brain/delta_q_abs': jnp.abs(t['decision']['delta_q']).mean(),
+        # The prior (teaching view) and, with the anchor, the formal pi_k.
+        'policy/p_add_on_add': rate(p_add, adds),
+        'policy/p_add_on_wait': rate(p_add, waits),
+        'policy/acc_add': rate(take, adds),
+        'policy/acc_wait': rate(1 - take, waits),
+        'policy/add_rate': rate(take, decide),
+        'policy/formal_add_rate': rate(formal, decide),
+        'reason/p_add_on_add': rate(p_reason, adds),
+        'reason/p_add_on_wait': rate(p_reason, waits),
+        'reason/acc_add': rate(reason, adds),
+        'reason/acc_wait': rate(1 - reason, waits),
+        'brain/alpha': d['alpha'].mean(),
+        'brain/correction_abs': jnp.abs(d['correction']).mean(),
+        'brain/delta_q_abs': jnp.abs(d['delta_q']).mean(),
     }
-    return self.scales['policy_demo'] * loss, ({'market': mcarry}, mets)
+    return loss, ({'market': mcarry}, mets)
 
   def l2_loss(self, carry, data, training):
     """L_outcome (A6 L2) on Native ADD facts. Market and Account are frozen:

@@ -75,10 +75,33 @@
     - `test_ts_v1_s3.py` 4 项通过（143 s）。
   - dreamerv3 一个提交，未推送；gym 本轮无改动。
 
-## S4 — Reasoning 与策略改进
-- [ ] `L_reason`（L2 示范 / Outcome 证据的辅助理解）与 `L_policy_demo` 先验刷新（中性 Q 锚点的教学视图）；Q→Reasoning 投影开始学习；V1 不实现 `L_policy_pref`、`L_align`、`L_policy_rl`
-- [ ] 跑通一轮迭代：冻结 π_k → Q^{π_k} → ΔQ 锚点改进完整 Policy → 发布 π_{k+1} → 重新评估
-- [ ] 最小验证，并写记录
+## S4 — Reasoning 与策略改进（计划：`PLAN_S4_20261023.md`；只用 FG809，pi1 → pi2）
+- [x] S4-1：代码
+  - `L_reason`：`reason_pref` 学严格 Oracle 的“ADD 严格优于 WAIT”，与示范同行、同权重；
+  - L3 改为 `L_policy_demo`（中性 Q 锚点的教学视图 `[0, correction]`）+ `L_reason`；
+  - Q→Reasoning（`reason_q` / `gate_q`）在 Q 受过监督后由这两项示范 Loss 开始学习；
+  - `freeze` 跨 checkpoint 汇总报告；
+  - V1 不实现 `L_policy_pref`、`L_align`、`L_policy_rl`。
+  - 证据（代码改动）：
+    - `student.py` 的 `l3_loss`：`[0, correction]` 教学视图，`L_reason`，新增 `loss/reason`、`reason/*`、`policy/formal_add_rate` 指标；
+    - `config.py`：loss 系数 `reason: 1.0`；
+    - `run.py`：L3 汇总与 `constant/reason`；新增 `reports(run)`；`policy.json` 用 `reasoning` 取代 `untrained`；
+    - `brain.py`：只改 docstring，前向不变。
+- [x] S4-2：测试 `test_ts_v1_s4.py`：
+  - `L_reason` 的梯度范围；
+  - 锚点中性（β_Q 0 / 1 梯度一致）；
+  - Q 不为 0 时 `reason_q` / `gate_q` 开始学习；
+  - 合成数据上的 CLI 链 L4 → L3 → freeze。
+  - 回归 s0–s3。
+  - 证据：五个文件在 CPU 上并行运行，全部通过：
+    - s4：4 项，113 s；
+    - s3：4 项，141 s；
+    - s2：8 项，83 s；
+    - s1：11 项，81 s；
+    - s0：5 项，53 s。
+- [ ] S4-3：真实数据：对 pi1 做 CF（`cf/pi1`），L4 学 Q^{pi1}（从 pi1 继承），留出集对比常数答案。
+- [ ] S4-4：L3 先验刷新（示范 + `L_reason`）→ 冻结 pi2（β_Q 1，κ_Q auto）→ pi2 正式采集与 `check` → 决策依赖与受控敏感性诊断。
+- [ ] S4-5：重新评估（对 pi2 做 CF，当前 Q 在 Q^{pi2} 目标上只评估），写 `S4_RECORD`，更新 INTERFACE_SUMMARY 与 memory，提交 dreamerv3。
 
 ## S5 — 自主教学循环 + Teacher-free 考试
 - [ ] B1 教学题生命周期，含 `ready_at` 成熟反馈

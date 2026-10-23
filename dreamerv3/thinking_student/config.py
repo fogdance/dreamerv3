@@ -28,10 +28,12 @@ TS_DEFAULTS = {
     # Behavior policy mu of mode='explore': a uniform legal action with
     # probability explore_eps, else the formal pi_k action.
     'explore_eps': 0.05,
+    # L3 sums L_policy_demo and L_reason on the same demonstrations.
     'loss_scales': {'dyn': 1.0, 'rep': 0.1, 'rec': 1.0, 'account': 1.0,
                     'outcome_event': 1.0, 'outcome_risk': 1.0,
                     'outcome_mae': 1.0, 'outcome_quality': 1.0,
-                    'policy_demo': 1.0, 'q_real': 1.0, 'q_cf': 1.0, 'q_pair': 1.0},
+                    'policy_demo': 1.0, 'reason': 1.0,
+                    'q_real': 1.0, 'q_cf': 1.0, 'q_pair': 1.0},
 }
 
 SMALL = {
