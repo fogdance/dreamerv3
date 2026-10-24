@@ -158,6 +158,10 @@
   - 随机入场基线：同样的分钟、同样的 Native 规则、相同的入场率。
   - 指标附定义；`best_dev` 按 DEV 每分钟 Reward 选取。
 - **L5 = S4 先验刷新；** S5/L6 未实现，每轮记 `L6_NOT_IMPLEMENTED`。
+- **有限预算的精确 CF（用户 2026-10-24）：**
+  - 状态 `UNAVAILABLE_BUDGET`：分叉只能靠完整模拟判定（上限窗口内不可能耦合，真实终点又在 `cf_max_steps` 之外），但没有被分层预算抽中，所以没有回报、TERMINAL 和 Q 标签。
+  - `meta.json` 增加 `forks.undecided`、`couple_from`、`budget`（各层数量）、`end_status`（含 MARGIN_CALL）。
+  - 某合约的有效对覆盖率低于 `cf_min_coverage` 时，本轮跳过 L4，`freeze --value-anchor-of π_k` 保留 π_k 的 β_Q、κ_Q（`L4_SKIPPED_ANCHOR_KEPT`）。
 - **训练窗口的市场状态（R3，用户决定 2026-10-24）：**
   - 问题：零状态 64 行窗口训练出的 `pi_0000`，在 FG005 的训练窗口里 ADD 240 次，连续路径只有 99 次（WAIT→ADD 148，ADD→WAIT 7）。
   - 解决：窗口改为从连续路径的因果市场 carry 起步。
