@@ -1,0 +1,68 @@
+# Thinking Student V1 formal training on every TRAIN contract (C4), with
+# training windows that start from the causal market carry of the continuous
+# path. User decision 2026-10-24, item 4: the zero-carry pi_0000 of
+# formal_v1.yaml (64-row windows, 16-row burn-in) moved ADD decisions one way
+# in its state-check on FG005 (window ADDs 240 against 99 on the continuous
+# path; WAIT->ADD 148, ADD->WAIT 7).
+#
+# L1 and L2 are inherited from formal_v1.yaml (foundation ckpt 22000) and are
+# not retrained. Before L3, a MarketCarry store is computed for every contract
+# from that market brain (run_root/market_carry/). L3, then L4, L5 and the
+# state-check of each round read the store: 64-row windows, no burn-in. The
+# market brain stays frozen from L2 to L5, so the stores are computed once.
+#
+#   cd gym-trading-env && env PYTHONPATH=.:src:../dreamerv3 \
+#     /home/v/miniconda3/envs/dreamerv3/bin/python -m dreamerv3.thinking_student.formal_train \
+#     pretrain --config ../dreamerv3/configs/thinking_student/formal_v1_carry.yaml
+
+paths:  # relative paths are relative to this file
+  markets: markets/pool.json
+  corpus_root: /data/logdir/fg_single3/thinking_student/corpus
+  run_root: /data/logdir/fg_single3/thinking_student/FORMAL_V1_CARRY_20261024
+  # L1 (10000 updates) and L2 (12000 updates) of formal_v1.yaml, saved before its L3.
+  init_from: /data/logdir/fg_single3/thinking_student/FORMAL_V1_20261024/foundation/ckpt/000000022000
+
+corpora:
+  contracts: discover   # every TRAIN corpus under corpus_root (18)
+  mix: uniform_contract
+
+dev:
+  contracts: [CZCE.FG409]
+
+student:
+  preset: size50m
+  device: cuda
+  seed: 20261024
+  batch_size: 16
+  batch_length: 64
+  log_every: 100
+  window_start: carry
+  carry_parallel: 6       # market-carry processes, ~1 GB GPU and ~1.7 GB RAM each
+
+foundation:
+  market_updates: 0       # inherited: formal_v1 L1
+  outcome_updates: 0      # inherited: formal_v1 L2
+  policy_updates: 12000   # L3: 0.11 s/update, ~22 min
+  save_every: 1000        # 388 MB per checkpoint
+  holdout: 0
+
+iteration:
+  max_rounds: 1
+  contracts_per_round: 3    # rotates through the 18 contracts round by round
+  parallel_contracts: 2     # x cf_workers GPU processes, ~1.7 GB RAM and 1.2 GB GPU each
+  cf_wait_forks: 100
+  cf_workers: 3
+  value_updates: 3000       # provisional: set from the pilot L4 before the formal L4
+  prior_refresh_updates: 100
+  save_every: 500
+  holdout: 0
+  beta_q: 1.0             # 0 with Q_ANCHOR_NOT_READY when the round's CF holds < 2 valid pairs
+  kappa_q: auto
+  kappa_floor: 0.05       # replaces a zero or smaller std of real pairs, never missing pairs
+  state_check_windows: 0  # by hand on FG005: run.py state-check --window-start carry
+  state_check_seed_offset: 1000003
+
+evaluation:
+  random_seeds: 5
+  smoke_contracts: 2
+  smoke_steps: 6000

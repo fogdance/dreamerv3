@@ -224,14 +224,16 @@ class QWindows:
   split='train' holds rows before the last `holdout` (every row with
   holdout=0), 'eval' the rest. A
   window starts from the zero market state like the policy at the first
-  market minute (its first `burnin` rows carry no Q loss). Windows are
+  market minute (its first `burnin` rows carry no Q loss), or, given the
+  contract's MarketCarry `carry`, from the stored causal carry at its first
+  cursor ('carry/*'). Windows are
   sampled in proportion to their Q rows after the burn-in, a fork row with
   a valid branch counting `cf_boost` times. Outcome and demonstration
   labels are absent (zero); `action` is the executed pi_k action.
   """
 
   def __init__(self, collection, targets, split='train', holdout=2048, burnin=0,
-               cf_boost=16., seed=0):
+               cf_boost=16., seed=0, carry=None):
     rows, arrays, _ = load_collection(collection)
     t = dict(np.load(targets)) if not isinstance(targets, dict) else targets
     n = len(rows)
@@ -247,7 +249,7 @@ class QWindows:
     self.data['reward'] = np.concatenate([[0.], arrays['reward'][:-1]]).astype(np.float32)
     self.data['action'] = arrays['action'].astype(np.int32)
     self.data.update({k: t[k].astype(np.float32) for k in Q_KEYS})
-    self._cdf = {}
+    self.cursor, self.carry, self._cdf = np.asarray(t['cursor']), carry, {}
 
   def _starts(self, length):
     if length not in self._cdf:
@@ -265,7 +267,12 @@ class QWindows:
     out = {k: np.stack([v[s:s + length] for s in starts]) for k, v in self.data.items()}
     shape = out['action'].shape
     out['is_first'] = np.zeros(shape, bool)
-    out['is_first'][:, 0] = True
+    if self.carry is None:
+      out['is_first'][:, 0] = True
+    else:
+      # Row 0 of a collection is the first market minute.
+      out['is_first'][:, 0] = np.asarray(starts) == 0
+      out.update(self.carry.at(self.cursor[np.asarray(starts)]))
     out['is_last'] = np.zeros(shape, bool)
     out['is_terminal'] = np.zeros(shape, bool)
     out['account_valid'] = np.ones(shape, np.float32)
@@ -320,10 +327,12 @@ class MultiQWindows:
   corpus.MultiCorpusWindows), then a window of that contract's reference
   rows exactly as QWindows draws it; a window never joins two contracts.
   Every cf folder must hold targets of the same frozen policy: Q targets
-  are Q^{pi_k} of their own policy only (A6 2.4)."""
+  are Q^{pi_k} of their own policy only (A6 2.4). `carry_root` holds the
+  contracts' MarketCarry stores: windows then start from the causal carry."""
 
   def __init__(self, folders, split='train', holdout=2048, burnin=0, cf_boost=16.,
-               seed=0, mix='uniform_contract'):
+               seed=0, mix='uniform_contract', carry_root=None):
+    from .corpus import MarketCarry
     self.folders = [Path(f) for f in folders]
     metas = [json.loads((f / 'meta.json').read_text()) for f in self.folders]
     policies = sorted({str(Path(m['policy']).resolve()) for m in metas})
@@ -332,8 +341,9 @@ class MultiQWindows:
     self.policy, self.contracts = policies[0], [_contract(m) for m in metas]
     if len(set(self.contracts)) != len(self.contracts):
       raise ValueError(f'One contract appears twice: {self.contracts}')
-    self.parts = [QWindows(m['collection'], f / 'targets.npz', split, holdout, burnin, cf_boost)
-                  for f, m in zip(self.folders, metas)]
+    self.parts = [QWindows(m['collection'], f / 'targets.npz', split, holdout, burnin, cf_boost,
+                           carry=carry_root and MarketCarry(Path(carry_root) / c))
+                  for f, m, c in zip(self.folders, metas, self.contracts)]
     self.rng = np.random.default_rng(seed)
     for part in self.parts:
       part.rng = self.rng
@@ -420,14 +430,16 @@ def position_bins(length):
 def path_agreement(short, cont, act_short, act_cont, legal, burnin, keys=CHECK_KEYS):
   """Window answers against the continuous path at the same cursors (arrays
   [window, position, ...]): mean |difference| by position, also in units of
-  the continuous std after the burn-in, and flips of the formal masked-argmax
-  action on the rows whose mask allows ADD. A masked row is WAIT on both
-  paths and would only dilute a flip rate, so it never enters one. The flips
-  after the burn-in are also split by how far the continuous z lies from the
-  decision boundary z = 0 (BOUNDARY_EDGES)."""
+  the continuous std after the burn-in, the mean signed difference (window
+  minus path, over every row: a bias, which the rows a path's own ADDs mask
+  cannot select), and flips of the formal masked-argmax action on the rows
+  whose mask allows ADD. A masked row is WAIT on both paths and would only
+  dilute a flip rate, so it never enters one. The flips after the burn-in
+  are also split by how far the continuous z lies from the decision
+  boundary z = 0 (BOUNDARY_EDGES)."""
   pos = np.arange(short.shape[1])[None, :]
-  diff, flips = np.abs(short - cont), act_short != act_cont
-  post = legal & (pos >= burnin)
+  signed, flips = short - cont, act_short != act_cont
+  diff, post = np.abs(signed), legal & (pos >= burnin)
 
   def in_std(value, std):
     return float(value / std) if std > 0 else None
@@ -441,15 +453,17 @@ def path_agreement(short, cont, act_short, act_cont, legal, burnin, keys=CHECK_K
   by_position = {}
   for a, b in position_bins(short.shape[1]):
     d = {k: float(diff[:, a:b, i].mean()) for i, k in enumerate(keys)}
+    m = {k: float(signed[:, a:b, i].mean()) for i, k in enumerate(keys)}
     by_position[f'{a}-{b}'] = dict(
         mean_abs_diff=d, in_std={k: in_std(v, std[k]) for k, v in d.items()},
+        mean_diff=m, mean_diff_in_std={k: in_std(v, std[k]) for k, v in m.items()},
         **flip_rate(legal & (pos >= a) & (pos < b)))
   after_burnin = {}
   for i, k in enumerate(keys):
-    d, legal_c = diff[:, burnin:, i], cont[..., i][post]
+    d, m, legal_c = diff[:, burnin:, i], signed[:, burnin:, i].mean(), cont[..., i][post]
     after_burnin[k] = dict(
         mean_abs_diff=float(d.mean()), max_abs_diff=float(d.max()), continuous_std=std[k],
-        in_std=in_std(d.mean(), std[k]),
+        in_std=in_std(d.mean(), std[k]), mean_diff=float(m), mean_diff_in_std=in_std(m, std[k]),
         legal_in_std=in_std(diff[..., i][post].mean(), legal_c.std()) if post.any() else None)
   z = cont[..., keys.index('z')][post]
   z_std = float(z.std()) if post.any() else 0.
@@ -474,19 +488,31 @@ def path_agreement(short, cont, act_short, act_cont, legal, burnin, keys=CHECK_K
                              max=float(dist[f].max())) if f.any() else None))
 
 
-def window_check(policy, collection, windows=32, length=64, seed=0, device=None, log=print):
+def window_check(policy, collection, windows=32, length=64, seed=0, device=None, start='zero',
+                 seed_offset=0, store=None, log=print):
   """RSSM short-window check (C4 3.1). The frozen policy reads the decision
   inputs of a formal collection once continuously from the first market
   minute (its answers and actions as on a continuous path) and again in
-  `windows` windows that each start from the zero market state, as training
-  windows do, with the policy seeds of the continuous path. Answers and
-  formal actions of both at the same cursors are compared by position in the
-  window (path_agreement); the window starting at the first minute is the
-  control and must agree exactly. A diagnostic, never a gate."""
+  `windows` windows. start='zero': each window starts from the zero market
+  state with the loss burn-in, as zero-carry training windows do;
+  start='carry': from the market carry before its first row, of the
+  continuous path itself or of the contract's MarketCarry folder `store`
+  (as carry training windows read it, then compared with the path's carry),
+  with no burn-in. With seed_offset 0 a carry window repeats the path
+  exactly; with another offset only the stochastic latents of other policy
+  seeds (as training seeds are) can move it. Answers and formal actions of
+  both at the same cursors are compared by position in the window
+  (path_agreement); the window starting at the first minute is the control
+  and agrees exactly with seed_offset 0. A diagnostic, never a gate."""
+  from .corpus import CARRY_KEYS, MarketCarry
   from .run import DECISION_OBS, load_policy
+  if start not in ('zero', 'carry') or (store and start != 'carry'):
+    raise ValueError(f"start must be 'zero' or 'carry' (a store needs 'carry'), got {start!r}")
   rows, arrays, _ = load_collection(collection)
   agent, meta = load_policy(policy, device)
   burnin, n, base = int(agent.config.ts.q_burnin), len(rows), int(agent.n_actions)
+  burnin = 0 if start == 'carry' else burnin
+  store = store and MarketCarry(store)
   if n <= 2 * length:
     raise ValueError(f'{n} collection rows are too few for {length}-row windows')
   reward = np.concatenate([[0.], arrays['reward'][:-1]]).astype(np.float32)
@@ -501,18 +527,30 @@ def window_check(policy, collection, windows=32, length=64, seed=0, device=None,
 
   rng = np.random.default_rng(seed)
   starts = [0] + sorted(int(s) for s in rng.choice(np.arange(1, n - length), windows, replace=False))
-  began, carry = time.time(), agent.init_policy(1)
+  began, carry, saved, begins = time.time(), agent.init_policy(1), {}, set(starts)
   path, path_act = np.zeros((n, len(keys))), np.zeros(n, np.int8)
   agent.n_actions.value = base
   for t in range(n):
+    if start == 'carry' and t in begins:
+      saved[t] = carry
     carry, path[t], path_act[t] = step(carry, t, t == 0)
+  gap = None
+  if store:
+    # The stored carry against the path's at every window start, then the
+    # windows start from the store as training windows do.
+    at = {s: store.at([rows[s]['cursor']]) for s in starts}
+    gap = max(float(np.abs(np.asarray(saved[s]['market'][k][0], np.float32)
+                           - at[s][f'carry/{k}'][0].astype(np.float32)).max())
+              for s in starts for k in CARRY_KEYS)
+    saved = {s: {'market': {k: [at[s][f'carry/{k}'][0]] for k in CARRY_KEYS}} for s in starts}
   short = np.zeros((len(starts), length, len(keys)))
   short_act = np.zeros((len(starts), length), np.int8)
   for w, s in enumerate(starts):
-    carry = agent.init_policy(1)
-    agent.n_actions.value = base + s
+    carry = saved.pop(s) if start == 'carry' else agent.init_policy(1)
+    agent.n_actions.value = base + s + seed_offset
     for j in range(length):
-      carry, short[w, j], short_act[w, j] = step(carry, s + j, j == 0)
+      first = j == 0 if start == 'zero' else s + j == 0
+      carry, short[w, j], short_act[w, j] = step(carry, s + j, first)
   cont = np.stack([path[s:s + length] for s in starts])
   cont_act = np.stack([path_act[s:s + length] for s in starts])
   mask = np.array([r['mask'][1] > 0.5 for r in rows])
@@ -524,7 +562,9 @@ def window_check(policy, collection, windows=32, length=64, seed=0, device=None,
   recorded = np.array([[r[k] for k in keys] for r in rows])
   report = dict(
       policy=str(policy), collection=str(collection), rows=n, windows=len(starts) - 1,
-      length=length, burnin=burnin, keys=list(keys), seconds=round(time.time() - began, 1),
+      length=length, burnin=burnin, start=start, seed_offset=seed_offset, keys=list(keys),
+      store=store and str(store.folder), store_vs_path_max_abs_diff=gap,
+      seconds=round(time.time() - began, 1),
       control_max_abs_diff=float(np.abs(short[0] - cont[0]).max()),
       control_action_flips=int((short_act[0] != cont_act[0]).sum()),
       replay_vs_record_max_abs_diff=float(np.abs(path - recorded).max()) if same else None,

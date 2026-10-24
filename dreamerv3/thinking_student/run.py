@@ -12,10 +12,16 @@ policy snapshots and autonomous Native experience.
   python -m dreamerv3.thinking_student.run state-check --policy DIR --collection DIR
   python -m dreamerv3.thinking_student.run train-value --run DIR --init-from POLICY --cf DIR [--cf DIR ...]
   python -m dreamerv3.thinking_student.run freeze  --run DIR --name pi1 --beta-q 1 --kappa-q auto --cf DIR ...
+  python -m dreamerv3.thinking_student.run market-carry (--run DIR | --policy DIR) --corpus DIR ... --out ROOT
 
 One policy improvement round (S4) runs in one directory: train-value from
 the frozen pi_k on its CF targets, train-policy to refresh the prior
 (L_policy_demo with a neutral anchor + L_reason), then freeze pi_{k+1}.
+
+Windows of L2-L5 start from the zero market state with a loss burn-in, or
+with --window-start carry from the causal market carry of the continuous
+path, stored once per contract by market-carry under --carry-root (the
+market brain is frozen after L1, so one store serves every later stage).
 
 --corpus is a contract folder of gym ts_v1_corpus (teaching material and
 the TS env inputs: Quality TP reward, no CHUNK_END). The training commands
@@ -47,7 +53,8 @@ import numpy as np
 
 from . import labels as L
 from .config import observation_space
-from .corpus import MIXES, LABEL_ACCOUNT, MultiCorpusWindows, TSCorpus, corpus_sources
+from .corpus import (MIXES, LABEL_ACCOUNT, MultiCorpusWindows, TSCorpus, corpus_sources,
+                     pop_carry)
 from .student import make_agent
 
 POLICY_OBS = tuple(observation_space())
@@ -122,24 +129,26 @@ def reports(run, names=tuple(REPORTS.values())):
   return found
 
 
-def build(run, preset, device, init_f1=None, init_from=None, migrate=None, **kwargs):
+def build(run, preset, device, init_f1=None, init_from=None, migrate=None, record=True,
+          **kwargs):
   """Resume the run strictly; a fresh run may start from F1 market weights
   or from another Thinking Student checkpoint (`init_from`, listed changes,
-  optionally through a named layout `migrate`)."""
+  optionally through a named layout `migrate`), listed in inherit.json
+  unless record=False (a reader such as market-carry)."""
   if init_f1 and init_from:
     raise ValueError('Choose one of init_f1 and init_from')
   agent = make_agent(Path(run) / 'logdir', preset=preset, device=device, **kwargs)
   folder = resume(agent, run)
+  lists = None
   if folder is not None:
     print(f'Resumed {folder}')
   elif init_from:
     from .transfer import inherit_student
     lists = inherit_student(agent, init_from, migrate)
-    Path(run).mkdir(parents=True, exist_ok=True)
-    (Path(run) / 'inherit.json').write_text(json.dumps(lists, indent=1))
   elif init_f1:
     from .transfer import inherit_f1
     lists = inherit_f1(agent, init_f1)
+  if lists is not None and record:
     Path(run).mkdir(parents=True, exist_ok=True)
     (Path(run) / 'inherit.json').write_text(json.dumps(lists, indent=1))
   return agent
@@ -198,8 +207,10 @@ def freeze(agent, run, name, preset, corpora=(), teaching=None, lineage=None, ou
       rssm_initialization=(
           'zero market carry (rssm.initial) once, at the first market minute: the '
           'TS env has no CHUNK_END, so market memory runs to the true terminal; '
-          'training windows start from the zero carry with a loss burn-in; '
-          'stochastic latents use the policy call counter seeds'),
+          'training windows start from the zero carry with a loss burn-in, or, '
+          "where a teaching report says window_start 'carry', from the stored "
+          'causal carry of the continuous path; stochastic latents use the policy '
+          'call counter seeds'),
       outcome=dict(horizon_minutes=L.HORIZON, bins=list(L.OUTCOME_BINS),
                    classes=[*(f'{e}_bin{k}' for e in L.EVENTS for k in range(L.NBINS)),
                             'OPEN_AT_H'],
@@ -491,6 +502,44 @@ def rollout(agent, env, steps, mode='policy', record=None):
   return run, rows
 
 
+# ---- the causal market carry of a contract (training windows that inherit it) ----
+
+def market_carry(agent, corpus, out, source, counter=None, log=print):
+  """out/<contract>/: the market carry the student holds before each cursor
+  of the corpus contract on the continuous path from the first market minute
+  (corpus.MarketCarry). The market inputs and policy seeds are those of a
+  formal collection, so for every policy with this market brain and seed
+  counter the store is its deployed market memory; the account inputs (of
+  LABEL_ACCOUNT) never reach the market brain. Each contract starts from the
+  zero state and from the policy seed counter `counter` (default: the
+  agent's), as each collection starts from a fresh load of the frozen
+  policy, never from the memory or seeds of another contract. Training
+  windows that start from it continue that memory instead of the zero state
+  (user decision 2026-10-24 after C4 review R3)."""
+  from .corpus import LABEL_ACCOUNT, MarketCarry
+  began, n = time.time(), corpus.rows
+  data = corpus.window(LABEL_ACCOUNT, 0, n)
+  base = int(agent.n_actions) if counter is None else int(counter)
+  agent.n_actions.value = base
+  carry, arrays = agent.init_policy(1), {}
+  for t in range(n):
+    for k in ('deter', 'stoch'):
+      value = np.asarray(carry['market'][k][0])
+      arrays.setdefault(k, np.zeros((n, *value.shape), value.dtype))[t] = value
+    if t < n - 1:
+      obs = student_obs({k: data[k][t] for k in DECISION_OBS}, data['reward'][t], t == 0,
+                        False, False)
+      carry, _, _ = agent.policy(carry, obs, mode='policy')
+  folder = Path(out) / corpus.source['contract']
+  MarketCarry.write(folder, arrays, dict(
+      contract=corpus.source['contract'], corpus=str(corpus.folder), rows=n, source=source,
+      seed_counter=base, platform=agent.config.jax.platform,
+      compute_dtype=agent.config.jax.compute_dtype, seconds=round(time.time() - began, 1),
+      created=time.strftime('%Y-%m-%d %H:%M:%S')))
+  log(f'market carry of {corpus.source["contract"]}: {n} cursors in {time.time() - began:.0f} s')
+  return folder
+
+
 # ---- staged training on natural corpus sequences ----
 
 LOG_KEYS = {
@@ -515,14 +564,23 @@ def _device(agent, data, counter):
   return data
 
 
+def _start(agent, data, init):
+  """The market state the windows of `data` start from: the stored causal
+  carry they bring ('carry/*', removed from data), else init(B), the zero
+  state."""
+  carry = pop_carry(data)
+  return agent.restore_carry({'market': carry}) if carry else init(len(data['is_first']))
+
+
 def train_stage(agent, windows, updates, log_every=10, on_update=None):
   """`updates` optimizer steps of the configured A6 stage on corpus windows."""
   stage, mets = agent.config.ts.stage, {}
   for i in range(updates):
     data = windows.sample(agent.config.batch_size, agent.config.batch_length)
+    carry = _start(agent, data, agent.init_train)
     data = _device(agent, data, int(agent.n_batches))
     agent.n_batches.increment()
-    _, _, mets = agent.train(agent.init_train(agent.config.batch_size), data)
+    _, _, mets = agent.train(carry, data)
     if (i + 1) % log_every == 0 or i == updates - 1:
       print(f'update {int(agent.n_updates)}', {
           k: round(float(mets[k]), 4) for k in LOG_KEYS[stage] if k in mets})
@@ -594,7 +652,8 @@ def evaluate(agent, windows, constant=None):
       signed = cf * (dg != 0)
       agree = signed * (np.sign(dg) == np.sign(constant['delta_g']))
       pool('constant/sign_agree', agree.sum() / max(signed.sum(), 1.), signed.sum())
-    _, mets = agent.report(agent.init_report(B), _device(agent, data, i))
+    carry = _start(agent, data, agent.init_report)
+    _, mets = agent.report(carry, _device(agent, data, i))
     batches += 1
     for k, v in mets.items():
       if not k.startswith(prefixes) or (
@@ -700,7 +759,7 @@ def main(argv=None):
   parser = argparse.ArgumentParser()
   parser.add_argument('command', choices=[
       'train-market', 'train-outcome', 'train-policy', 'freeze', 'collect',
-      'check', 'rollout', 'cf', 'state-check', 'train-value'])
+      'check', 'rollout', 'cf', 'state-check', 'train-value', 'market-carry'])
   parser.add_argument('--run', default=None)
   parser.add_argument('--preset', default='size12m')
   parser.add_argument('--device', default=None,
@@ -730,7 +789,7 @@ def main(argv=None):
   parser.add_argument('--policy', default=None, help='frozen policy folder')
   parser.add_argument('--out', default=None,
                       help='collection folder (collect, check); snapshot folder (freeze); '
-                           'report file (state-check)')
+                           'report file (state-check); store root (market-carry)')
   parser.add_argument('--steps', type=int, default=200)
   parser.add_argument('--chunk', type=int, default=1024)
   parser.add_argument('--mode', default='policy', choices=['policy', 'explore'])
@@ -747,6 +806,16 @@ def main(argv=None):
                            'several of one frozen pi_k')
   parser.add_argument('--windows', type=int, default=32,
                       help='state-check: windows compared with the continuous path')
+  parser.add_argument('--window-start', default='zero', choices=['zero', 'carry'],
+                      help='windows start from the zero market state (with the loss burn-in) '
+                           'or from the causal market carry: train-outcome, train-policy and '
+                           'train-value read it from --carry-root; state-check from '
+                           '--carry-root (the store of its --corpus contract) or else from '
+                           'the continuous path')
+  parser.add_argument('--carry-root', default=None,
+                      help='MarketCarry stores <root>/<contract>/ (market-carry writes them)')
+  parser.add_argument('--seed-offset', type=int, default=0,
+                      help='state-check: policy seeds of the windows shifted from the path')
   parser.add_argument('--cf-boost', type=float, default=16.,
                       help='train-value: sampling weight of a fork row with a valid branch')
   parser.add_argument('--beta-q', type=float, default=None,
@@ -781,16 +850,48 @@ def main(argv=None):
     return
   if args.command == 'state-check':
     from .value import window_check
+    store = None
+    if args.carry_root:
+      if args.window_start != 'carry':
+        parser.error('state-check reads --carry-root only with --window-start carry')
+      store = Path(args.carry_root) / corpus_sources([_one(args.corpus, '--corpus')])[0]['contract']
     report = window_check(args.policy, args.collection, args.windows, args.batch_length,
-                          args.seed, args.device)
+                          args.seed, args.device, args.window_start, args.seed_offset, store)
     out = Path(args.out or Path(args.collection) / 'state_check.json')
     out.write_text(json.dumps(report, indent=1))
     print(json.dumps({k: v for k, v in report.items() if k != 'windows_detail'}, indent=1))
+    return
+  if args.command == 'market-carry':
+    if not args.corpus or not args.out:
+      parser.error('market-carry needs --corpus and --out')
+    if args.policy:
+      agent, _ = load_policy(args.policy, args.device)
+      source = dict(policy=str(Path(args.policy).resolve()))
+    elif args.run:
+      # The student as the run holds it (its latest checkpoint, else its
+      # init source); nothing of the run is written.
+      agent = build(args.run, args.preset, args.device or 'cuda', args.init_f1, args.init_from,
+                    args.migrate, record=False, batch_size=1, batch_length=1)
+      source = dict(run=str(Path(args.run).resolve()), checkpoint=str(latest(args.run) or ''),
+                    init_from=args.init_from, init_f1=args.init_f1)
+    else:
+      parser.error('market-carry needs --policy or --run')
+    counter = int(agent.n_actions)
+    for folder in args.corpus:
+      market_carry(agent, TSCorpus(folder, behaviors=[LABEL_ACCOUNT]), args.out, source, counter)
     return
   if not args.run:
     parser.error(f'{args.command} needs --run')
   stage = {'train-market': 'L1', 'train-outcome': 'L2', 'train-policy': 'L3',
            'train-value': 'L4'}.get(args.command, 'L1')
+  carry_root = None
+  if args.window_start == 'carry' and args.command in ('train-outcome', 'train-policy',
+                                                       'train-value'):
+    if not args.carry_root:
+      parser.error('--window-start carry needs --carry-root')
+    carry_root = args.carry_root
+  elif args.window_start == 'carry' and args.command == 'train-market':
+    parser.error('L1 trains the market brain: its windows cannot start from a stored carry')
   updates, anchor = {'agent.ts.stage': stage}, None
   if args.command == 'freeze' and args.beta_q is not None:
     anchor = value_anchor(args)
@@ -809,18 +910,20 @@ def main(argv=None):
     if not sources:
       parser.error(f'{args.command} needs --corpus')
     accounts = None if stage == 'L1' else [LABEL_ACCOUNT]
-    corpora = [TSCorpus(c, behaviors=accounts) for c in args.corpus]
+    corpora = [TSCorpus(c, behaviors=accounts, carry_root=carry_root) for c in args.corpus]
     kw = dict(mix=args.mix, holdout=args.holdout, accounts=accounts)
+    # Windows that start from the stored carry need no burn-in.
     if stage == 'L2':
-      kw.update(weight='outcome', burnin=ts.outcome_burnin)
+      kw.update(weight='outcome', burnin=0 if carry_root else ts.outcome_burnin)
     elif stage == 'L3':
-      kw.update(weight='demo', burnin=ts.demo_burnin)
+      kw.update(weight='demo', burnin=0 if carry_root else ts.demo_burnin)
     train = MultiCorpusWindows(corpora, split='train', seed=seed,
                                demo_balance=args.demo_balance, **kw)
     held = MultiCorpusWindows(corpora, split='eval', demo_weights=train.demo_weights, **kw) \
         if args.holdout and stage != 'L1' else None
     report = dict(corpora=[s['contract'] for s in sources], corpus_folders=args.corpus,
                   mix=args.mix, holdout=args.holdout, diagnostic=diagnostic,
+                  window_start='carry' if carry_root else 'zero', carry_root=carry_root,
                   rows={c: p.hi - p.lo for c, p in zip(train.contracts, train.parts)}, eval=[])
     constant = None
     if stage == 'L2':
@@ -838,13 +941,15 @@ def main(argv=None):
     from .value import MultiQWindows
     if not args.cf:
       parser.error('train-value needs --cf')
-    kw = dict(holdout=args.holdout, burnin=ts.q_burnin, mix=args.mix)
+    kw = dict(holdout=args.holdout, burnin=0 if carry_root else ts.q_burnin, mix=args.mix,
+              carry_root=carry_root)
     train = MultiQWindows(args.cf, 'train', cf_boost=args.cf_boost, seed=seed, **kw)
     held = MultiQWindows(args.cf, 'eval', **kw) if args.holdout else None
     constant = train.constant()
     report = {'cf': [str(c) for c in args.cf], 'policy': train.policy,
               'contracts': train.contracts, 'mix': args.mix, 'holdout': args.holdout,
-              'diagnostic': diagnostic, 'cf_boost': args.cf_boost, 'constant': constant,
+              'diagnostic': diagnostic, 'window_start': 'carry' if carry_root else 'zero',
+              'carry_root': carry_root, 'cf_boost': args.cf_boost, 'constant': constant,
               'train_pairs': train.pair_counts(), 'eval_pairs': held and held.pair_counts(),
               'eval': []}
     print('Q targets', {k: report[k] for k in ('constant', 'train_pairs', 'eval_pairs')})

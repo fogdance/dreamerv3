@@ -1,11 +1,17 @@
 # Thinking Student V1 formal training on every TRAIN contract (C4).
-# Authorized by the user on 2026-10-23 for the foundation L1 and L2 only:
+# Authorized by the user: on 2026-10-23 the foundation L1 and L2
+# (pretrain --until L2); on 2026-10-24, after the C4 review R3 state-check,
+# L3 with these 64-row windows and 16-row burn-in, pi_0000, and round 1 with
+# L4 after a small-sample Q state check (PLAN_C4_20261023.md 5):
 #
 #   cd gym-trading-env && env PYTHONPATH=.:src:../dreamerv3 \
 #     /home/v/miniconda3/envs/dreamerv3/bin/python -m dreamerv3.thinking_student.formal_train \
-#     pretrain --config ../dreamerv3/configs/thinking_student/formal_v1.yaml --until L2
+#     pretrain --config ../dreamerv3/configs/thinking_student/formal_v1.yaml
 #
-# L3 (policy_updates), pi_0000 and the rounds wait for the next decision.
+# This run's pi_0000 moved ADD decisions in its zero-carry windows (state-check,
+# 2026-10-24). Training continues from its ckpt 22000 in formal_v1_carry.yaml;
+# round 1 here was not run.
+#
 # Budgets from the size50m speeds on the 18 corpora (FORMAL_TRAINING_IMPLEMENTATION.md):
 # one update takes 0.20 s in L1 and 0.10 s in L2 at batch 8 and 16 alike.
 
@@ -36,7 +42,7 @@ student:
 foundation:
   market_updates: 10000   # L1: ~21 passes over the 488k TRAIN rows, ~35 min
   outcome_updates: 12000  # L2: ~20 passes over ~450k labelled rows, ~20 min
-  policy_updates: 12000   # L3: not run by --until L2
+  policy_updates: 12000   # L3: 0.11 s/update, ~22 min
   save_every: 1000        # 388 MB per checkpoint
   holdout: 0
 

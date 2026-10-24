@@ -21,10 +21,16 @@ while L1 reads every account for the held account states.
 
 Formal training (C4 2) reads several TRAIN contracts at once: `discover`
 lists the corpora of one root, MultiCorpusWindows mixes their windows.
+
+A window starts from the zero market state with a loss burn-in, or, given a
+MarketCarry store of its contract, from the causal market carry the policy
+holds at its first cursor on the continuous path (user decision 2026-10-24
+after C4 review R3: zero-carry windows moved pi_0000's ADD decisions).
 """
 import json
 from pathlib import Path
 
+import ml_dtypes  # noqa: F401 (numpy knows the bfloat16 carry dtype)
 import numpy as np
 
 from gym_trading_env.research import ts_v1_corpus as C
@@ -34,21 +40,68 @@ from . import labels as L
 ACCOUNT_KEYS = ('position_state', 'action_mask', 'account_native', 'is_last',
                 'is_terminal')
 LABEL_ACCOUNT = 'P0'
+CARRY_KEYS = ('deter', 'stoch')
+
+
+class MarketCarry:
+  """The causal market carry of one contract (run.market_carry): row t holds
+  the market RSSM state the policy has before the minute of cursor t on its
+  continuous path from the first market minute. It holds for every policy
+  with the same market brain and policy seed counter: the market brain never
+  reads the account or the actions, and L2-L5 never train it. Windows read
+  it under the keys 'carry/deter' and 'carry/stoch' (memory-mapped)."""
+
+  def __init__(self, folder):
+    self.folder = Path(folder)
+    self.meta = json.loads((self.folder / 'meta.json').read_text())
+    dtype = np.dtype(self.meta['dtype'])
+    self.arrays = {k: np.load(self.folder / f'{k}.npy', mmap_mode='r').view(dtype)
+                   for k in CARRY_KEYS}
+
+  @staticmethod
+  def write(folder, arrays, meta):
+    """The arrays as raw bits (numpy has no bfloat16 file format), then
+    meta.json last: a folder with a meta.json holds a whole store."""
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    for k in CARRY_KEYS:
+      bits = arrays[k].view(np.dtype(f'u{arrays[k].dtype.itemsize}'))
+      np.save(folder / f'{k}.npy', bits)
+    tmp = folder / 'meta.json.tmp'
+    tmp.write_text(json.dumps(dict(meta, dtype=str(arrays['deter'].dtype)), indent=1))
+    tmp.rename(folder / 'meta.json')
+
+  def at(self, cursors):
+    """{'carry/<key>': [len(cursors), ...]}: the carry before each cursor."""
+    cursors = np.asarray(cursors)
+    return {f'carry/{k}': np.asarray(v[cursors]) for k, v in self.arrays.items()}
+
+
+def pop_carry(data):
+  """The 'carry/*' arrays of a batch of windows ({} when they start from the
+  zero state), removed from `data` so the rest matches the agent's inputs."""
+  return {k.split('/', 1)[1]: data.pop(k) for k in list(data) if k.startswith('carry/')}
 
 
 class TSCorpus:
   """One contract's teaching material, loaded once and shared by windows.
   The market arrays (most of the material) are memory-mapped: windows read
   their rows, and many contracts share the page cache instead of each
-  holding a full copy (C4 2.1)."""
+  holding a full copy (C4 2.1). `carry_root` holds the contract's
+  MarketCarry: its windows then start from the causal market carry."""
 
-  def __init__(self, folder, behaviors=None):
+  def __init__(self, folder, behaviors=None, carry_root=None):
     self.folder = Path(folder)
     self.source = json.loads((self.folder / 'source.json').read_text())
     self.market = C.load_arrays(self.folder / 'market', mmap='r')
     rows = self.source['rows']
     for k in C.MARKET_KEYS:
       _table_check(f'market/{k}', self.market[k], rows)
+    self.carry = None
+    if carry_root is not None:
+      self.carry = MarketCarry(Path(carry_root) / self.source['contract'])
+      for k, v in self.carry.arrays.items():
+        _table_check(f'carry/{k}', v, rows)
     facts = C.load_arrays(self.folder / 'facts')
     self.outcome = L.outcome_labels(facts, C.KINDS)
     self.demo_action, self.demo_valid = L.demo_labels(
@@ -158,7 +211,10 @@ class CorpusWindows:
   them) separate one late market period; split='all' (or holdout=0) uses every cursor.
   A window starts from the zero market state (is_first) like the policy at
   the first market minute: an encoder warm-up on a slice of one continuous trace,
-  not a data break; its first `burnin` rows carry no label loss.
+  not a data break; its first `burnin` rows carry no label loss. With the
+  corpus' MarketCarry it starts instead from the stored causal carry at its
+  first cursor ('carry/*', is_first only at the first market minute), and no
+  row needs a burn-in.
   weight='outcome' / 'demo' samples windows in proportion to their labelled
   rows after the burn-in, weight=None uniformly. `accounts` selects the
   behavior accounts (default: all). Demonstrations carry class weights
@@ -228,7 +284,11 @@ class CorpusWindows:
           action == 1, self.demo_weights[1], self.demo_weights[0]), 0.).astype(np.float32)
       rows.append(data)
     data = {k: np.stack([r[k] for r in rows]) for k in rows[0]}
-    data['is_first'][:, 0] = True
+    if self.corpus.carry is None:
+      data['is_first'][:, 0] = True
+    else:
+      data.update(self.corpus.carry.at(
+          [self.corpus.behaviors[name]['cursor'][start] for name, start in windows]))
     return data
 
   def _pick(self, batch, length):

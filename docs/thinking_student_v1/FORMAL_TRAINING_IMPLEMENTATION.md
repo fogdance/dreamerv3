@@ -240,6 +240,37 @@ S5（L6：`ready_at` 反馈与课程循环）未实现。每轮在 `run_state.js
      - 从 ckpt 22000 开一个新 run，用 128 行窗口、64 行预热重训 L3（约 40 分钟）。L3 只训练 `decision` 参数组，市场脑不动，L1/L2 不受影响。这需要给 L3 单独配置窗口长度和预热。
      - 让 L3/L4/L5 的窗口从连续路径上的真实状态起步。L3 期间市场脑冻结，所以这样做是精确的，但需要开发。
 
+## 训练窗口继承连续市场 carry（用户决定 2026-10-24 第 4 条）
+
+- **依据：** 按 64 行窗口、16 行预热训练出的 `pi_0000`（`FORMAL_V1_20261024`），在 FG005 上用零状态开 1000 个 64 行窗口：
+  - 合法行翻转率 1.07%；
+  - 窗口内 ADD 240 次，连续路径 99 次；WAIT→ADD 148 次，ADD→WAIT 7 次。
+  - 偏差是单向的，ADD/WAIT 决策受到显著影响，详见 TODO D-3。
+  - 改为从连续路径的 carry 开窗、换一组策略种子之后：窗口 ADD 140 次，翻转率 0.72%，剩下的是随机隐变量的采样噪声。
+- **做法：** 不加长窗口，也不重训 L1/L2。
+  - **MarketCarry 存储：** `run.py market-carry` 让学生从合约第一分钟连续读完整条教材，记录每个游标之前的市场 RSSM carry，写到 `<root>/<合约>/`：
+    - `deter.npy`、`stoch.npy` 按 bf16 原始位存储，读取时内存映射；
+    - `meta.json` 最后写入，有它才算完整。
+  - **为什么一份存储够用：** 市场脑只读市场观测和 `is_first`，不读账户和动作；L2–L5 不训练它。所以 L1 之后的一份存储就是此后每个 `pi_k` 部署时的市场记忆。策略种子计数器同为 0，在同一设备和精度下逐位相同。
+  - **训练窗口：** 使用 `--window-start carry --carry-root ROOT`：
+    - L2/L3 的 `TSCorpus` 和 L4 的 `MultiQWindows` 给每个窗口附上首游标的 carry（`carry/deter`、`carry/stoch`），`train_stage` 和 `evaluate` 从这份 carry 起步；
+    - `is_first` 只在合约第一分钟为真；不需要预热，burn-in 为 0，64 行都计损失；
+    - L1 训练市场脑，所以拒绝 carry 开窗。
+  - **state-check：** 带上 `--window-start carry --carry-root ROOT --corpus C` 后，窗口从存储的 carry 起步，与训练一致，并报告 `store_vs_path_max_abs_diff`，即存储与部署路径 carry 的最大差。报告新增 `mean_diff`：在全部行上计算的有符号偏差。
+  - **编排：** `student.window_start: carry` 时，
+    - `pretrain` 在 L2 或 L3 开训之前补齐所有合约的存储（`carry_parallel` 个进程并行）；
+    - 已有存储时，再给 L1 加预算会被拒绝；
+    - L2–L5 和每轮的 state-check 都传入 carry 参数；`iterate` 只补算缺少的存储。
+  - 测试（`test_ts_v1_c4.py`）覆盖：
+    - 存储等于正式采集路径上的 carry：同种子时窗口完全复现路径，`--run` 与 `--policy` 两种来源写出相同的存储，且不写入 run；
+    - 窗口附带正确的起点 carry；
+    - carry 开窗时 L3 只改 `decision`、L4 只改 `value`；
+    - 编排在 L3 之前生成存储，state-check 读取存储且与路径差 0，L4 收到 carry 参数。
+- **配置与运行：** `formal_v1_carry.yaml`，run 根目录 `FORMAL_V1_CARRY_20261024`。
+  - `init_from` 为 `FORMAL_V1_20261024` 的 ckpt 22000：L1/L2 原样继承，预算为 0；L3 12,000 次。
+  - 脚本 `formal_carry_r1.sh`：存储 → L3 → `pi_0000` → 考试 → 第 1 轮到 CF → 诊断。诊断包括 `pi_0000` 在 FG005 上的 carry state-check，以及试跑 L4 加 Q 小样检查。
+  - 原 `FORMAL_V1_20261024` 的零状态 `pi_0000` 保留不动，它的第 1 轮没有运行。
+
 ## 可恢复的 Checkpoint 与策略
 
 | 位置 | 内容 |

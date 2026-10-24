@@ -23,6 +23,11 @@ evaluate  the Teacher-free exam of a frozen policy: DEV on the VALIDATION rows
 run       pretrain, then iterate.
 status    progress read from the disk (writes nothing).
 
+student.window_start 'carry' starts the L2-L5 windows from the causal
+market carry of the continuous path (market_carry/<contract>/, computed
+once before L2 or L3 from the market brain after L1, which no later stage
+trains) instead of the zero state with a loss burn-in.
+
 Every step runs an existing command in its own process (logs/). A rerun
 continues from the disk: a stage trains its budget minus its recorded
 progress, a finished collection or CF of the same frozen policy is kept, a
@@ -53,14 +58,17 @@ DEFAULTS = dict(
     paths=dict(markets=None, corpus_root=None, run_root=None, init_f1=None, init_from=None),
     corpora=dict(contracts='discover', mix='uniform_contract'),
     dev=dict(contracts=[]),
+    # window_start 'carry': L2-L5 windows start from the run's MarketCarry
+    # stores (market_carry/, carry_parallel processes compute them).
     student=dict(preset='size50m', device='cuda', seed=0, batch_size=8, batch_length=64,
-                 log_every=100),
+                 log_every=100, window_start='zero', carry_parallel=1),
     foundation=dict(market_updates=0, outcome_updates=0, policy_updates=0, save_every=0,
                     holdout=0, demo_balance=1.0),
     iteration=dict(max_rounds=0, contracts=None, contracts_per_round=2, parallel_contracts=1,
                    cf_wait_forks=None, cf_workers=1, cf_max_steps=8192, value_updates=0,
                    prior_refresh_updates=0, cf_boost=16.0, save_every=0, holdout=0,
-                   beta_q=1.0, kappa_q='auto', kappa_floor=None, state_check_windows=0),
+                   beta_q=1.0, kappa_q='auto', kappa_floor=None, state_check_windows=0,
+                   state_check_seed_offset=0),
     evaluation=dict(random_seeds=5, smoke_contracts=2, smoke_steps=6000),
 )
 FOUNDATION = (('train-market', 'L1', 'market_updates'), ('train-outcome', 'L2', 'outcome_updates'),
@@ -91,6 +99,8 @@ def load_config(path):
     raise ValueError(f'{path}: give paths.init_f1 or paths.init_from, not both')
   if config['dev']['contracts'] and not paths['markets']:
     raise ValueError(f'{path}: dev.contracts needs paths.markets')
+  if config['student']['window_start'] not in ('zero', 'carry'):
+    raise ValueError(f'{path}: student.window_start is zero or carry')
   return config
 
 
@@ -101,6 +111,7 @@ class Layout:
     self.root = Path(root)
     self.foundation, self.policies = self.root / 'foundation', self.root / 'policies'
     self.state, self.logs = self.root / 'run_state.json', self.root / 'logs'
+    self.carry = self.root / 'market_carry'
 
   def policy(self, k):
     return self.policies / f'pi_{k:04d}'
@@ -191,6 +202,27 @@ def _corpus_args(folders):
   return [a for f in folders for a in ('--corpus', f)]
 
 
+def _windows(cfg, lay):
+  """Where L2-L5 windows start: the zero state, or the run's MarketCarry."""
+  return (['--window-start', 'carry', '--carry-root', lay.carry]
+          if cfg['student']['window_start'] == 'carry' else [])
+
+
+def _market_carry(cfg, lay, contracts, source):
+  """The MarketCarry store of each contract that has none yet (meta.json is
+  written last), computed by `source`: ['--run', foundation, *init] or
+  ['--policy', pi_k]. L2-L5 never train the market brain, so the stores of
+  the market brain after L1 serve every later stage and round."""
+  if cfg['student']['window_start'] != 'carry':
+    return
+  s = cfg['student']
+  _call_many([('run', ['market-carry', *source, '--corpus', folder, '--out', lay.carry,
+                       '--preset', s['preset'], '--device', s['device']],
+               lay.log(f'market_carry_{c}'))
+              for c, folder in contracts.items() if not (lay.carry / c / 'meta.json').exists()],
+             s['carry_parallel'])
+
+
 def _frozen(policy):
   return (Path(policy) / 'policy.json').exists()
 
@@ -255,13 +287,19 @@ def pretrain(cfg, lay, state, until=None):
     left = f[key] - done[stage]
     if left > 0:
       later = [s for _, s, _ in FOUNDATION[i + 1:] if done[s]] + [pi0.name] * _frozen(pi0)
+      if stage == 'L1' and any(lay.carry.glob('*/meta.json')):
+        later.append(lay.carry.name)
       if later:
         raise ValueError(f'foundation {stage} has {left} updates left, but {", ".join(later)} '
                          'already stands on it: a raised budget needs a new run')
+      windows = [] if stage == 'L1' else _windows(cfg, lay)
+      if windows:
+        _step(lay, state, step='market_carry')
+        _market_carry(cfg, lay, contracts, ['--run', lay.foundation, *init])
       _step(lay, state, step=stage)
       _call('run', [command, '--run', lay.foundation, *init, *corpora, '--updates', left,
                     '--save-every', f['save_every'], '--holdout', f['holdout'],
-                    '--demo-balance', f['demo_balance'], *_student(cfg)],
+                    '--demo-balance', f['demo_balance'], *windows, *_student(cfg)],
             lay.log(f'foundation_{stage}'))
     if stage == until:
       ckpt = latest(lay.foundation)
@@ -357,13 +395,18 @@ def iterate(cfg, lay, state, rounds, until=None):
     rec['cf'] = {c: {k: v for k, v in _read(out / 'meta.json').items()
                      if k in ('counts', 'valid_pairs', 'forks', 'delta_g', 'seconds')}
                  for c, out in cf.items()}
+    # Missing stores only (pretrain made them; pi_k keeps the foundation's
+    # market brain): the state-check, L4 and the L5 refresh read them.
+    _market_carry(cfg, lay, contracts, ['--policy', policy])
     if it['state_check_windows']:
       check = collect[usable[0]] / 'state_check.json'
       if not check.exists():
         _step(lay, state, step='state_check')
         _call('run', ['state-check', '--policy', policy, '--collection', collect[usable[0]],
                       '--out', check, '--windows', it['state_check_windows'],
-                      '--batch-length', s['batch_length'], '--seed', s['seed']],
+                      '--batch-length', s['batch_length'], '--seed', s['seed'],
+                      '--seed-offset', it['state_check_seed_offset'], '--corpus',
+                      contracts[usable[0]], *_windows(cfg, lay)],
               lay.log(f'r{r:03d}_state_check'))
     if until == 'cf':
       _step(lay, state, step='cf_done')
@@ -372,7 +415,7 @@ def iterate(cfg, lay, state, rounds, until=None):
     # B4: L4 on the Q^{pi_k} targets only; B5: the S4 prior refresh.
     learner, targets = lay.learner(r), [a for out in cf.values() for a in ('--cf', out)]
     common = ['--run', learner, '--init-from', policy, '--save-every', it['save_every'],
-              '--holdout', it['holdout'], *_student(cfg)]
+              '--holdout', it['holdout'], *_windows(cfg, lay), *_student(cfg)]
     left = it['value_updates'] - progress(learner)['L4']
     if left > 0:
       _step(lay, state, step='L4')
@@ -450,6 +493,7 @@ def status(cfg, lay):
              foundation=dict(progress=progress(lay.foundation),
                              latest=str(latest(lay.foundation) or '')),
              policies={p.name: _frozen(p) for p in sorted(lay.policies.glob('pi_*'))},
+             market_carry=sorted(m.parent.name for m in lay.carry.glob('*/meta.json')),
              experience={}, learners={}, exams={})
   for folder in sorted((lay.root / 'experience').glob('pi_*')):
     out['experience'][folder.name] = dict(

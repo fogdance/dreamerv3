@@ -51,7 +51,7 @@ def pik(two, tmp_path_factory):
   agent = small(root / 'agent')
   ts_run.save(agent, root / 'run')
   policy = ts_run.freeze(agent, root / 'run', 'pik', 'small', list(two), out=root / 'pik')
-  out = dict(policy=policy, collect={}, cf={})
+  out = dict(policy=policy, run=root / 'run', collect={}, cf={})
   for corpus, name in zip(two, CONTRACTS):
     loaded, _ = ts_run.load_policy(policy, **QUIET)
     out['collect'][name], out['cf'][name] = root / 'collect' / name, root / 'cf' / name
@@ -61,15 +61,26 @@ def pik(two, tmp_path_factory):
   return out
 
 
-def in_process(calls, fail=None):
+@pytest.fixture(scope='module')
+def stores(pik, two, tmp_path_factory):
+  """MarketCarry stores of both contracts, computed by the frozen pik."""
+  root = tmp_path_factory.mktemp('ts_c4_carry')
+  ts_run.main(['market-carry', '--policy', str(pik['policy']), '--corpus', str(two[0]),
+               '--corpus', str(two[1]), '--out', str(root), '--device', 'cpu'])
+  return root
+
+
+def in_process(calls, fail=None, argvs=None):
   """formal_train._call without a subprocess; the first call of `fail` (a
-  run.py command or the exam module) fails."""
+  run.py command or the exam module) fails. `argvs` collects the arguments."""
   failed = set()
 
   def call(module, argv, log):
     argv = [str(a) for a in argv]
     name = argv[0] if module == 'run' else module
     calls.append(name)
+    if argvs is not None:
+      argvs.append(argv)
     if name == fail and fail not in failed:
       failed.add(fail)
       raise RuntimeError(f'{fail} failed')
@@ -334,10 +345,124 @@ def test_state_check_counts_action_flips_on_legal_rows_only():
   assert (r['by_position']['0-4']['legal_rows'], r['by_position']['0-4']['flips']) == (5, 3)
   diff = np.abs(z_short - z_cont)[:, 1:]
   assert r['after_burnin']['z']['in_std'] == pytest.approx(diff.mean() / z_cont[:, 1:].std())
+  # The signed bias counts every row, masked ones too.
+  bias = (z_short - z_cont)[:, 1:].mean()
+  assert r['after_burnin']['z']['mean_diff'] == pytest.approx(bias)
+  assert r['after_burnin']['z']['mean_diff_in_std'] == pytest.approx(bias / z_cont[:, 1:].std())
+  assert r['by_position']['0-4']['mean_diff']['z'] == pytest.approx((z_short - z_cont).mean())
   assert r['after_burnin']['delta_q']['in_std'] is None
   assert V.position_bins(64) == [(0, 16), (16, 32), (32, 48), (48, 64)]
   assert V.position_bins(1024)[3:] == [(48, 64), (64, 128), (128, 256), (256, 512), (512, 1024)]
   assert V.position_bins(4) == [(0, 4)]
+
+
+def test_state_check_from_the_continuous_carry_repeats_the_path(pik):
+  """Windows that start from the continuous path's own market carry, with
+  its policy seeds, repeat the path exactly; from the zero state they do not
+  (C4 review R3, item 4 of the user decision)."""
+  collection = pik['collect'][CONTRACTS[0]]
+  check = dict(windows=4, length=T, device='cpu', **QUIET)
+  exact = V.window_check(pik['policy'], collection, start='carry', **check)
+  assert (exact['start'], exact['seed_offset']) == ('carry', 0)
+  assert exact['control_max_abs_diff'] == exact['control_action_flips'] == 0
+  assert all(v['max_abs_diff'] == 0 for v in exact['after_burnin'].values())
+  assert all(b['flips'] == 0 for b in exact['by_position'].values())
+  zero = V.window_check(pik['policy'], collection, **check)
+  assert max(v['max_abs_diff'] for v in zero['after_burnin'].values()) > 0
+  other = V.window_check(pik['policy'], collection, start='carry', seed_offset=1000, **check)
+  assert other['seed_offset'] == 1000 and other['windows'] == 4
+
+
+def test_market_carry_store_is_the_deployed_market_memory(pik, two, stores, tmp_path):
+  """The store of a contract holds, before each cursor, the market carry of
+  the formal collection: windows that start from it with the path's policy
+  seeds repeat the path exactly and need no burn-in. The student of a run
+  (its latest checkpoint) writes the same store and leaves the run as it was."""
+  store = TC.MarketCarry(stores / CONTRACTS[0])
+  corpus = TC.TSCorpus(two[0], behaviors=[TC.LABEL_ACCOUNT])
+  assert store.meta['rows'] == corpus.rows == len(store.arrays['deter'])
+  assert store.meta['source'] == dict(policy=str(Path(pik['policy']).resolve()))
+  agent, _ = ts_run.load_policy(pik['policy'], **QUIET)
+  zero = agent.init_policy(1)['market']
+  for k in TC.CARRY_KEYS:
+    np.testing.assert_array_equal(store.arrays[k][0], np.asarray(zero[k][0]))
+  # Both contracts of the one market-carry call: each starts from the zero
+  # state and the policy's own seed counter, like its collection.
+  check = dict(windows=4, length=T, device='cpu', start='carry', **QUIET)
+  for name in CONTRACTS:
+    exact = V.window_check(pik['policy'], pik['collect'][name], store=stores / name, **check)
+    assert exact['store_vs_path_max_abs_diff'] == 0 and exact['burnin'] == 0, name
+    assert exact['control_max_abs_diff'] == exact['actions']['flips'] == 0, name
+    assert all(v['max_abs_diff'] == 0 for v in exact['after_burnin'].values()), name
+    assert TC.MarketCarry(stores / name).meta['seed_counter'] == 0
+  # Other policy seeds write another causal memory, not the deployed one.
+  ts_run.market_carry(agent, TC.TSCorpus(two[1], behaviors=[TC.LABEL_ACCOUNT]), tmp_path / 'seeds',
+                      {}, counter=5, **QUIET)
+  off = V.window_check(pik['policy'], pik['collect'][CONTRACTS[1]],
+                       store=tmp_path / 'seeds' / CONTRACTS[1], **check)
+  assert off['store_vs_path_max_abs_diff'] > 0
+  collection = pik['collect'][CONTRACTS[0]]
+  with pytest.raises(ValueError, match='store'):
+    V.window_check(pik['policy'], collection, store=stores / CONTRACTS[0], windows=4, length=T,
+                   device='cpu', **QUIET)
+  run, before = pik['run'], files(pik['run'])
+  ts_run.main(['market-carry', '--run', str(run), '--preset', 'small', '--device', 'cpu',
+               '--corpus', str(two[0]), '--out', str(tmp_path)])
+  assert files(run) == before
+  again = TC.MarketCarry(tmp_path / CONTRACTS[0])
+  assert again.meta['source']['run'] == str(run.resolve())
+  for k in TC.CARRY_KEYS:
+    np.testing.assert_array_equal(again.arrays[k], store.arrays[k])
+
+
+def test_windows_start_from_the_stored_carry(pik, two, stores):
+  """Corpus and Q windows bring the stored carry of their first cursor;
+  is_first marks only the first market minute."""
+  corpora = [TC.TSCorpus(c, behaviors=[TC.LABEL_ACCOUNT], carry_root=stores) for c in two]
+  windows = TC.MultiCorpusWindows(corpora, holdout=0, seed=0, weight='demo', burnin=0,
+                                  accounts=[TC.LABEL_ACCOUNT])
+  part = windows.parts[0]
+  data = part._stack([(TC.LABEL_ACCOUNT, 0), (TC.LABEL_ACCOUNT, 5)], T)
+  store = corpora[0].carry
+  cursors = corpora[0].behaviors[TC.LABEL_ACCOUNT]['cursor'][[0, 5]]
+  for k in TC.CARRY_KEYS:
+    np.testing.assert_array_equal(data[f'carry/{k}'], store.arrays[k][cursors])
+  assert data['is_first'][:, 0].tolist() == [True, False] and not data['is_first'][:, 1:].any()
+  data = windows.sample(4, T)
+  for b, (contract, name, start) in enumerate(windows.last):
+    corpus = corpora[CONTRACTS.index(contract)]
+    cursor = corpus.behaviors[name]['cursor'][start]
+    np.testing.assert_array_equal(data['carry/deter'][b], corpus.carry.arrays['deter'][cursor])
+    assert data['is_first'][b, 0] == (cursor == 0)
+  q = V.MultiQWindows([pik['cf'][c] for c in CONTRACTS], 'train', holdout=0, carry_root=stores)
+  part = q.parts[1]
+  data = part._stack([0, 3], T)
+  for k in TC.CARRY_KEYS:
+    np.testing.assert_array_equal(data[f'carry/{k}'], part.carry.arrays[k][part.cursor[[0, 3]]])
+  assert data['is_first'][:, 0].tolist() == [True, False] and not data['is_first'][:, 1:].any()
+  carry = ts_run.pop_carry(data)
+  assert set(carry) == set(TC.CARRY_KEYS) and not any(k.startswith('carry/') for k in data)
+
+
+def test_carry_windows_train_only_their_stage(pik, two, stores, tmp_path):
+  args = ['--preset', 'small', '--device', 'cpu', '--batch-size', '2', '--batch-length', str(T),
+          '--holdout', '0', '--window-start', 'carry', '--carry-root', str(stores)]
+  corpora = ['--corpus', str(two[0]), '--corpus', str(two[1])]
+  run = tmp_path / 'run'
+  ts_run.main(['train-policy', '--run', str(run), '--init-from', str(pik['policy']), *corpora,
+               '--updates', '2', *args])
+  report = json.loads((ts_run.latest(run) / 'train_policy.json').read_text())
+  assert (report['window_start'], report['carry_root']) == ('carry', str(stores))
+  assert changed_groups(params(pik['policy']), params(ts_run.latest(run))) == {'decision'}
+  before = params(ts_run.latest(run))
+  q = [a for c in CONTRACTS for a in ('--cf', str(pik['cf'][c]))]
+  ts_run.main(['train-value', '--run', str(run), *q, '--updates', '2', *args])
+  report = json.loads((ts_run.latest(run) / 'train_value.json').read_text())
+  assert report['window_start'] == 'carry'
+  assert changed_groups(before, params(ts_run.latest(run))) == {'value'}
+  for command, extra in (('train-market', []), ('train-policy', ['--carry-root', ''])):
+    with pytest.raises(SystemExit):
+      ts_run.main([command, '--run', str(tmp_path / 'no'), *corpora, *args, *extra])
 
 
 def test_orchestrator_rounds_resume_from_the_disk(two, tmp_path, monkeypatch):
@@ -443,6 +568,60 @@ def test_orchestrator_rounds_resume_from_the_disk(two, tmp_path, monkeypatch):
   assert files(lay.root) == before
   assert report['policies'] == {'pi_0000': True, 'pi_0001': True}
   assert report['learners']['pi_0001'] == {'L1': 0, 'L2': 0, 'L3': 2, 'L4': 2}
+
+
+def test_orchestrator_starts_windows_from_the_market_carry(pik, two, tmp_path, monkeypatch):
+  """student.window_start carry (user decision 2026-10-24, item 4) with L1
+  and L2 inherited: the stores of every contract come before L3, L3 and the
+  round's L4 read them, and the round's state-check starts from them. The
+  stores of the foundation are pi_0000's deployed market memory."""
+  root = tmp_path / 'corpora'
+  root.mkdir()
+  for folder, name in zip(two, CONTRACTS):
+    (root / name).symlink_to(folder)
+  config = tmp_path / 'carry.yaml'
+  config.write_text(yaml.safe_dump(dict(
+      paths=dict(corpus_root='corpora', run_root='run', init_from=str(pik['run'])),
+      student=dict(preset='small', device='cpu', seed=1, batch_size=2, batch_length=T,
+                   log_every=1, window_start='carry'),
+      foundation=dict(policy_updates=1, save_every=1),
+      iteration=dict(max_rounds=1, cf_wait_forks=1, value_updates=1, state_check_windows=2,
+                     state_check_seed_offset=7),
+      evaluation=dict(random_seeds=1, smoke_steps=20))))
+  lay = FT.Layout(tmp_path / 'run')
+  calls, argvs = [], []
+  monkeypatch.setattr(FT, '_call', in_process(calls, argvs=argvs))
+  FT.main(['pretrain', '--config', str(config)])
+  assert calls == ['market-carry', 'market-carry', 'train-policy', 'freeze', 'exam', 'exam']
+  assert ['--window-start', 'carry', '--carry-root', str(lay.carry)] == [
+      a for a in argvs[2] if a in ('--window-start', 'carry', '--carry-root', str(lay.carry))]
+  assert sorted(p.parent.name for p in lay.carry.glob('*/meta.json')) == CONTRACTS
+  report = json.loads((ts_run.latest(lay.foundation) / 'train_policy.json').read_text())
+  assert report['window_start'] == 'carry' and report['carry_root'] == str(lay.carry)
+  assert FT.status(FT.load_config(config), lay)['market_carry'] == CONTRACTS
+  # A store stands on L1 like the later stages do.
+  raised = tmp_path / 'raised.yaml'
+  raised.write_text(config.read_text().replace('policy_updates: 1', 'policy_updates: 1\n  '
+                                               'market_updates: 1'))
+  with pytest.raises(ValueError, match='market_carry already stands on it'):
+    FT.main(['pretrain', '--config', str(raised)])
+
+  calls.clear()
+  FT.main(['iterate', '--config', str(config), '--until', 'cf'])
+  assert calls == ['collect', 'collect', 'check', 'check', 'cf', 'cf', 'state-check']
+  check = json.loads((lay.experience(lay.policy(0), 'collect', CONTRACTS[0])
+                      / 'state_check.json').read_text())
+  assert (check['start'], check['seed_offset'], check['burnin']) == ('carry', 7, 0)
+  assert check['store'] == str(lay.carry / CONTRACTS[0])
+  assert check['store_vs_path_max_abs_diff'] == 0
+  assert check['replay_vs_record_max_abs_diff'] == 0
+  calls.clear()
+  monkeypatch.setattr(FT, '_call', in_process(calls, fail='train-value', argvs=argvs))
+  with pytest.raises(RuntimeError, match='train-value failed'):
+    FT.main(['iterate', '--config', str(config)])
+  assert calls == ['train-value']
+  assert argvs[-1][argvs[-1].index('--window-start') + 1] == 'carry'
+  assert argvs[-1][argvs[-1].index('--carry-root') + 1] == str(lay.carry)
 
 
 def test_orchestrator_finishes_the_exam_of_a_frozen_candidate_first(pik, two, tmp_path,
