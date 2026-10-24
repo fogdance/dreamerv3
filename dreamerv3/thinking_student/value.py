@@ -298,10 +298,13 @@ class QWindows:
   sampled in proportion to their Q rows after the burn-in, a fork row with
   a valid branch counting `cf_boost` times. Outcome and demonstration
   labels are absent (zero); `action` is the executed pi_k action.
+  `remedial` lists the cursors of decision errors (S5 feedback, valid pairs
+  only): their rows count `remedial_boost` times more; every other row is
+  sampled as before. `curriculum()` counts what the windows showed.
   """
 
   def __init__(self, collection, targets, split='train', holdout=2048, burnin=0,
-               cf_boost=16., seed=0, carry=None):
+               cf_boost=16., seed=0, carry=None, remedial=None, remedial_boost=1.):
     rows, arrays, _ = load_collection(collection)
     t = dict(np.load(targets)) if not isinstance(targets, dict) else targets
     n = len(rows)
@@ -318,13 +321,24 @@ class QWindows:
     self.data['action'] = arrays['action'].astype(np.int32)
     self.data.update({k: t[k].astype(np.float32) for k in Q_KEYS})
     self.cursor, self.carry, self._cdf = np.asarray(t['cursor']), carry, {}
+    self.error, self.remedial_boost = np.zeros(n, bool), float(remedial_boost)
+    if remedial is not None:
+      at = np.searchsorted(self.cursor, remedial)
+      if (at >= n).any() or not np.array_equal(self.cursor[np.minimum(at, n - 1)], remedial):
+        raise ValueError('Remedial cursors outside the collection')
+      if not (self.data['q_cf_valid'][at] > 0).all():
+        raise ValueError('A decision error needs a valid ADD/WAIT pair at its row')
+      self.error[at] = True
+    self.boost = np.where(self.error, self.remedial_boost, 1.)
+    self.seen = np.zeros(n, bool)
+    self.windows = self.remedial_windows = 0
 
   def _starts(self, length):
     if length not in self._cdf:
       if self.hi - self.lo < length:
         raise ValueError(f'Window of {length} rows exceeds the split')
       d = self.data
-      marks = d['q_real_valid'] + self.cf_boost * d['q_cf_valid']
+      marks = (d['q_real_valid'] + self.cf_boost * d['q_cf_valid']) * self.boost
       marks = np.concatenate([[0.], np.cumsum(marks[self.lo:self.hi])])
       start = np.arange(self.hi - self.lo - length + 1)
       w = marks[start + length] - marks[np.minimum(start + self.burnin, start + length)]
@@ -353,8 +367,29 @@ class QWindows:
     picks = np.searchsorted(cdf, self.rng.random(batch) * cdf[-1], side='right')
     return [self.lo + int(i) for i in picks]
 
+  def _count(self, starts, length):
+    for s in starts:
+      shown = slice(s + self.burnin, s + length)
+      self.seen[shown] = True
+      self.windows += 1
+      self.remedial_windows += int(self.error[shown].any())
+
   def sample(self, batch, length):
-    return self._stack(self._pick(batch, length), length)
+    starts = self._pick(batch, length)
+    self._count(starts, length)
+    return self._stack(starts, length)
+
+  def curriculum(self):
+    """Q rows the sampled windows showed after the burn-in: distinct rows
+    and remediation exposure (windows that hold a decision error). Repeats
+    of a row are optimizer exposure, never new market samples (EDU-R10)."""
+    d, seen, error = self.data, self.seen, self.error
+    fork = d['q_cf_valid'] > 0
+    return dict(windows=self.windows, remedial_windows=self.remedial_windows,
+                remedial_boost=self.remedial_boost, remedial_rows=int(error.sum()),
+                remedial_rows_seen=int((error & seen).sum()),
+                unique_q_rows=int((seen & (d['q_real_valid'] > 0)).sum()),
+                unique_pairs=int((seen & fork).sum()))
 
   def batches(self, batch, length):
     """Every non-overlapping window of the split, in full batches."""
@@ -396,10 +431,14 @@ class MultiQWindows:
   rows exactly as QWindows draws it; a window never joins two contracts.
   Every cf folder must hold targets of the same frozen policy: Q targets
   are Q^{pi_k} of their own policy only (A6 2.4). `carry_root` holds the
-  contracts' MarketCarry stores: windows then start from the causal carry."""
+  contracts' MarketCarry stores: windows then start from the causal carry.
+  `remedial` ({contract: decision-error cursors}, S5 feedback of the same
+  pi_k) boosts those rows by `remedial_boost` inside their contract; the
+  contract mix stays as configured."""
 
   def __init__(self, folders, split='train', holdout=2048, burnin=0, cf_boost=16.,
-               seed=0, mix='uniform_contract', carry_root=None):
+               seed=0, mix='uniform_contract', carry_root=None, remedial=None,
+               remedial_boost=1.):
     from .corpus import MarketCarry
     self.folders = [Path(f) for f in folders]
     metas = [json.loads((f / 'meta.json').read_text()) for f in self.folders]
@@ -409,8 +448,12 @@ class MultiQWindows:
     self.policy, self.contracts = policies[0], [_contract(m) for m in metas]
     if len(set(self.contracts)) != len(self.contracts):
       raise ValueError(f'One contract appears twice: {self.contracts}')
+    unknown = set(remedial or ()) - set(self.contracts)
+    if unknown:
+      raise ValueError(f'Remedial cursors of contracts without Q targets: {sorted(unknown)}')
     self.parts = [QWindows(m['collection'], f / 'targets.npz', split, holdout, burnin, cf_boost,
-                           carry=carry_root and MarketCarry(Path(carry_root) / c))
+                           carry=carry_root and MarketCarry(Path(carry_root) / c),
+                           remedial=(remedial or {}).get(c), remedial_boost=remedial_boost)
                   for f, m, c in zip(self.folders, metas, self.contracts)]
     self.rng = np.random.default_rng(seed)
     for part in self.parts:
@@ -422,10 +465,23 @@ class MultiQWindows:
 
   def sample(self, batch, length):
     which = self.rng.choice(len(self.parts), batch, p=self.p)
-    rows = [self.parts[i]._stack(self.parts[i]._pick(1, length), length) for i in which]
+    rows = []
     for i in which:
+      part = self.parts[i]
+      starts = part._pick(1, length)
+      part._count(starts, length)
+      rows.append(part._stack(starts, length))
       self.exposure[self.contracts[i]] += 1
     return {k: np.concatenate([r[k] for r in rows]) for k in rows[0]}
+
+  def curriculum(self):
+    """What the sampled windows showed, per contract and in total (S5 B2)."""
+    parts = {c: p.curriculum() for c, p in zip(self.contracts, self.parts)}
+    total = {k: sum(v[k] for v in parts.values()) for k in next(iter(parts.values()))
+             if k != 'remedial_boost'}
+    return dict(total, remedial_boost=self.parts[0].remedial_boost,
+                remedial_share=total['remedial_windows'] / max(total['windows'], 1),
+                contracts=parts, exposure_note=EXPOSURE_NOTE)
 
   def batches(self, batch, length):
     """Every non-overlapping window of every contract, in full batches of
@@ -451,33 +507,67 @@ class MultiQWindows:
                 delta_g=float(dg.mean()) if len(dg) else 0.)
 
   def kappa(self, floor=None):
-    """kappa_Q (A5): the std of Delta G over the valid pairs of every
-    contract, a contract's pairs sharing its mix weight (uniform_contract:
-    every contract with pairs weighs the same). It needs two valid pairs: a
-    floor never stands in for missing pair supervision. A zero std is an
-    error unless a positive `floor` is given; the floor also replaces a
-    smaller std. Returns (kappa, how it was computed)."""
-    dgs = [p.pairs() for p in self.parts]
-    n = sum(len(d) for d in dgs)
-    std = 0.
-    if n:
-      x = np.concatenate(dgs)
-      w = np.concatenate([np.full(len(d), q / len(d)) for d, q in zip(dgs, self.p) if len(d)])
-      w = w / w.sum()
-      std = float(np.sqrt((w * (x - (w * x).sum()) ** 2).sum()))
-    source = dict(statistic=f'std of Delta G over valid train pairs, {self.mix} weights',
-                  pairs=n, std=std, floor=floor, floored=False,
-                  contracts={c: dict(pairs=len(d), std=float(d.std()) if len(d) else None)
-                             for c, d in zip(self.contracts, dgs)})
-    if n < 2:
-      raise ValueError(f'kappa_Q needs two valid ADD/WAIT pairs, the targets hold {n}')
-    if not std > 0 or (floor is not None and std < floor):
-      if floor is None or not floor > 0:
-        raise ValueError(f'kappa_Q is degenerate ({n} valid pairs, std {std}); '
-                         'a positive floor is needed')
-      source['floored'] = True
-      return float(floor), source
-    return std, source
+    """kappa_Q (A5) of the valid train pairs of every contract
+    (pooled_kappa)."""
+    return pooled_kappa([p.pairs() for p in self.parts], self.p, self.contracts,
+                        f'std of Delta G over valid train pairs, {self.mix} weights', floor)
+
+
+EXPOSURE_NOTE = ('remediation repeats TRAIN rows: windows and repeats are optimizer exposure, '
+                 'unique rows count distinct market cursors (EDU-R10)')
+
+
+def pooled_kappa(dgs, p, contracts, statistic, floor=None):
+  """kappa_Q (A5): the std of Delta G over the valid pairs `dgs` of every
+  contract, a contract's pairs sharing its mix weight `p` (uniform_contract:
+  every contract with pairs weighs the same). It needs two valid pairs: a
+  floor never stands in for missing pair supervision. A zero std is an
+  error unless a positive `floor` is given; the floor also replaces a
+  smaller std. Returns (kappa, how it was computed)."""
+  n = sum(len(d) for d in dgs)
+  std = 0.
+  if n:
+    x = np.concatenate(dgs)
+    w = np.concatenate([np.full(len(d), q / len(d)) for d, q in zip(dgs, p) if len(d)])
+    w = w / w.sum()
+    std = float(np.sqrt((w * (x - (w * x).sum()) ** 2).sum()))
+  source = dict(statistic=statistic, pairs=n, std=std, floor=floor, floored=False,
+                contracts={c: dict(pairs=len(d), std=float(d.std()) if len(d) else None)
+                           for c, d in zip(contracts, dgs)})
+  if n < 2:
+    raise ValueError(f'kappa_Q needs two valid ADD/WAIT pairs, the targets hold {n}')
+  if not std > 0 or (floor is not None and std < floor):
+    if floor is None or not floor > 0:
+      raise ValueError(f'kappa_Q is degenerate ({n} valid pairs, std {std}); '
+                       'a positive floor is needed')
+    source['floored'] = True
+    return float(floor), source
+  return std, source
+
+
+def target_pairs(targets):
+  """Delta G = G(ADD) - G(WAIT) of every valid pair of a cf_targets table:
+  the branch took the other action than pi_k at its fork."""
+  t = targets
+  dg = np.where(t['cf_action'] == WAIT, t['q_real'] - t['q_cf'], t['q_cf'] - t['q_real'])
+  return dg[t['q_cf_valid'] > 0]
+
+
+def cf_kappa(folders, mix='uniform_contract', floor=None):
+  """kappa_Q of every valid pair of the CF folders of one frozen pi_k, read
+  from their targets alone (MultiQWindows.kappa with holdout 0, without
+  loading the collections). The cf folders and statistic are in the source."""
+  folders = [Path(f) for f in folders]
+  metas = [json.loads((f / 'meta.json').read_text()) for f in folders]
+  if len({str(Path(m['policy']).resolve()) for m in metas}) != 1:
+    raise ValueError('kappa_Q pools the CF of one frozen policy only')
+  targets = [dict(np.load(f / 'targets.npz')) for f in folders]
+  w = (np.ones(len(folders)) if mix == 'uniform_contract'
+       else np.array([len(t['cursor']) for t in targets], np.float64))
+  kappa, source = pooled_kappa([target_pairs(t) for t in targets], w / w.sum(),
+                               [_contract(m) for m in metas],
+                               f'std of Delta G over every valid pair, {mix} weights', floor)
+  return kappa, dict(source, cf=[str(f) for f in folders])
 
 
 CHECK_KEYS = ('delta_q', 'z', 'p_tp_h', 'correction', 'q_add', 'q_wait')

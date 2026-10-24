@@ -374,7 +374,7 @@
   - `test_carry_windows_train_only_their_stage` 增加 L2（只改 outcome 组）；新测试 `test_orchestrator_trains_l2_on_the_carry_of_an_l1_continued_by_hand`：调用顺序为 market-carry ×2 → train-outcome → train-policy → freeze → exam ×2，两步都带 carry 参数；存储与 `pi_0000` 的部署记忆逐位相同，与续 L1 之前的不同。
   - `test_ts_v1_c4.py` 17 passed（CPU，12 分钟）。
   - 真实数据冒烟 `C4_L2_CARRY_SMOKE_20261024`：18 合约 size50m，从 ckpt 22000 起步、使用开发 run 的存储，60 次，exit 0，49 s（含启动），RSS 3.6 GB，每个 batch 1024 行都计损失。
-- [ ] E-3：开发 run 第 2–6 轮（`max_rounds: 6`，18 合约轮转一遍），快速跑完以验证代码
+- [x] E-3：开发 run 第 2–6 轮（`max_rounds: 6`，18 合约轮转一遍），快速跑完以验证代码；2026-10-25 00:38 完成（`formal_carry_r2_r6.exit` = 0）
   - 第 2 轮完成；第 3 轮 FG205、FG209 的 CF 完成。FG201 的 CF 原样要跑 19–24 小时，19:53 按用户决定停下（每个 worker 跑到 250/532 个分支，结果只在结束时写出，所以没有保存），修复见 E-5，修好后从磁盘续跑。
   - 20:38 从磁盘续跑（`formal_carry_r3_resume.sh`，tmux `d3`）：
     - FG201 的 CF 按编排器的参数加 `--budget 48` 手动运行，用 6 个 worker 而不是 3 个。每个 worker 都重放整份 collection，所以成对结果与 worker 数无关。
@@ -393,6 +393,34 @@
   - 到第 3 轮为止的 CF 覆盖：
     - 9 个合约共 5696 个分叉，有效 4350 对，占分叉的 76.4%，占空仓合法决策（28,512 个）的 15.3%。
     - 除 FG201 外，每个合约的分叉都 100% 有效。FG201 的 250 对是后段的选择性样本，不能代表全部状态。
+  - 第 4–6 轮的每个合约，分叉全部有效，也没有只能完整模拟判定的分叉：
+
+    | 轮 | 合约（有效对 = 分叉） | κ_Q | 有效对合计 |
+    | --- | --- | --- | --- |
+    | 4 | FG301 284，FG305 307，FG309 580 | 0.594 | 1171 |
+    | 5 | FG401 635，FG405 409，FG809 146 | 0.600 | 1190 |
+    | 6 | FG901 182，FG905 135，FG909 157 | 0.457 | 474 |
+
+    这三轮都正常训练了 L4 500 次、L5 100 次。
+  - DEV FG409 每分钟 Reward：
+
+    | 策略 | π_0 | π_1 | π_2 | π_3 | π_4 | π_5 | π_6 |
+    | --- | --- | --- | --- | --- | --- | --- | --- |
+    | Reward | 0.000432 | 0.000570 | 0.000476 | 0.000497 | 0.000279 | 0.000291 | 0.000386 |
+
+    `best_dev` 仍是 `pi_0001`。开发 run 预算很小，这些数只说明闭环跑通，不说明策略变好。
+  - `pi_0006` 的 carry state-check（FG005，1000 个窗口，种子偏移 1000003）：
+    - 存储与部署路径的差为 0。
+    - 合法行的动作翻转：
+
+      | 策略 | 翻转率 |
+      | --- | --- |
+      | `pi_0000` | 2.0% |
+      | `pi_0001` | 3.6% |
+      | `pi_0006` | 6.1%（375 / 6098） |
+
+    - 翻转集中在决策边界附近。|z| 在 0.25 std 以内的合法行，`pi_0000` 有 227 个，`pi_0006` 有 749 个；离边界 1 std 以上的 3044 行只翻转了 8 次。
+    - ΔQ 符号一致率 0.965。
 - [x] E-5：有限预算的精确 CF（用户 2026-10-24 方案 3）；提交 gym `2b4e894`、dreamerv3 `8be867b`
   - 回归（CPU，20:35–21:02）：gym `test_ts_v1_cf.py` 加 dreamerv3 `test_ts_v1_s0`–`s4`、`test_ts_v1_c4.py`，56 passed，0 failed。
   - 起因：π_2 在 FG201 上 ADD 1499 次，权益从 300,000 降到 36,987（最低 36,423，始终为正；每份 collection 都正常结束于 MAIN_ROLL，没有 MARGIN_CALL，也没有被拒的 ADD，符合 Native 规则：3 手保证金最多 18,048）。耦合下限是 90,336，参考轨迹每一行都低于它，所以不可能耦合。1596 个分叉里有 1346 个在 8192 步内到不了真实终点，只能跑满上限：没有标签，耗时 19–24 小时。
@@ -406,11 +434,37 @@
   - 2026-10-24 13:2x：用户的未跟踪草稿备份到会话临时目录后删除，dreamerv3 run 分支快进到 `37cdd85`；gym run 分支即 `0056296`，两个 worktree 都干净。
   - 从 10x 的 gym worktree 运行 `formal_train status`（只读）：配置可读，L1 60,000 / L2 12,000，latest ckpt 72000。
   - 以后开发分支每有新提交都这样快进；编排器的步与步之间生效，不改正在运行的那一步。
+  - 2026-10-25 00:3x：10x 的 pretrain 在 L2 = 120,000 处按 `--until L2` 停下（exit 0，00:30:55），没有步骤在运行。两个 run 分支快进到 dreamerv3 `fbd6f59`、gym `2b4e894`（带上 CF 预算修复），worktree 干净。L3 由用户手动启动。
 
 ## S5 — 自主教学循环 + Teacher-free 考试（计划：`PLAN_S5_20261024.md`；用户 2026-10-24：先做 OFFLINE_TRAIN 的 L6，TIME_ORDERED 明确标为未支持）
-- [ ] S5-1：B1 教学题 `thinking_student/feedback.py`：一道题 = 一个决策行；四类反馈（TEACHER_ADD_FACT、STUDENT_EXECUTED_NATIVE、VERIFIED_CF_NATIVE、HINDSIGHT_ORACLE_TEACHING）各带 source、ready_at、valid；后果错、决策错、teachers_agree；`release` 只放行 OFFLINE_TRAIN，TIME_ORDERED 报 `TIME_ORDERED_NOT_SUPPORTED`；只读 TRAIN 教材；用第 1 轮真实数据定阈值
-- [ ] S5-2：B2 课程：`CorpusWindows` / `MultiCorpusWindows` 的补课窗口（每批 round(fraction × B) 个窗口含错题行，标签与自然窗口相同），`QWindows` / `MultiQWindows` 的决策错加权；报告分开记唯一 cursor、补课曝光、优化器曝光
-- [ ] S5-3：L6 接入 `formal_train iterate`：配置 `iteration.l6`（默认关）；一轮为 collect → check → CF → feedback → L2 复习 → L4 → L5 → freeze → exam；L2 复习只动 outcome / fusion，不训 L1，MarketCarry 存储保持有效；run_state 与 lineage 记 OFFLINE_TRAIN 和 TIME_ORDERED_NOT_SUPPORTED；续跑跳过已有教学题
-- [ ] S5-4：测试 `test_ts_v1_s5.py` 与回归（c4、s1–s4）
+- [x] S5-1：B1 教学题 `thinking_student/feedback.py`：一道题 = 一个决策行；四类反馈（TEACHER_ADD_FACT、STUDENT_EXECUTED_NATIVE、VERIFIED_CF_NATIVE、HINDSIGHT_ORACLE_TEACHING）各带 source、ready_at、valid；后果错、决策错、teachers_agree；`release` 只放行 OFFLINE_TRAIN，TIME_ORDERED 报 `TIME_ORDERED_NOT_SUPPORTED`；只读 TRAIN 教材；用第 1 轮真实数据定阈值
+  - 实现：`thinking_student/feedback.py`，CLI 与 `exam.py` 同样写法。
+  - 预算 CF 未模拟的分叉记为 UNAVAILABLE_BUDGET，与 NOT_COMPARABLE 一样弃权；summary 里两者分开计数（`abstained.cf_not_comparable`、`cf_unavailable_budget`），并记 `cf_coverage`。
+  - 阈值的真实数据依据（诊断目录 `S5_FEEDBACK_DIAG_20261024/`，不写入 run）：
+    - 第 1 轮 `pi_0000`：后果错 398（FG001 253、FG005 104、FG009 41；阈值 p < 0.1），决策错 101，示范错 34，κ_Q 0.5587，CF 覆盖率 1.0。
+    - 第 2 轮 `pi_0001`：后果错 182，决策错 362，示范错 284，κ_Q 0.7255。
+- [x] S5-2：B2 课程：`CorpusWindows` / `MultiCorpusWindows` 的补课窗口（每批 round(fraction × B) 个窗口含错题行，标签与自然窗口相同），`QWindows` / `MultiQWindows` 的决策错加权；报告分开记唯一 cursor、补课曝光、优化器曝光
+  - 用第 1、2 轮的真实教学题核对，按开发配置每批 16 × 64、每种取 20 批（`scratchpad/s5/remedial_check.py`）：
+    - 后果错：398 / 182 行，都带标签、没有被丢弃；补课窗口占 25%（80 / 320）。
+    - 示范错：34 / 284 行，补课窗口占 25%。
+    - 决策错：101 / 362 行，Q 起点权重 ×4 后，覆盖错题行的窗口占 13% / 34%。
+- [x] S5-3：L6 接入 `formal_train iterate`：配置 `iteration.l6`（默认关）；一轮为 collect → check → CF → feedback → L2 复习 → L4 → L5 → freeze → exam；L2 复习只动 outcome / fusion，不训 L1，MarketCarry 存储保持有效；run_state 与 lineage 记 OFFLINE_TRAIN 和 TIME_ORDERED_NOT_SUPPORTED；续跑跳过已有教学题
+  - 与 E-5 的规则一致：某轮 CF 没有代表性（`L4_SKIPPED_CF_NOT_REPRESENTATIVE`）时：
+    - L5 也不接这份 CF 产生的示范错补课，记 `l6.decision_remediation: SKIPPED_CF_NOT_REPRESENTATIVE`；
+    - L2 复习只用事实的后果错，照常进行；
+    - freeze 同时带 `--value-anchor-of π_k` 和 `--feedback`。
+- [x] S5-4：测试 `test_ts_v1_s5.py` 与回归（c4、s1–s4）
+  - 合入开发 worktree 之前，在 scratchpad 的副本（HEAD `8be867b` + S5）上测试（CPU）：
+
+    | 测试文件 | 结果 |
+    | --- | --- |
+    | `test_ts_v1_s5.py` | 6 passed |
+    | `test_ts_v1_c4.py` | 18 passed |
+    | `test_ts_v1_s0`–`s4` | 全部 passed |
+
+    共 57 passed，0 failed。
+  - 唯一一次失败是测试写错了：regret 的期望值符号反了。已执行 WAIT、ΔG = +1e-17 时 regret 应为 +1e-17。改正后该测试通过，代码没有改。
+  - S5 编排测试新增第 3 轮：CF 覆盖不足时，L2 复习照常，跳过 L4，L5 不带补课，`pi_3` 保留 `pi_2` 的价值脑和锚。
+  - 拷入开发 worktree 后，用 `diff -rq` 核对与副本逐字节相同；`test_ts_v1_c4.py` 第 547 行的期望改为 `L6_SKIPPED_BY_CONFIG`。
 - [ ] S5-5：配置并实跑：开发 `formal_v1_carry.yaml` 的 `max_rounds` 9、`l6.from_round` 7；10x 配置同一块、L2 复习 ×10；开发 run 第 7–9 轮（与第 1–3 轮同合约），DEV Teacher-free 考试；`pi_0009` 在 FG005 上做 carry state-check
 - [ ] S5-6：记录 `S5_RECORD_20261024.md`；更新 INTERFACE_SUMMARY、FORMAL_TRAINING_IMPLEMENTATION、配置 README、memory；提交、同步 10x 分支

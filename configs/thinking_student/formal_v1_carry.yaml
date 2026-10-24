@@ -18,6 +18,8 @@
 # This is the development run (user decision 2026-10-24): it trains fast to
 # check the code. formal_v1_l1_l2_10x_continue.yaml trains ten times the steps
 # of every stage in a run of its own and differs from this file in steps only.
+#
+# Rounds 7-9 add L6 (S5): run `iterate --rounds 3` after round 6.
 
 paths:  # relative paths are relative to this file
   markets: markets/pool.json
@@ -51,7 +53,7 @@ foundation:
   holdout: 0
 
 iteration:
-  max_rounds: 6             # one rotation through the 18 contracts
+  max_rounds: 9             # one rotation through the 18 contracts, then rounds 7-9 with L6
   contracts_per_round: 3    # rotates through the 18 contracts round by round
   parallel_contracts: 2     # x cf_workers GPU processes, ~1.7 GB RAM and 1.2 GB GPU each
   cf_wait_forks: 100
@@ -81,6 +83,19 @@ iteration:
   kappa_floor: 0.05       # replaces a zero or smaller std of real pairs, never missing pairs
   state_check_windows: 0  # by hand on FG005: run.py state-check --window-start carry
   state_check_seed_offset: 1000003
+  # L6 (S5) from round 7 on: rounds 7-9 take the contracts of rounds 1-3 again
+  # (FG001/005/009, FG101/105/109, FG201/205/209), so each L6 round has a
+  # round without L6 on the same contracts to compare with. OFFLINE_TRAIN
+  # only: TRAIN feedback is released whatever its ready_at
+  # (TIME_ORDERED_NOT_SUPPORTED). Thresholds from round 1 (feedback.DEFAULTS).
+  l6:
+    from_round: 7
+    order: OFFLINE_TRAIN
+    outcome_review_updates: 200   # L2 review before L4, ~0.1 s/update
+    remedial_fraction: 0.25       # 4 of 16 windows hold an error row
+    remedial_boost: 4.0           # L4: decision-error rows weigh 4x
+    outcome_error_prob: 0.1
+    decision_error_margin: 1.0    # x kappa_Q of the round's CF
 
 evaluation:
   random_seeds: 5

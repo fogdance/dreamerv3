@@ -544,7 +544,7 @@ def test_orchestrator_rounds_resume_from_the_disk(two, tmp_path, monkeypatch):
   state = json.loads(lay.state.read_text())
   record = state['rounds']['1']
   assert (record['L5'], record['L6'], record['updates']) == (
-      'S4_PRIOR_REFRESH', 'L6_NOT_IMPLEMENTED', {'L4': 2, 'L5': 2})
+      'S4_PRIOR_REFRESH', 'L6_SKIPPED_BY_CONFIG', {'L4': 2, 'L5': 2})
   # The round records the anchor pi_1 was frozen with.
   pairs = V.MultiQWindows([lay.experience(lay.policy(0), 'cf', c) for c in CONTRACTS], 'train',
                           holdout=0).pair_counts()['total']

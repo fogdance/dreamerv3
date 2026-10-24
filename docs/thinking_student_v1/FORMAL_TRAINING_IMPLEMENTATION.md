@@ -10,7 +10,9 @@
 - 在独立的 DEV 合约上做 Teacher-free 考试；
 - 任一步被打断后，都能从磁盘接着跑。
 
-S5（L6：`ready_at` 反馈与课程循环）未实现。每轮在 `run_state.json` 中记为 `L6_NOT_IMPLEMENTED`，代码里没有空循环。
+S5 的 L6 见下文“L6：离线教学循环”：
+- 只实现 OFFLINE_TRAIN；TIME_ORDERED 明确不支持（`TIME_ORDERED_NOT_SUPPORTED`）。
+- 2026-10-24 S5 之前的轮次在 `run_state.json` 中记 `L6_NOT_IMPLEMENTED`；现在没开 L6 的轮记 `L6_SKIPPED_BY_CONFIG`。
 
 ## 入口
 
@@ -19,7 +21,7 @@ S5（L6：`ready_at` 反馈与课程循环）未实现。每轮在 `run_state.js
 | 命令 | 作用 |
 | --- | --- |
 | `python -m dreamerv3.thinking_student.formal_train pretrain --config F` | 用所选 TRAIN 合约的窗口依次训练 L1→L2→L3（`foundation/`），冻结为 `pi_0000`，然后考 DEV，再在两个合约上做 TRAIN 冒烟 |
-| `… formal_train iterate --config F [--rounds N]` | 有上限的改进轮，每轮从最新的冻结 π_k 出发，依次是：<br>• 本轮合约各自正式采集到真终止；<br>• check；<br>• CF；<br>• RSSM 短窗诊断（`state_check_windows` > 0 时；正式配置为 0）；<br>• L4（只用 π_k 的 CF）；<br>• L5 先验刷新；<br>• 冻结 π_{k+1}（带 β_Q、合并 κ_Q；有效成对样本少于 2 个时 β_Q = 0，记 `Q_ANCHOR_NOT_READY`）；<br>• 考 DEV |
+| `… formal_train iterate --config F [--rounds N]` | 有上限的改进轮，每轮从最新的冻结 π_k 出发，依次是：<br>• 本轮合约各自正式采集到真终止；<br>• check；<br>• CF；<br>• 从 `iteration.l6.from_round` 起：π_k 的教学题，以及带后果错补课的 L2 复习；<br>• RSSM 短窗诊断（`state_check_windows` > 0 时；正式配置为 0）；<br>• L4（只用 π_k 的 CF；L6 时决策错行加权；CF 没有代表性时跳过）；<br>• L5 先验刷新（L6 时带示范错补课）；<br>• 冻结 π_{k+1}（带 β_Q、合并 κ_Q；有效成对样本少于 2 个时 β_Q = 0，记 `Q_ANCHOR_NOT_READY`）；<br>• 考 DEV |
 | `… formal_train evaluate --config F --policy pi_000k [--train-smoke]` | 对一个冻结策略做 Teacher-free 考试 |
 | `… formal_train run --config F [--rounds N]` | 先 pretrain，再 iterate |
 | `… formal_train status --config F` | 从磁盘读出进度，不写任何文件 |
@@ -301,7 +303,8 @@ S5（L6：`ready_at` 反馈与课程循环）未实现。每轮在 `run_state.js
   | L4 / L5（每轮） | 500 / 100 | 5,000 / 1,000 |
   | 保存间隔（基础 / 每轮） | 1,000 / 250 | 10,000 / 2,500 |
   | 每合约 WAIT 分叉 | 100 | 1,000 |
-  | 轮数 | 6（每轮 3 个合约，18 个合约轮转一遍） | 6 |
+  | 轮数 | 9：第 1–6 轮每轮 3 个合约，18 个合约轮转一遍；第 7–9 轮带 L6，合约与第 1–3 轮相同 | 9 |
+  | L6 的 L2 复习（每轮） | 200 | 2,000 |
 
 - **worktree：** 10x run 用自己的 `/data/research/fg-s3-thinking-student-l1-l2-10x-continue-20261024/{dreamerv3,gym-trading-env}`，两仓分支都是 `run/thinking-student-l1-l2-10x-continue-20261024`；开发继续在 `feat/thinking-student-v1-20261022` 上进行。
   - 同步方式：开发分支有新提交时，把 run 分支快进过去。
@@ -326,6 +329,29 @@ S5（L6：`ready_at` 反馈与课程循环）未实现。每轮在 `run_state.js
     - 冻结后 `pi_0000` 的部署记忆与存储逐位相同，与续 L1 之前的脑则不同。
   - 真实数据冒烟（`C4_L2_CARRY_SMOKE_20261024`）：18 个合约、60 次，从 ckpt 22000 起步，使用开发 run 的存储。结果正常；每个 batch 的 1024 行都计损失，而零状态开窗只计预热之后的行。
 
+## L6：离线教学循环（S5，2026-10-24）
+
+计划：`PLAN_S5_20261024.md`；逐项证据：`TODO.md` 的 S5 节。
+
+- **开关：** 配置块 `iteration.l6`，默认关闭。
+  - 字段：`from_round`、`order`、`outcome_review_updates`、`remedial_fraction`、`remedial_boost`、`outcome_error_prob`、`decision_error_margin`。
+  - `order` 只接受 `OFFLINE_TRAIN`；写 `TIME_ORDERED` 时 `load_config` 报 `TIME_ORDERED_NOT_SUPPORTED` 并拒绝。
+- **开启 L6 的一轮：**
+  1. collect → check → CF；
+  2. `feedback`：每个合约在 `experience/π_k/feedback/<合约>/` 写 `items.npz` 和 `summary.json`，已存在就跳过；
+  3. L2 复习（`train-outcome --feedback`，后果错补课），只动 outcome，`l2_fusion` 为真时含 fusion；
+  4. L4（决策错行 ×`remedial_boost`）；
+  5. L5（示范错补课）；
+  6. freeze：lineage 记 feedback 目录、`teaching_order: OFFLINE_TRAIN`、`time_ordered: TIME_ORDERED_NOT_SUPPORTED`；
+  7. 考 DEV。
+- **CF 没有代表性的轮次：**
+  - 跳过 L4；
+  - L5 不接这份 CF 产生的补课（`decision_remediation: SKIPPED_CF_NOT_REPRESENTATIVE`）；
+  - L2 复习只用事实，照常进行。
+- **不训练 L1：** L6 不训 L1，所以 MarketCarry 存储仍是部署时的市场记忆。
+- **记录：** `run_state.json` 每轮记 `L6: S5_FEEDBACK_CURRICULUM` 或 `L6_SKIPPED_BY_CONFIG`，以及各合约的反馈摘要、错题数、L2 复习次数和补课曝光（补课窗口、错题行、唯一行与重复曝光）。
+- **结论的边界：** 这是离线 TRAIN 教学：教师可以使用 TRAIN 的完整后缀。ready_at 逐条保存，但不参与放行，所以结果不是严格时间顺序的在线学习。
+
 ## 可恢复的 Checkpoint 与策略
 
 | 位置 | 内容 |
@@ -347,7 +373,10 @@ S5（L6：`ready_at` 反馈与课程循环）未实现。每轮在 `run_state.js
 
 ## 未完成 / 待办
 
-- **S5 / L6：** `ready_at` 反馈、B2 课程、错题补课均未实现。接口位置在 `iterate` 中 L5 与 freeze 之间。
+- **TIME_ORDERED 实习：** 未实现（`TIME_ORDERED_NOT_SUPPORTED`）。以后按方案 2 逐步做：
+  - 单合约分段推进，段末只用已到期的反馈更新，并冻结新版本；
+  - 段内 Q 只用在 `coupled_at` 到期的 ΔG 做成对监督；
+  - 不采用尾值估计。
 - **Checkpoint 清理：** 没有自动清理，每份 388 MB；目前靠 `save_every` 控制份数。
 - **CF 重放开销：** 每个 worker 都重放整个合约，所以 worker 越多，重放的总开销越大。如果正式轮次中 CF 成为瓶颈，可以考虑让 worker 只重放到自己的 fork，或者共享一次重放。
 - **CF 覆盖的选择性（后续研究，用户 2026-10-24）：**

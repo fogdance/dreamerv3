@@ -16,7 +16,11 @@ iterate   rounds (B2-B8) on the newest frozen pi_k: per contract of the round
           (experience/pi_k/); in learners/pi_{k+1} L4 on the CF targets of
           pi_k only, then the S4 prior refresh (L5); pi_{k+1} frozen with the
           value anchor; its Teacher-free exam. --until cf stops the round
-          after its CF (and state-check), before L4.
+          after its CF (and state-check), before L4. From round
+          iteration.l6.from_round on, L6 (S5) joins the round: the teaching
+          items of pi_k (experience/pi_k/feedback/), an L2 review with
+          outcome-error remediation before L4, decision-error remediation
+          in L4 and L5.
 evaluate  the Teacher-free exam of a frozen policy: DEV on the VALIDATION rows
           dev.contracts of paths.markets, else DEV_NOT_CONFIGURED;
           --train-smoke adds the TRAIN smoke.
@@ -42,8 +46,13 @@ frozen policy is never rewritten, and the missing exams of the newest frozen
 policy come before the round limit or a new round (a round ends with its
 candidate's exam). run_state.json mirrors the progress for
 reading and is never consulted to admit anything. Budgets and rounds come
-from the config; nothing loops without a bound. S5 (L6: ready_at feedback
-and the curriculum) is not implemented, and every round records that.
+from the config; nothing loops without a bound.
+
+L6 (S5) teaches OFFLINE_TRAIN only: every valid feedback of the TRAIN
+material, ready_at kept with each item. TIME_ORDERED is refused
+(TIME_ORDERED_NOT_SUPPORTED): no round is a strict time-ordered online
+learning result. L6 re-runs the L2, L4 and L5 updates; it never trains L1,
+so the MarketCarry stores stay the deployed market memory.
 """
 import argparse
 import copy
@@ -58,7 +67,8 @@ from pathlib import Path
 import yaml
 
 from .corpus import corpus_sources, discover
-from .run import latest, progress
+from .feedback import OFFLINE_TRAIN, TIME_ORDERED_NOT_SUPPORTED, check_order
+from .run import latest, progress, reports
 
 DEFAULTS = dict(
     # Relative paths are relative to the config file.
@@ -76,7 +86,11 @@ DEFAULTS = dict(
                    cf_min_coverage=None, value_updates=0,
                    prior_refresh_updates=0, cf_boost=16.0, save_every=0, holdout=0,
                    beta_q=1.0, kappa_q='auto', kappa_floor=None, state_check_windows=0,
-                   state_check_seed_offset=0),
+                   state_check_seed_offset=0,
+                   # L6 (S5) from round `from_round` on (None: off).
+                   l6=dict(from_round=None, order=OFFLINE_TRAIN, outcome_review_updates=0,
+                           remedial_fraction=0.25, remedial_boost=4.0, outcome_error_prob=0.1,
+                           decision_error_margin=1.0)),
     evaluation=dict(random_seeds=5, smoke_contracts=2, smoke_steps=6000),
 )
 FOUNDATION = (('train-market', 'L1', 'market_updates'), ('train-outcome', 'L2', 'outcome_updates'),
@@ -95,7 +109,14 @@ def load_config(path):
     unknown = set(values or {}) - set(config[section])
     if unknown:
       raise ValueError(f'{path}: unknown keys {sorted(unknown)} in {section}')
-    config[section].update(values or {})
+    for key, value in (values or {}).items():
+      if isinstance(config[section][key], dict):
+        unknown = set(value or {}) - set(config[section][key])
+        if unknown:
+          raise ValueError(f'{path}: unknown keys {sorted(unknown)} in {section}.{key}')
+        config[section][key].update(value or {})
+      else:
+        config[section][key] = value
   paths = config['paths']
   for key, value in paths.items():
     if value is not None:
@@ -114,6 +135,13 @@ def load_config(path):
     raise ValueError(f'{path}: iteration.cf_budget is a number of forks >= 0 or null')
   if it['cf_min_coverage'] is not None and not 0 < it['cf_min_coverage'] <= 1:
     raise ValueError(f'{path}: iteration.cf_min_coverage is in (0, 1] or null')
+  l6 = it['l6']
+  try:
+    check_order(l6['order'])
+  except NotImplementedError as e:
+    raise ValueError(f'{path}: iteration.l6.order {l6["order"]}: {e}') from None
+  if l6['from_round'] is not None and not (type(l6['from_round']) is int and l6['from_round'] >= 1):
+    raise ValueError(f'{path}: iteration.l6.from_round is a round number from 1, or null')
   return config
 
 
@@ -298,6 +326,38 @@ def _check_problems(out):
   return problems
 
 
+def _teaching_items(cfg, lay, state, r, rec, policy, contracts, collect, cf):
+  """L6 B1: the teaching items of pi_k on each usable contract of round r
+  (a folder with its summary.json is kept); the --feedback arguments."""
+  it, l6 = cfg['iteration'], cfg['iteration']['l6']
+  out = {c: lay.experience(policy, 'feedback', c) for c in cf}
+  kappa = [a for folder in cf.values() for a in ('--kappa-cf', folder)]
+  floor = [] if it['kappa_floor'] is None else ['--kappa-floor', it['kappa_floor']]
+  missing = [c for c, folder in out.items() if not (folder / 'summary.json').exists()]
+  if missing:
+    _step(lay, state, step='feedback')
+  for c in missing:
+    _call('feedback', ['--collection', collect[c], '--corpus', contracts[c], '--cf', cf[c], *kappa,
+                       '--mix', cfg['corpora']['mix'], *floor, '--out', out[c],
+                       '--order', l6['order'], '--outcome-error-prob', l6['outcome_error_prob'],
+                       '--decision-error-margin', l6['decision_error_margin']],
+          lay.log(f'r{r:03d}_feedback_{c}'))
+  rec['feedback'] = {}
+  for c, folder in out.items():
+    summary = _read(folder / 'summary.json')
+    rec['feedback'][c] = dict({k: summary[k] for k in ('sources', 'abstained', 'errors')},
+                              kappa_q=summary['thresholds']['kappa_q'])
+  return [a for folder in out.values() for a in ('--feedback', folder)]
+
+
+def _remediation(learner):
+  """What the windows of each L6 training command of the learner showed."""
+  keys = ('windows', 'remedial_windows', 'remedial_share', 'remedial_rows', 'remedial_rows_seen',
+          'unique_label_rows', 'label_rows', 'unique_q_rows', 'unique_pairs')
+  return {name: {k: v for k, v in data['curriculum'].items() if k in keys}
+          for name, data in reports(learner).items() if data.get('feedback')}
+
+
 def pretrain(cfg, lay, state, until=None):
   """until: stop after this foundation stage, before pi_0000 is frozen; a
   later pretrain goes on from there. A stage trains only before every stage
@@ -450,17 +510,46 @@ def iterate(cfg, lay, state, rounds, until=None):
         'S3_Q_TARGETS' if it['value_updates'] else 'L4_SKIPPED_BY_CONFIG')
     if thin:
       rec['L4_coverage'] = dict(min_coverage=floor, below=thin)
+    # L6 (S5): teaching items, the L2 review and remediation in L4 and L5;
+    # without representative pairs the round takes no decision remediation
+    # either (its errors come from the same CF).
+    l6, feedback, review, boost, demo = it['l6'], [], [], [], []
+    if l6['from_round'] is not None and r >= l6['from_round']:
+      feedback = _teaching_items(cfg, lay, state, r, rec, policy, contracts, collect, cf)
+      review = ['--remedial-fraction', l6['remedial_fraction']]
+      boost = ['--remedial-boost', l6['remedial_boost']]
+      demo = [] if thin else [*feedback, *review]
+      done = progress(learner)
+      left = l6['outcome_review_updates'] - done['L2']
+      if left > 0:
+        if done['L4'] or done['L3']:
+          raise ValueError(f'Round {r}: the L2 review has {left} updates left, but L4 or L5 of '
+                           f'{learner.name} already stands on it: a raised budget needs a new run')
+        _step(lay, state, step='L6_L2_review')
+        _call('run', ['train-outcome', *common, *corpora, '--updates', left, *feedback, *review],
+              lay.log(f'r{r:03d}_L6_L2'))
+      rec['L6'] = 'S5_FEEDBACK_CURRICULUM'
+      rec['l6'] = dict(order=l6['order'], time_ordered=TIME_ORDERED_NOT_SUPPORTED,
+                       from_round=l6['from_round'], feedback=[str(f) for f in feedback[1::2]],
+                       remedial_fraction=l6['remedial_fraction'],
+                       remedial_boost=l6['remedial_boost'], decision_remediation=(
+                           'SKIPPED_CF_NOT_REPRESENTATIVE' if thin else 'L4_L5'))
+    else:
+      rec['L6'] = 'L6_SKIPPED_BY_CONFIG'
     left = 0 if thin else it['value_updates'] - progress(learner)['L4']
     if left > 0:
       _step(lay, state, step='L4')
-      _call('run', ['train-value', *common, *targets, '--updates', left, '--cf-boost', it['cf_boost']],
-            lay.log(f'r{r:03d}_L4'))
+      _call('run', ['train-value', *common, *targets, '--updates', left, '--cf-boost', it['cf_boost'],
+                    *feedback, *boost], lay.log(f'r{r:03d}_L4'))
     rec['L5'] = 'S4_PRIOR_REFRESH' if it['prior_refresh_updates'] else 'L5_SKIPPED_BY_CONFIG'
     left = it['prior_refresh_updates'] - progress(learner)['L3']
     if left > 0:
       _step(lay, state, step='L5')
-      _call('run', ['train-policy', *common, *corpora, '--updates', left], lay.log(f'r{r:03d}_L5'))
-    rec['L6'] = 'L6_NOT_IMPLEMENTED'
+      _call('run', ['train-policy', *common, *corpora, '--updates', left, *demo],
+            lay.log(f'r{r:03d}_L5'))
+    if feedback:
+      rec['l6'].update(L2_review_updates=progress(learner)['L2'],
+                       remediation=_remediation(learner))
     if latest(learner) is None:
       raise RuntimeError(f'Round {r}: {learner} trained nothing (value and refresh budgets are 0)')
     # B6: pi_{k+1} with the value anchor; pi_k stays as it was.
@@ -471,7 +560,8 @@ def iterate(cfg, lay, state, rounds, until=None):
       anchor = (['--value-anchor-of', policy] if thin else
                 [*targets, '--beta-q', it['beta_q'], '--kappa-q', it['kappa_q'], *kappa])
       _call('run', ['freeze', '--run', learner, '--name', new.name, '--out', new, *corpora, *anchor,
-                    '--holdout', it['holdout'], *_student(cfg)], lay.log(f'r{r:03d}_freeze'))
+                    '--holdout', it['holdout'], *feedback, *_student(cfg)],
+            lay.log(f'r{r:03d}_freeze'))
     p, anchor = _updates(lay, r), _read(new / 'policy.json')['teaching'].get('value_anchor', {})
     rec.update(policy_out=new.name, updates=dict(L4=p['L4'], L5=p['L5']), value_anchor=dict(
         beta_q=anchor.get('beta_q'), kappa_q=anchor.get('kappa_q'),
@@ -533,7 +623,9 @@ def status(cfg, lay):
   for folder in sorted((lay.root / 'experience').glob('pi_*')):
     out['experience'][folder.name] = dict(
         collect={c.name: _collected(c) for c in sorted((folder / 'collect').glob('*'))},
-        cf={c.name: (c / 'meta.json').exists() for c in sorted((folder / 'cf').glob('*'))})
+        cf={c.name: (c / 'meta.json').exists() for c in sorted((folder / 'cf').glob('*'))},
+        feedback={c.name: (c / 'summary.json').exists()
+                  for c in sorted((folder / 'feedback').glob('*'))})
   for folder in sorted((lay.root / 'learners').glob('pi_*')):
     out['learners'][folder.name] = progress(folder)
   for exam in sorted((lay.root / 'eval').glob('*/*/*/exam.json')):

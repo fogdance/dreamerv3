@@ -157,11 +157,36 @@
   - 标签：`DEV`（VALIDATION 行，与 TRAIN 同一条 `write_inputs`）、`TRAIN_SMOKE` 或 `DEV_NOT_CONFIGURED`。
   - 随机入场基线：同样的分钟、同样的 Native 规则、相同的入场率。
   - 指标附定义；`best_dev` 按 DEV 每分钟 Reward 选取。
-- **L5 = S4 先验刷新；** S5/L6 未实现，每轮记 `L6_NOT_IMPLEMENTED`。
+- **L5 = S4 先验刷新。** L6 见下文 S5 节；没开 L6 的轮记 `L6_SKIPPED_BY_CONFIG`。
 - **有限预算的精确 CF（用户 2026-10-24）：**
   - 状态 `UNAVAILABLE_BUDGET`：分叉只能靠完整模拟判定（上限窗口内不可能耦合，真实终点又在 `cf_max_steps` 之外），但没有被分层预算抽中，所以没有回报、TERMINAL 和 Q 标签。
   - `meta.json` 增加 `forks.undecided`、`couple_from`、`budget`（各层数量）、`end_status`（含 MARGIN_CALL）。
   - 某合约的有效对覆盖率低于 `cf_min_coverage` 时，本轮跳过 L4，`freeze --value-anchor-of π_k` 保留 π_k 的 β_Q、κ_Q（`L4_SKIPPED_ANCHOR_KEPT`）。
+
+**S5：离线教学循环 L6**（`PLAN_S5_20261024.md`；只实现 OFFLINE_TRAIN）
+- **B1 教学题**（`feedback.py`）：
+  - π_k 的一份 collection 中，每个决策行一道题。
+  - 四类反馈各带 source、ready_at（cursor）和 valid：
+    - TEACHER_ADD_FACT；
+    - STUDENT_EXECUTED_NATIVE；
+    - VERIFIED_CF_NATIVE：NOT_COMPARABLE 和 UNAVAILABLE_BUDGET 弃权；
+    - HINDSIGHT_ORACLE_TEACHING。
+- **错题：**
+  - 后果错：答卷给实际结果的概率低于 `outcome_error_prob`（0.1）。
+  - 决策错：执行的动作比另一个动作差，超过 `decision_error_margin`（1.0）× 同轮 κ_Q。
+  - teachers_agree：strict 示范认同 CF 判断的较优动作。
+- **放行：**
+  - 只有 OFFLINE_TRAIN：放行全部有效反馈。ready_at 照样保存，但不参与放行。
+  - TIME_ORDERED 在放行函数、CLI 和配置三处都报 `TIME_ORDERED_NOT_SUPPORTED`。
+  - 离线结果不是严格时间顺序的在线学习。
+- **B2 补课：**
+  - `MultiCorpusWindows(remedial=…, remedial_fraction=f)`：每批有 round(f × B) 个窗口包含错题行，标签与自然窗口相同。
+  - `MultiQWindows(remedial_boost=…)`：决策错行在起点权重里加权。
+  - 报告分开记唯一行、补课窗口和重复曝光。
+- **L6 进入 `iterate`**（从 `iteration.l6.from_round` 开始，默认关）：
+  - 顺序：CF → feedback → L2 复习 → L4 → L5 → freeze → exam。
+  - 不训练 L1，MarketCarry 存储保持有效。
+  - CF 没有代表性的轮次：跳过 L4，L5 不带补课。
 - **训练窗口的市场状态（R3，用户决定 2026-10-24）：**
   - 问题：零状态 64 行窗口训练出的 `pi_0000`，在 FG005 的训练窗口里 ADD 240 次，连续路径只有 99 次（WAIT→ADD 148，ADD→WAIT 7）。
   - 解决：窗口改为从连续路径的因果市场 carry 起步。

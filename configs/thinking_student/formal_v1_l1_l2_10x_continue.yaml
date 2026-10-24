@@ -54,7 +54,7 @@ foundation:
   holdout: 0
 
 iteration:
-  max_rounds: 6             # one rotation through the 18 contracts, as formal_v1_carry.yaml
+  max_rounds: 9             # one rotation through the 18 contracts, then rounds 7-9 with L6
   contracts_per_round: 3    # rotates through the 18 contracts round by round
   parallel_contracts: 2     # x cf_workers GPU processes, ~1.7 GB RAM and 1.2 GB GPU each
   # 100 in formal_v1_carry.yaml. Round 1 there: 314 real ADDs and 300 WAIT
@@ -88,6 +88,16 @@ iteration:
   kappa_floor: 0.05       # replaces a zero or smaller std of real pairs, never missing pairs
   state_check_windows: 0  # by hand on FG005: run.py state-check --window-start carry
   state_check_seed_offset: 1000003
+  # L6 (S5) from round 7 on, as formal_v1_carry.yaml; ten times its L2 review.
+  # OFFLINE_TRAIN only (TIME_ORDERED_NOT_SUPPORTED).
+  l6:
+    from_round: 7
+    order: OFFLINE_TRAIN
+    outcome_review_updates: 2000
+    remedial_fraction: 0.25
+    remedial_boost: 4.0
+    outcome_error_prob: 0.1
+    decision_error_margin: 1.0
 
 evaluation:
   random_seeds: 5

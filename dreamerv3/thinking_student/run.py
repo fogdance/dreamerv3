@@ -18,6 +18,14 @@ One policy improvement round (S4) runs in one directory: train-value from
 the frozen pi_k on its CF targets, train-policy to refresh the prior
 (L_policy_demo with a neutral anchor + L_reason), then freeze pi_{k+1}.
 
+S5 (L6): --feedback names the teaching items of pi_k (feedback.py, one
+folder per contract). train-outcome and train-policy then draw a share
+--remedial-fraction of every batch around its outcome errors (the L2
+review) or its decision errors that the strict teacher agrees with (L5);
+train-value samples its decision-error rows --remedial-boost times more.
+The items are OFFLINE_TRAIN material (TIME_ORDERED_NOT_SUPPORTED), and
+freeze lists them in the lineage.
+
 Windows of L2-L5 start from the zero market state with a loss burn-in, or
 with --window-start carry from the causal market carry of the continuous
 path, stored once per contract by market-carry under --carry-root (the
@@ -714,7 +722,8 @@ def _train(agent, args, train, held, report, constant=None):
   if held is not None:
     evaluate_now()
   report.update(last_train={k: float(v) for k, v in mets.items() if k.startswith(LOG_KEYS[stage])},
-                exposure=train.exposure, progress=record(args.updates))
+                exposure=train.exposure, curriculum=train.curriculum(),
+                progress=record(args.updates))
   return save(agent, args.run, progress=report['progress'])
 
 
@@ -757,6 +766,22 @@ def kept_anchor(policy):
   return dict(beta_q=float(data['ts']['decision.beta_q']),
               kappa_q=float(data['ts']['decision.kappa_q']), status='L4_SKIPPED_ANCHOR_KEPT',
               kept_from=str(policy), kept=data['teaching'].get('value_anchor'))
+
+
+def _feedback(args, kind):
+  """{contract: error cursors} of the --feedback folders and their report
+  (S5 B2), or (None, None) without feedback."""
+  if not args.feedback:
+    return None, None
+  from . import feedback as F
+  summaries = F.summaries(args.feedback)
+  cursors = F.remedial(args.feedback, kind)
+  return cursors, dict(
+      folders=[str(f) for f in args.feedback], kind=kind, policy=summaries[0]['policy'],
+      cf=[s['cf'] for s in summaries], error_cursors={c: len(v) for c, v in cursors.items()},
+      remedial_fraction=args.remedial_fraction, remedial_boost=args.remedial_boost,
+      teaching_order=F.OFFLINE_TRAIN, time_ordered=F.TIME_ORDERED_NOT_SUPPORTED,
+      note='OFFLINE_TRAIN teaching items, not a strict time-ordered online learning result')
 
 
 def _one(folders, flag):
@@ -843,7 +868,21 @@ def main(argv=None):
   parser.add_argument('--kappa-floor', type=float, default=None,
                       help="freeze: positive kappa_Q for a zero or smaller 'auto' std of real "
                            'pairs; never for missing pairs')
+  parser.add_argument('--feedback', action='append', default=None,
+                      help='S5 teaching items of one contract (feedback.py) of the frozen pi_k: '
+                           'remedial windows in train-outcome, train-policy and train-value; '
+                           'freeze lists them in the lineage')
+  parser.add_argument('--remedial-fraction', type=float, default=0.,
+                      help='train-outcome, train-policy: share of every batch drawn around '
+                           'error cursors of --feedback')
+  parser.add_argument('--remedial-boost', type=float, default=1.,
+                      help='train-value: sampling weight factor of a decision-error row')
   args = parser.parse_args(argv)
+  if args.feedback and args.command not in ('train-outcome', 'train-policy', 'train-value',
+                                             'freeze'):
+    parser.error(f'{args.command} takes no --feedback: L6 never trains the market brain')
+  if not args.feedback and (args.remedial_fraction or args.remedial_boost != 1.):
+    parser.error('--remedial-fraction and --remedial-boost need --feedback')
   if args.command == 'collect':
     agent, meta = load_policy(args.policy, args.device)
     out = args.out or Path(args.policy).parents[1] / 'collect' / f"{meta['policy']}_{args.mode}"
@@ -932,6 +971,7 @@ def main(argv=None):
     sources = corpus_sources(args.corpus or ())
     if not sources:
       parser.error(f'{args.command} needs --corpus')
+    remedial, feedback = _feedback(args, 'outcome' if stage == 'L2' else 'demo')
     accounts = None if stage == 'L1' else [LABEL_ACCOUNT]
     corpora = [TSCorpus(c, behaviors=accounts, carry_root=carry_root) for c in args.corpus]
     kw = dict(mix=args.mix, holdout=args.holdout, accounts=accounts)
@@ -940,14 +980,16 @@ def main(argv=None):
       kw.update(weight='outcome', burnin=0 if carry_root else ts.outcome_burnin)
     elif stage == 'L3':
       kw.update(weight='demo', burnin=0 if carry_root else ts.demo_burnin)
-    train = MultiCorpusWindows(corpora, split='train', seed=seed,
-                               demo_balance=args.demo_balance, **kw)
+    train = MultiCorpusWindows(corpora, split='train', seed=seed, demo_balance=args.demo_balance,
+                               remedial=remedial, remedial_fraction=args.remedial_fraction, **kw)
     held = MultiCorpusWindows(corpora, split='eval', demo_weights=train.demo_weights, **kw) \
         if args.holdout and stage != 'L1' else None
     report = dict(corpora=[s['contract'] for s in sources], corpus_folders=args.corpus,
                   mix=args.mix, holdout=args.holdout, diagnostic=diagnostic,
                   window_start='carry' if carry_root else 'zero', carry_root=carry_root,
                   rows={c: p.hi - p.lo for c, p in zip(train.contracts, train.parts)}, eval=[])
+    if feedback:
+      report['feedback'] = feedback
     constant = None
     if stage == 'L2':
       constant = constant_answer(train)
@@ -966,7 +1008,12 @@ def main(argv=None):
       parser.error('train-value needs --cf')
     kw = dict(holdout=args.holdout, burnin=0 if carry_root else ts.q_burnin, mix=args.mix,
               carry_root=carry_root)
-    train = MultiQWindows(args.cf, 'train', cf_boost=args.cf_boost, seed=seed, **kw)
+    remedial, feedback = _feedback(args, 'decision')
+    given = {str(Path(c).resolve()) for c in args.cf}
+    if feedback and not all(c and str(Path(c).resolve()) in given for c in feedback['cf']):
+      parser.error('train-value takes --feedback built from its own --cf folders only')
+    train = MultiQWindows(args.cf, 'train', cf_boost=args.cf_boost, seed=seed, remedial=remedial,
+                          remedial_boost=args.remedial_boost, **kw)
     held = MultiQWindows(args.cf, 'eval', **kw) if args.holdout else None
     constant = train.constant()
     report = {'cf': [str(c) for c in args.cf], 'policy': train.policy,
@@ -975,6 +1022,8 @@ def main(argv=None):
               'carry_root': carry_root, 'cf_boost': args.cf_boost, 'constant': constant,
               'train_pairs': train.pair_counts(), 'eval_pairs': held and held.pair_counts(),
               'eval': []}
+    if feedback:
+      report['feedback'] = feedback
     print('Q targets', {k: report[k] for k in ('constant', 'train_pairs', 'eval_pairs')})
     folder = _train(agent, args, train, held, report, constant)
     (folder / 'train_value.json').write_text(json.dumps(report, indent=1))
@@ -994,6 +1043,11 @@ def main(argv=None):
           {json.loads((Path(c) / 'meta.json').read_text())['policy'] for c in args.cf}))
     if args.value_anchor_of:
       lineage['value_kept_from'] = str(args.value_anchor_of)
+    if args.feedback:
+      from . import feedback as F
+      F.summaries(args.feedback)
+      lineage.update(feedback=[str(f) for f in args.feedback], teaching_order=F.OFFLINE_TRAIN,
+                     time_ordered=F.TIME_ORDERED_NOT_SUPPORTED)
     print('Frozen', freeze(agent, args.run, args.name, args.preset, args.corpus or (),
                            teaching, lineage, args.out))
   else:
