@@ -346,7 +346,24 @@
         - 6098 个合法行上 ΔQ 符号一致率 87.4%；
         - 带锚点的 z 翻转 245 / 6098（4.0%），ADD 数：窗口 414，路径 419；ADD→WAIT 125，WAIT→ADD 120，两个方向对称。
       - 结论：Q 的窗口状态没有偏差，正式 L4 用同一 carry 方案。正式 L4 预算定为 500 次，即 q_pair/q_cf 留出值最好的位置，写入 `formal_v1_carry.yaml`。
-- [ ] D-7：正式 L4 及本轮其余步骤；记录、提交
+- [x] D-7：正式 L4 及本轮其余步骤；记录、提交
+  - 证据：`formal_carry_r1_l4.sh`（dreamerv3 `375cf83`），`formal_train iterate --rounds 1`，`run_state.step` 为 `done`。
+    - 训练与冻结：
+      - L4：11:43:52–11:45:54，500 次，carry 开窗，使用全部 614 对；
+      - L5（S4 先验刷新）：100 次，carry 开窗；
+      - `pi_0001`：11:46:58 冻结，来自 learner ckpt 34600。β_Q 1.0，κ_Q 0.559（614 对的合并 std）；`lineage.q_teacher_policy` 为 `pi_0000`；L4 和 L5 的 `window_start` 都是 `carry`。`repos` 为 dreamerv3 `375cf83`，dirty 为 True（当时只有文档改动未提交）。
+    - DEV FG409（完整，31,034 分钟）：
+      - Reward 17.69；随机基线（同 ADD 比例，5 个 seed）15.24 ± 5.98。
+      - ADD 304 / 合法 1479，TP 246、SL 58，占仓 0.95。
+      - `best_dev` 为 `pi_0001`：每分钟 0.00057，`pi_0000` 为 0.00043。
+      - 与基线的差在基线自身的波动之内，而且只有一个 DEV 合约，不能说明交易能力更好。
+    - `pi_0001` 的 state-check（`C4_STATE_CHECK_20261024/carry_pi_0001/`，11:54–12:05）：FG005，1000 个 64 行窗口，从存储起步，换一组种子。
+      - 存储与路径的差为 0.0。
+      - 差异 / std：ΔQ 0.049、Q_ADD 0.10、Q_WAIT 0.10、z 0.25；有符号偏差分别为 −0.0011、−0.0027、−0.0022、−0.0021 std。
+      - 6098 个合法行上 ΔQ 符号一致率 94.7%；正式动作翻转 220（3.6%），ADD 数：窗口 345，路径 309。
+      - ΔQ 本身很小（std 0.015），锚点 clip(ΔQ/κ_Q) 对 z 的影响也很小。
+    - 本轮记录：`L5` 为 `S4_PRIOR_REFRESH`，`L6` 为 `L6_NOT_IMPLEMENTED`。
+    - 可续训：基础学生 ckpt 34000，learner ckpt 34250、34500、34600，以及冻结的 `pi_0000`、`pi_0001`。再次运行 `iterate`，会在 `max_rounds` 1 处停下。
 
 ## S5 — 自主教学循环 + Teacher-free 考试
 - [ ] B1 教学题生命周期，含 `ready_at` 成熟反馈
