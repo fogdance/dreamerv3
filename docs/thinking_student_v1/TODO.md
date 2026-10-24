@@ -375,7 +375,10 @@
   - `test_ts_v1_c4.py` 17 passed（CPU，12 分钟）。
   - 真实数据冒烟 `C4_L2_CARRY_SMOKE_20261024`：18 合约 size50m，从 ckpt 22000 起步、使用开发 run 的存储，60 次，exit 0，49 s（含启动），RSS 3.6 GB，每个 batch 1024 行都计损失。
 - [ ] E-3：开发 run 第 2–6 轮（`max_rounds: 6`，18 合约轮转一遍），快速跑完以验证代码
-- [ ] E-4：同步：开发分支的新提交快进到 10x 的 run 分支（dreamerv3、gym）
+- [x] E-4：同步：开发分支的新提交快进到 10x 的 run 分支（dreamerv3、gym）
+  - 2026-10-24 13:2x：用户的未跟踪草稿备份到会话临时目录后删除，dreamerv3 run 分支快进到 `37cdd85`；gym run 分支即 `0056296`，两个 worktree 都干净。
+  - 从 10x 的 gym worktree 运行 `formal_train status`（只读）：配置可读，L1 60,000 / L2 12,000，latest ckpt 72000。
+  - 以后开发分支每有新提交都这样快进；编排器的步与步之间生效，不改正在运行的那一步。
 
 ## S5 — 自主教学循环 + Teacher-free 考试
 - [ ] B1 教学题生命周期，含 `ready_at` 成熟反馈
