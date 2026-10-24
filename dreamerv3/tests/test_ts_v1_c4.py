@@ -449,11 +449,17 @@ def test_carry_windows_train_only_their_stage(pik, two, stores, tmp_path):
           '--holdout', '0', '--window-start', 'carry', '--carry-root', str(stores)]
   corpora = ['--corpus', str(two[0]), '--corpus', str(two[1])]
   run = tmp_path / 'run'
-  ts_run.main(['train-policy', '--run', str(run), '--init-from', str(pik['policy']), *corpora,
+  ts_run.main(['train-outcome', '--run', str(run), '--init-from', str(pik['policy']), *corpora,
                '--updates', '2', *args])
+  report = json.loads((ts_run.latest(run) / 'train_outcome.json').read_text())
+  assert (report['window_start'], report['carry_root']) == ('carry', str(stores))
+  changed = changed_groups(params(pik['policy']), params(ts_run.latest(run)))
+  assert 'outcome' in changed and changed <= {'outcome', 'fusion'}
+  before = params(ts_run.latest(run))
+  ts_run.main(['train-policy', '--run', str(run), *corpora, '--updates', '2', *args])
   report = json.loads((ts_run.latest(run) / 'train_policy.json').read_text())
   assert (report['window_start'], report['carry_root']) == ('carry', str(stores))
-  assert changed_groups(params(pik['policy']), params(ts_run.latest(run))) == {'decision'}
+  assert changed_groups(before, params(ts_run.latest(run))) == {'decision'}
   before = params(ts_run.latest(run))
   q = [a for c in CONTRACTS for a in ('--cf', str(pik['cf'][c]))]
   ts_run.main(['train-value', '--run', str(run), *q, '--updates', '2', *args])
@@ -622,6 +628,59 @@ def test_orchestrator_starts_windows_from_the_market_carry(pik, two, tmp_path, m
   assert calls == ['train-value']
   assert argvs[-1][argvs[-1].index('--window-start') + 1] == 'carry'
   assert argvs[-1][argvs[-1].index('--carry-root') + 1] == str(lay.carry)
+
+
+def test_orchestrator_trains_l2_on_the_carry_of_an_l1_continued_by_hand(pik, two, stores,
+                                                                        tmp_path, monkeypatch):
+  """formal_v1_l1_l2_10x_continue.yaml: a copied foundation checkpoint whose
+  L1 went on by hand after its L2. With cumulative budgets the orchestrator
+  leaves L1 alone, builds the stores from the continued L1 brain and trains
+  the remaining L2 and then L3 on them. L2 and L3 leave the market brain
+  alone, so the stores are pi_0000's deployed market memory."""
+  base = ['--preset', 'small', '--device', 'cpu', '--batch-size', '2', '--batch-length', str(T),
+          '--holdout', '0', '--corpus', str(two[0]), '--corpus', str(two[1])]
+  source = tmp_path / 'source'
+  ts_run.main(['train-market', '--run', str(source), '--init-from', str(pik['run']), *base,
+               '--updates', '1'])
+  ts_run.main(['train-outcome', '--run', str(source), *base, '--updates', '1'])
+  root = tmp_path / 'corpora'
+  root.mkdir()
+  for folder, name in zip(two, CONTRACTS):
+    (root / name).symlink_to(folder)
+  lay = FT.Layout(tmp_path / 'run')
+  shutil.copytree(source, lay.foundation)
+  ts_run.main(['train-market', '--run', str(lay.foundation), '--init-from', str(source), *base,
+               '--updates', '2'])
+  assert ts_run.progress(lay.foundation) == {'L1': 3, 'L2': 1, 'L3': 0, 'L4': 0}
+  config = tmp_path / 'continue.yaml'
+  config.write_text(yaml.safe_dump(dict(
+      paths=dict(corpus_root='corpora', run_root='run', init_from=str(ts_run.latest(source))),
+      student=dict(preset='small', device='cpu', seed=1, batch_size=2, batch_length=T,
+                   log_every=1, window_start='carry'),
+      foundation=dict(market_updates=3, outcome_updates=2, policy_updates=1, save_every=1),
+      evaluation=dict(random_seeds=1, smoke_steps=20))))
+  calls, argvs = [], []
+  monkeypatch.setattr(FT, '_call', in_process(calls, argvs=argvs))
+  FT.main(['pretrain', '--config', str(config)])
+  assert calls == ['market-carry', 'market-carry', 'train-outcome', 'train-policy', 'freeze',
+                   'exam', 'exam']
+  for argv in argvs[2:4]:
+    assert argv[argv.index('--updates') + 1] == '1'
+    assert argv[argv.index('--window-start') + 1] == 'carry'
+    assert argv[argv.index('--carry-root') + 1] == str(lay.carry)
+  assert ts_run.progress(lay.foundation) == {'L1': 3, 'L2': 2, 'L3': 1, 'L4': 0}
+  report = json.loads(sorted(lay.foundation.glob('ckpt/*/train_outcome.json'))[-1].read_text())
+  assert (report['window_start'], report['carry_root']) == ('carry', str(lay.carry))
+  deployed = tmp_path / 'deployed'
+  ts_run.main(['market-carry', '--policy', str(lay.policy(0)), '--corpus', str(two[0]),
+               '--corpus', str(two[1]), '--out', str(deployed), '--device', 'cpu'])
+  for name in CONTRACTS:
+    built = TC.MarketCarry(lay.carry / name).arrays
+    for k in TC.CARRY_KEYS:
+      np.testing.assert_array_equal(built[k], TC.MarketCarry(deployed / name).arrays[k],
+                                    err_msg=f'{name} {k}')
+  # Not the memory of the brain before L1 went on.
+  assert not np.array_equal(built['deter'], TC.MarketCarry(stores / CONTRACTS[1]).arrays['deter'])
 
 
 def test_orchestrator_finishes_the_exam_of_a_frozen_candidate_first(pik, two, tmp_path,

@@ -365,6 +365,18 @@
     - 本轮记录：`L5` 为 `S4_PRIOR_REFRESH`，`L6` 为 `L6_NOT_IMPLEMENTED`。
     - 可续训：基础学生 ckpt 34000，learner ckpt 34250、34500、34600，以及冻结的 `pi_0000`、`pi_0001`。再次运行 `iterate`，会在 `max_rounds` 1 处停下。
 
+## 开发 run 与 10x 正式 run（用户 2026-10-24）
+- [x] E-1：10x 正式配置 `formal_v1_l1_l2_10x_continue.yaml`：与 `formal_v1_carry.yaml` 只差步数（各阶段 ×10，保存间隔 ×10）和 WAIT 分叉（×10，dev 的 100 是为了快）；用独立的 dreamerv3 + gym worktree；用户手动启动的 L1 不重跑
+  - 配置：去掉注释后与开发配置只差 `run_root`、L1/L2 累计目标 100,000/120,000、L3 120,000、L4 5000、L5 1000、保存间隔 10,000/2500、`cf_wait_forks` 1000。用户草稿（L3 12,000、L4 3000、L5 100）按 10x 统一。
+  - worktree：用户已建 dreamerv3（`/data/research/fg-s3-thinking-student-l1-l2-10x-continue-20261024/dreamerv3`，分支 `run/thinking-student-l1-l2-10x-continue-20261024`）；同名分支的 gym worktree 新建在同一目录下，起点 `0056296`。
+  - L1 不重跑：手动启动的 `train-market --updates 90000` 与编排器的调用参数相同；它用 `8bf5bc1`，之后 L1 代码没有改动。速度 0.215 s/次，到 100,000 约在 15:30。
+- [x] E-2：测试 10x run 将走的 L2 carry 路径：L2 只改 outcome 组；拷贝的 ckpt 上手动续 L1 之后，pretrain 用 L1 的新脑建 store，L2/L3 读 store；store 等于 `pi_0000` 部署时的市场记忆
+  - `test_carry_windows_train_only_their_stage` 增加 L2（只改 outcome 组）；新测试 `test_orchestrator_trains_l2_on_the_carry_of_an_l1_continued_by_hand`：调用顺序为 market-carry ×2 → train-outcome → train-policy → freeze → exam ×2，两步都带 carry 参数；存储与 `pi_0000` 的部署记忆逐位相同，与续 L1 之前的不同。
+  - `test_ts_v1_c4.py` 17 passed（CPU，12 分钟）。
+  - 真实数据冒烟 `C4_L2_CARRY_SMOKE_20261024`：18 合约 size50m，从 ckpt 22000 起步、使用开发 run 的存储，60 次，exit 0，49 s（含启动），RSS 3.6 GB，每个 batch 1024 行都计损失。
+- [ ] E-3：开发 run 第 2–6 轮（`max_rounds: 6`，18 合约轮转一遍），快速跑完以验证代码
+- [ ] E-4：同步：开发分支的新提交快进到 10x 的 run 分支（dreamerv3、gym）
+
 ## S5 — 自主教学循环 + Teacher-free 考试
 - [ ] B1 教学题生命周期，含 `ready_at` 成熟反馈
 - [ ] B2 课程循环：自然教材、多行为教材、学生自采、错题补课

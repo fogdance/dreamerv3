@@ -1,0 +1,84 @@
+# Thinking Student V1 formal training with ten times the steps of
+# formal_v1_carry.yaml (user decision 2026-10-24). The development run of
+# formal_v1_carry.yaml trains fast to check the code; this run trains every
+# stage ten times longer, for a comparison later. Only step counts differ from
+# formal_v1_carry.yaml; everything else is kept the same.
+#
+# The budgets below are cumulative targets, not additional update counts. The
+# foundation continues the L1/L2 checkpoint of formal_v1.yaml (ckpt 22000,
+# copied into this run, so FORMAL_V1_20261024 remains unchanged):
+# L1 continues from 10,000 to 100,000; L2 continues from 12,000 to 120,000.
+#
+# Run L1 first with run.py train-market for 90,000 additional updates. After
+# that, formal_train pretrain observes progress L1=100,000/L2=12,000, builds
+# fresh MarketCarry stores from the new L1 brain, trains the 108,000 remaining
+# L2 updates and then L3 on the same stores, freezes pi_0000 and examines it.
+#
+# One change besides the steps: formal_v1_carry.yaml samples 100 WAIT forks
+# per contract for a fast development round. Ten times the L4 updates on that
+# much CF would only fit it closer (see value_updates), so this run samples
+# ten times the WAIT forks; every real ADD of the policy is forked as before.
+#
+#   cd gym-trading-env && env PYTHONPATH=.:src:../dreamerv3 \
+#     /home/v/miniconda3/envs/dreamerv3/bin/python -m dreamerv3.thinking_student.formal_train \
+#     pretrain --config ../dreamerv3/configs/thinking_student/formal_v1_l1_l2_10x_continue.yaml
+
+paths:  # relative paths are relative to this file
+  markets: markets/pool.json
+  corpus_root: /data/logdir/fg_single3/thinking_student/corpus
+  run_root: /data/logdir/fg_single3/thinking_student/FORMAL_V1_L1_100K_L2_120K_CONTINUE_20261024
+  init_from: /data/logdir/fg_single3/thinking_student/FORMAL_V1_20261024/foundation/ckpt/000000022000
+
+corpora:
+  contracts: discover   # every TRAIN corpus under corpus_root (18)
+  mix: uniform_contract
+
+dev:
+  contracts: [CZCE.FG409]
+
+student:
+  preset: size50m
+  device: cuda
+  seed: 20261024
+  batch_size: 16
+  batch_length: 64
+  log_every: 100
+  window_start: carry
+  carry_parallel: 6       # market-carry processes, ~1 GB GPU and ~1.7 GB RAM each
+
+foundation:
+  market_updates: 100000   # cumulative L1 target; source progress is 10,000
+  outcome_updates: 120000  # cumulative L2 target; source progress is 12,000
+  policy_updates: 120000   # L3: 0.11 s/update, ~3.7 h
+  save_every: 10000        # 388 MB per checkpoint
+  holdout: 0
+
+iteration:
+  max_rounds: 6             # one rotation through the 18 contracts, as formal_v1_carry.yaml
+  contracts_per_round: 3    # rotates through the 18 contracts round by round
+  parallel_contracts: 2     # x cf_workers GPU processes, ~1.7 GB RAM and 1.2 GB GPU each
+  # 100 in formal_v1_carry.yaml. Round 1 there: 314 real ADDs and 300 WAIT
+  # forks on FG001/FG005/FG009 (legal flat decisions 7261/2041/9201), CF
+  # 9-12 min per contract, about 4 s of a worker per fork. Here about 3300
+  # pairs on the same contracts, about 30 min per contract.
+  cf_wait_forks: 1000
+  cf_workers: 3
+  # Ten times the L4 of formal_v1_carry.yaml. Its pilot on held-out pairs
+  # (C4_STATE_CHECK_20261024/carry_pilot_l4, 614 pairs) was best after 500
+  # updates and worse from 1000 on. With about five times the pairs, 5000 is
+  # still past that point: check the held-out curve of round 1 before its L4
+  # (iterate --until cf, then a pilot as in formal_v1_carry.yaml).
+  value_updates: 5000
+  prior_refresh_updates: 1000
+  save_every: 2500
+  holdout: 0
+  beta_q: 1.0             # 0 with Q_ANCHOR_NOT_READY when the round's CF holds < 2 valid pairs
+  kappa_q: auto
+  kappa_floor: 0.05       # replaces a zero or smaller std of real pairs, never missing pairs
+  state_check_windows: 0  # by hand on FG005: run.py state-check --window-start carry
+  state_check_seed_offset: 1000003
+
+evaluation:
+  random_seeds: 5
+  smoke_contracts: 2
+  smoke_steps: 6000

@@ -14,6 +14,10 @@
 #   cd gym-trading-env && env PYTHONPATH=.:src:../dreamerv3 \
 #     /home/v/miniconda3/envs/dreamerv3/bin/python -m dreamerv3.thinking_student.formal_train \
 #     pretrain --config ../dreamerv3/configs/thinking_student/formal_v1_carry.yaml
+#
+# This is the development run (user decision 2026-10-24): it trains fast to
+# check the code. formal_v1_l1_l2_10x_continue.yaml trains ten times the steps
+# of every stage in a run of its own and differs from this file in steps only.
 
 paths:  # relative paths are relative to this file
   markets: markets/pool.json
@@ -47,7 +51,7 @@ foundation:
   holdout: 0
 
 iteration:
-  max_rounds: 1
+  max_rounds: 6             # one rotation through the 18 contracts
   contracts_per_round: 3    # rotates through the 18 contracts round by round
   parallel_contracts: 2     # x cf_workers GPU processes, ~1.7 GB RAM and 1.2 GB GPU each
   cf_wait_forks: 100

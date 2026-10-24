@@ -264,7 +264,7 @@ S5（L6：`ready_at` 反馈与课程循环）未实现。每轮在 `run_state.js
   - 测试（`test_ts_v1_c4.py`）覆盖：
     - 存储等于正式采集路径上的 carry：同种子时窗口完全复现路径，`--run` 与 `--policy` 两种来源写出相同的存储，且不写入 run；
     - 窗口附带正确的起点 carry；
-    - carry 开窗时 L3 只改 `decision`、L4 只改 `value`；
+    - carry 开窗时 L2 只改 outcome 组、L3 只改 `decision`、L4 只改 `value`；
     - 编排在 L3 之前生成存储，state-check 读取存储且与路径差 0，L4 收到 carry 参数。
 - **配置与运行：** `formal_v1_carry.yaml`，run 根目录 `FORMAL_V1_CARRY_20261024`。
   - `init_from` 为 `FORMAL_V1_20261024` 的 ckpt 22000：L1/L2 原样继承，预算为 0；L3 12,000 次。
@@ -288,6 +288,35 @@ S5（L6：`ready_at` 反馈与课程循环）未实现。每轮在 `run_state.js
     - DEV FG409：17.69，随机基线 15.24 ± 5.98；`best_dev` 为 `pi_0001`。差在基线波动之内，且只有一个 DEV 合约。
     - `pi_0001` 的 state-check：存储与路径的差为 0；Q_ADD、Q_WAIT、ΔQ、z 的有符号偏差都在 ±0.003 std 以内；ΔQ 符号一致率 94.7%。
 
+## 开发 run 与 10x 正式 run（用户 2026-10-24）
+
+- **分工：** 开发 run `FORMAL_V1_CARRY_20261024`（`formal_v1_carry.yaml`）用小预算快速跑完，验证代码；正式 run `FORMAL_V1_L1_100K_L2_120K_CONTINUE_20261024`（`formal_v1_l1_l2_10x_continue.yaml`）的每个阶段都训练 10 倍步数，两者留作对比。
+- **配置差异：** 正式配置只在步数上与开发配置不同，唯一的例外是 WAIT 分叉数。开发配置设 100 是为了跑得快；如果 L4 乘 10 而 CF 不变，只会在同样约 600 对上过拟合得更深。
+
+  | | 开发 | 10x |
+  | --- | --- | --- |
+  | L1 / L2（累计） | 10,000 / 12,000（继承 ckpt 22000） | 100,000 / 120,000 |
+  | L3 | 12,000 | 120,000 |
+  | L4 / L5（每轮） | 500 / 100 | 5,000 / 1,000 |
+  | 保存间隔（基础 / 每轮） | 1,000 / 250 | 10,000 / 2,500 |
+  | 每合约 WAIT 分叉 | 100 | 1,000 |
+  | 轮数 | 6（每轮 3 个合约，18 个合约轮转一遍） | 6 |
+
+- **worktree：** 10x run 用自己的 `/data/research/fg-s3-thinking-student-l1-l2-10x-continue-20261024/{dreamerv3,gym-trading-env}`，两仓分支都是 `run/thinking-student-l1-l2-10x-continue-20261024`；开发继续在 `feat/thinking-student-v1-20261022` 上进行。
+  - 同步方式：开发分支有新提交时，把 run 分支快进过去。
+  - 编排器的每一步是一个子进程，启动时才 import 代码，所以同步在步与步之间生效；不在一步运行中途改它正在用的代码。
+- **10x run 的 L1：** 用户把 ckpt 22000（L1 10,000 / L2 12,000）拷进新 run，手动运行 `run.py train-market --updates 90000 --save-every 10000`，参数与编排器的调用相同。L1 跑完后由 `formal_train pretrain` 继续：
+  1. 用 L1 的新脑建 18 个合约的存储；
+  2. 训练 L2 剩下的 108,000 次；
+  3. 训练 L3 120,000 次；
+  4. 冻结 `pi_0000` 并考试。
+- **L2 carry 开窗的验证：** 开发 run 的 L2 是继承来的，没有走过这条路径。
+  - 新测试覆盖：
+    - L2 只改 outcome 组；
+    - 拷贝的 ckpt 在 L2 之后又手动续了 L1，编排器先用续训后的脑建存储，L2、L3 都读它；
+    - 冻结后 `pi_0000` 的部署记忆与存储逐位相同，与续 L1 之前的脑则不同。
+  - 真实数据冒烟（`C4_L2_CARRY_SMOKE_20261024`）：18 个合约、60 次，从 ckpt 22000 起步，使用开发 run 的存储。结果正常；每个 batch 的 1024 行都计损失，而零状态开窗只计预热之后的行。
+
 ## 可恢复的 Checkpoint 与策略
 
 | 位置 | 内容 |
@@ -298,6 +327,8 @@ S5（L6：`ready_at` 反馈与课程循环）未实现。每轮在 `run_state.js
 | `FORMAL_V1_CARRY_20261024/policies/pi_0000` | 当前正式 `pi_0000`；`experience/pi_0000/` 中有 FG001、FG005、FG009 的采集和 CF |
 | `FORMAL_V1_CARRY_20261024/learners/pi_0001/ckpt/000000034600`、`policies/pi_0001` | 第 1 轮学习器（L4 500 / L5 100）与冻结的 `pi_0001`（`best_dev`） |
 | `C4_STATE_CHECK_20261024/carry_pi_0000/`、`carry_pilot_l4/`、`carry_pi_0001/` | 新 `pi_0000` 和 `pi_0001` 的 state-check；诊断 L4（run、`pilot_l4` 快照、Q state-check），只用于定 L4 预算 |
+| `FORMAL_V1_L1_100K_L2_120K_CONTINUE_20261024/foundation/ckpt/` | 10x 正式 run：ckpt 22000 拷自 `FORMAL_V1_20261024`，L1 每 10,000 次一份（进行中） |
+| `C4_L2_CARRY_SMOKE_20261024/` | L2 carry 开窗的真实数据冒烟（60 次，388 MB，可删除） |
 | `C4_SMOKE_2C_50M_20261023/foundation/ckpt/000000000140` | size50m 冒烟的基础学生（L1 40 / L2 60 / L3 40） |
 | `C4_SMOKE_2C_50M_20261023/learners/pi_0001/ckpt/000000000200` | 第 1 轮学习器（L4 40 / L5 20） |
 | `C4_SMOKE_2C_50M_20261023/policies/pi_0000`、`pi_0001` | 冻结策略；`experience/pi_0000/` 中有两合约的采集和 CF |
