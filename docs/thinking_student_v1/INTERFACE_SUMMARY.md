@@ -78,7 +78,8 @@
 
 **环境**
 - TS env 没有 CHUNK_END（`chunk_steps=0`）。
-- 市场记忆从第一分钟连续运行到真终止。训练窗口从零状态起步并有 burn-in，这不代表数据断档。
+- 市场记忆从第一分钟连续运行到真终止。训练窗口默认从零状态起步并有 burn-in，这不代表数据断档。
+- 正式 run `formal_v1_carry` 中，L2–L5 窗口从 MarketCarry 存储的连续路径 carry 起步，没有 burn-in（见下文 C4 一节）。
 
 **教材**
 - 按“合约 × cursor”分表：`market/`、`facts/`、`strict/` 每个合约一份；`behaviors/<P>/` 只存 P0–P4 的账户侧数据。
@@ -106,7 +107,7 @@
   - `q_cf`：fork 点另一动作的分支回报，来源 `VERIFIED_CF_NATIVE`。
 - L4：
   - `opt_l4` 只更新 value 组。
-  - 三项损失：`L_q_real`、`L_q_cf`、`L_q_pair`（ΔQ 回归到 ΔG）。上游全部 SG，带 burn-in。
+  - 三项损失：`L_q_real`、`L_q_cf`、`L_q_pair`（ΔQ 回归到 ΔG）。上游全部 SG。零状态开窗带 burn-in，carry 开窗不带。
   - 不用 target copy（回报完整），没有 Actor 损失。
   - 留出评估在同样的行上给出常数答案（训练段目标均值）的 MSE，以及 `constant/sign_agree`（每对都取训练段 ΔG 均值的符号），与模型的 `q/sign_agree` 对比。
 
@@ -157,6 +158,14 @@
   - 随机入场基线：同样的分钟、同样的 Native 规则、相同的入场率。
   - 指标附定义；`best_dev` 按 DEV 每分钟 Reward 选取。
 - **L5 = S4 先验刷新；** S5/L6 未实现，每轮记 `L6_NOT_IMPLEMENTED`。
+- **训练窗口的市场状态（R3，用户决定 2026-10-24）：**
+  - 问题：零状态 64 行窗口训练出的 `pi_0000`，在 FG005 的训练窗口里 ADD 240 次，连续路径只有 99 次（WAIT→ADD 148，ADD→WAIT 7）。
+  - 解决：窗口改为从连续路径的因果市场 carry 起步。
+    - `run market-carry` 为每个合约记录游标 t 处理该分钟观测之前的 carry。每个合约从零状态和策略自己的种子计数器开始，不接上一个合约。
+    - 市场脑只读市场观测，L1 之后冻结，所以一份存储就是此后每个 `pi_k` 部署时的市场记忆。
+    - `--window-start carry --carry-root` 让 L2–L5 和 state-check 读这份存储。
+    - 编排的 `student.window_start: carry` 在 L2 或 L3 之前补齐存储；已有存储时拒绝再训练 L1。
+  - state-check 报告存储与部署路径的差（`store_vs_path_max_abs_diff`），以及全部行上的有符号偏差（`mean_diff`）。
 - **size50m 冒烟（FG005 + FG405）：**
   - pretrain → 中断续跑的一轮 → `pi_0001`；
   - DEV FG409：`pi_0000` 16.90、`pi_0001` 18.62，随机基线分别为 13.12、16.86。只是工程贯通，不说明交易能力。

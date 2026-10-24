@@ -52,9 +52,14 @@ iteration:
   parallel_contracts: 2     # x cf_workers GPU processes, ~1.7 GB RAM and 1.2 GB GPU each
   cf_wait_forks: 100
   cf_workers: 3
-  value_updates: 3000       # provisional: set from the pilot L4 before the formal L4
+  # L4 budget from the pilot L4 (C4_STATE_CHECK_20261024/carry_pilot_l4, 3000
+  # updates from pi_0000 on this round's CF, TRAIN_INTERNAL_DIAGNOSTIC holdout
+  # of 135 pairs): the held-out q_pair and q_cf are best after 500 updates
+  # (q_pair 0.354, constant 0.352; sign agreement 0.55, constant 0.46) and
+  # worsen from there on (q_pair 0.40 at 1000, 0.50 at 2000).
+  value_updates: 500
   prior_refresh_updates: 100
-  save_every: 500
+  save_every: 250
   holdout: 0
   beta_q: 1.0             # 0 with Q_ANCHOR_NOT_READY when the round's CF holds < 2 valid pairs
   kappa_q: auto
