@@ -381,6 +381,18 @@
     - 实际模拟 1596 个分叉中的 298 个：250 个能在上限内到达终点，另 48 个是预算样本；其余 1298 个记 UNAVAILABLE_BUDGET。
     - FG205、FG209 的 CF 保留不动。
     - 接着由 `formal_carry_r2_r6.sh` 跑完第 3–6 轮，最后做 `pi_0006` 的 state-check。
+  - FG201 的 CF 于 21:54 完成，用时 76 分钟，分支共 1,515,824 步。
+    - 250 对 VALID_COMPLETE/TERMINAL，都以 MAIN_ROLL 结束，cursor 23071–31229，全在合约最后 8192 分钟内；其中 ADD 242、WAIT 8。
+    - 48 个预算样本全部跑满 8192 步，记 NOT_COMPARABLE/CAP（end_status ACTIVE），没有 MARGIN_CALL。
+    - 1298 个记 UNAVAILABLE_BUDGET/BELOW_FLOOR_BEYOND_CAP。
+    - `couple_from` = 31259，即整条参考轨迹上没有可耦合的 cursor。
+  - 第 3 轮按规则跳过 L4：`L4_SKIPPED_CF_NOT_REPRESENTATIVE`，FG201 覆盖率 0.1566 < 0.8。
+    - L5 照常。
+    - `pi_0003` 冻结时保留 `pi_0002` 的 β_Q 1.0、κ_Q 0.7255（`L4_SKIPPED_ANCHOR_KEPT`）。
+    - 与 `pi_0002` 相比只有 decision 组的参数变了，value、market、outcome、fusion、account 逐位相同。
+  - 到第 3 轮为止的 CF 覆盖：
+    - 9 个合约共 5696 个分叉，有效 4350 对，占分叉的 76.4%，占空仓合法决策（28,512 个）的 15.3%。
+    - 除 FG201 外，每个合约的分叉都 100% 有效。FG201 的 250 对是后段的选择性样本，不能代表全部状态。
 - [x] E-5：有限预算的精确 CF（用户 2026-10-24 方案 3）；提交 gym `2b4e894`、dreamerv3 `8be867b`
   - 回归（CPU，20:35–21:02）：gym `test_ts_v1_cf.py` 加 dreamerv3 `test_ts_v1_s0`–`s4`、`test_ts_v1_c4.py`，56 passed，0 failed。
   - 起因：π_2 在 FG201 上 ADD 1499 次，权益从 300,000 降到 36,987（最低 36,423，始终为正；每份 collection 都正常结束于 MAIN_ROLL，没有 MARGIN_CALL，也没有被拒的 ADD，符合 Native 规则：3 手保证金最多 18,048）。耦合下限是 90,336，参考轨迹每一行都低于它，所以不可能耦合。1596 个分叉里有 1346 个在 8192 步内到不了真实终点，只能跑满上限：没有标签，耗时 19–24 小时。
