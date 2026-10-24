@@ -23,6 +23,13 @@ evaluate  the Teacher-free exam of a frozen policy: DEV on the VALIDATION rows
 run       pretrain, then iterate.
 status    progress read from the disk (writes nothing).
 
+iteration.cf_budget bounds the forks of a CF that only a full branch can
+decide (no coupling, no true terminal within cf_max_steps): a stratified
+sample of them is simulated, the others are UNAVAILABLE_BUDGET without a
+label. iteration.cf_min_coverage: when a contract's valid pairs cover a
+smaller share of its forks, the round skips L4 and pi_{k+1} keeps the value
+brain and anchor of pi_k (L4_SKIPPED_CF_NOT_REPRESENTATIVE).
+
 student.window_start 'carry' starts the L2-L5 windows from the causal
 market carry of the continuous path (market_carry/<contract>/, computed
 once before L2 or L3 from the market brain after L1, which no later stage
@@ -65,7 +72,8 @@ DEFAULTS = dict(
     foundation=dict(market_updates=0, outcome_updates=0, policy_updates=0, save_every=0,
                     holdout=0, demo_balance=1.0),
     iteration=dict(max_rounds=0, contracts=None, contracts_per_round=2, parallel_contracts=1,
-                   cf_wait_forks=None, cf_workers=1, cf_max_steps=8192, value_updates=0,
+                   cf_wait_forks=None, cf_workers=1, cf_max_steps=8192, cf_budget=None,
+                   cf_min_coverage=None, value_updates=0,
                    prior_refresh_updates=0, cf_boost=16.0, save_every=0, holdout=0,
                    beta_q=1.0, kappa_q='auto', kappa_floor=None, state_check_windows=0,
                    state_check_seed_offset=0),
@@ -101,6 +109,11 @@ def load_config(path):
     raise ValueError(f'{path}: dev.contracts needs paths.markets')
   if config['student']['window_start'] not in ('zero', 'carry'):
     raise ValueError(f'{path}: student.window_start is zero or carry')
+  it = config['iteration']
+  if it['cf_budget'] is not None and not (isinstance(it['cf_budget'], int) and it['cf_budget'] >= 0):
+    raise ValueError(f'{path}: iteration.cf_budget is a number of forks >= 0 or null')
+  if it['cf_min_coverage'] is not None and not 0 < it['cf_min_coverage'] <= 1:
+    raise ValueError(f'{path}: iteration.cf_min_coverage is in (0, 1] or null')
   return config
 
 
@@ -262,6 +275,19 @@ def _cf_done(out, policy):
   return meta is not None
 
 
+def _cf_record(meta):
+  """One CF in the round record; coverage is the share of its forks with a
+  valid ADD/WAIT pair (the strata stay in its meta.json)."""
+  rec = {k: v for k, v in meta.items()
+         if k in ('counts', 'valid_pairs', 'forks', 'delta_g', 'seconds', 'end_status')}
+  if meta.get('budget'):
+    rec['budget'] = {k: v for k, v in meta['budget'].items()
+                     if k in ('forks', 'undecided', 'simulated', 'unavailable', 'reason')}
+  chosen = meta['forks']['chosen']
+  rec['coverage'] = round(meta['valid_pairs'] / chosen, 4) if chosen else None
+  return rec
+
+
 def _check_problems(out):
   report = _read(Path(out) / 'check.json')
   problems = [k for k in CHECKS if report[k]]
@@ -388,13 +414,12 @@ def iterate(cfg, lay, state, rounds, until=None):
     _step(lay, state, step='cf')
     cf = {c: lay.experience(policy, 'cf', c) for c in usable}
     forks = [] if it['cf_wait_forks'] is None else ['--forks', it['cf_wait_forks']]
+    budget = [] if it['cf_budget'] is None else ['--budget', it['cf_budget']]
     _call_many([('run', ['cf', '--policy', policy, '--corpus', contracts[c], '--collection', collect[c],
                          '--out', out, '--workers', it['cf_workers'], '--max-steps', it['cf_max_steps'],
-                         '--seed', s['seed'], *forks], lay.log(f'r{r:03d}_cf_{c}'))
+                         '--seed', s['seed'], *forks, *budget], lay.log(f'r{r:03d}_cf_{c}'))
                 for c, out in cf.items() if not _cf_done(out, policy)], it['parallel_contracts'])
-    rec['cf'] = {c: {k: v for k, v in _read(out / 'meta.json').items()
-                     if k in ('counts', 'valid_pairs', 'forks', 'delta_g', 'seconds')}
-                 for c, out in cf.items()}
+    rec['cf'] = {c: _cf_record(_read(out / 'meta.json')) for c, out in cf.items()}
     # Missing stores only (pretrain made them; pi_k keeps the foundation's
     # market brain): the state-check, L4 and the L5 refresh read them.
     _market_carry(cfg, lay, contracts, ['--policy', policy])
@@ -412,11 +437,20 @@ def iterate(cfg, lay, state, rounds, until=None):
       _step(lay, state, step='cf_done')
       print(f'iterate stops after the CF of round {r} (--until cf); L4 has not started')
       return
-    # B4: L4 on the Q^{pi_k} targets only; B5: the S4 prior refresh.
+    # B4: L4 on the Q^{pi_k} targets only, unless a contract's valid pairs
+    # cover too few of its forks to stand for its states: then the round
+    # keeps pi_k's value brain and anchor; B5: the S4 prior refresh.
     learner, targets = lay.learner(r), [a for out in cf.values() for a in ('--cf', out)]
     common = ['--run', learner, '--init-from', policy, '--save-every', it['save_every'],
               '--holdout', it['holdout'], *_windows(cfg, lay), *_student(cfg)]
-    left = it['value_updates'] - progress(learner)['L4']
+    floor = it['cf_min_coverage']
+    thin = {c: m['coverage'] for c, m in rec['cf'].items()
+            if floor is not None and m['coverage'] is not None and m['coverage'] < floor}
+    rec['L4'] = 'L4_SKIPPED_CF_NOT_REPRESENTATIVE' if thin else (
+        'S3_Q_TARGETS' if it['value_updates'] else 'L4_SKIPPED_BY_CONFIG')
+    if thin:
+      rec['L4_coverage'] = dict(min_coverage=floor, below=thin)
+    left = 0 if thin else it['value_updates'] - progress(learner)['L4']
     if left > 0:
       _step(lay, state, step='L4')
       _call('run', ['train-value', *common, *targets, '--updates', left, '--cf-boost', it['cf_boost']],
@@ -433,9 +467,10 @@ def iterate(cfg, lay, state, rounds, until=None):
     new = lay.policy(r)
     if not _frozen(new):
       _step(lay, state, step='freeze')
-      floor = [] if it['kappa_floor'] is None else ['--kappa-floor', it['kappa_floor']]
-      _call('run', ['freeze', '--run', learner, '--name', new.name, '--out', new, *targets, *corpora,
-                    '--beta-q', it['beta_q'], '--kappa-q', it['kappa_q'], *floor,
+      kappa = [] if it['kappa_floor'] is None else ['--kappa-floor', it['kappa_floor']]
+      anchor = (['--value-anchor-of', policy] if thin else
+                [*targets, '--beta-q', it['beta_q'], '--kappa-q', it['kappa_q'], *kappa])
+      _call('run', ['freeze', '--run', learner, '--name', new.name, '--out', new, *corpora, *anchor,
                     '--holdout', it['holdout'], *_student(cfg)], lay.log(f'r{r:03d}_freeze'))
     p, anchor = _updates(lay, r), _read(new / 'policy.json')['teaching'].get('value_anchor', {})
     rec.update(policy_out=new.name, updates=dict(L4=p['L4'], L5=p['L5']), value_anchor=dict(

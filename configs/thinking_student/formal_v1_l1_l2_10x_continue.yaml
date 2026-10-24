@@ -63,6 +63,17 @@ iteration:
   # pairs on the same contracts, about 30 min per contract.
   cf_wait_forks: 1000
   cf_workers: 3
+  # Forks that only a full branch can decide (the reference below the
+  # coupling floor through the whole cap window, its true terminal beyond
+  # cf_max_steps; FG201 of pi_0002: 1346 of 1596) end validly only by a
+  # MARGIN_CALL of the branch's own account. 48 of them per contract, a
+  # sample stratified by action, equity quartile and 60-minute volatility,
+  # run exactly (~0.4M branch steps, ~20-40 min); the others are
+  # UNAVAILABLE_BUDGET without a label (user decision 2026-10-24).
+  cf_budget: 48
+  # L4 needs valid pairs for >= 80% of each contract's forks; else the round
+  # keeps pi_k's value brain and anchor (no Q learning from a selective set).
+  cf_min_coverage: 0.8
   # Ten times the L4 of formal_v1_carry.yaml. Its pilot on held-out pairs
   # (C4_STATE_CHECK_20261024/carry_pilot_l4, 614 pairs) was best after 500
   # updates and worse from 1000 on. With about five times the pairs, 5000 is

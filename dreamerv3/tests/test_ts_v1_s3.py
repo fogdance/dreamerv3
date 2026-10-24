@@ -198,3 +198,66 @@ def test_cf_targets_train_the_value_brain_and_freeze_the_anchor(world, tmp_path)
   with pytest.raises(ValueError, match='positive'):
     ts_run.main(['freeze', '--run', str(run), '--name', 'bad', '--beta-q', '1',
                  '--kappa-q', '0', *args])
+
+
+def test_a_cf_budget_leaves_unsimulated_forks_unavailable(world, tmp_path, monkeypatch):
+  """Forks only a full branch can decide (no coupling, no true terminal in
+  the cap): a stratified exact sample runs, the others are
+  UNAVAILABLE_BUDGET and never a Q label (user decision 2026-10-24). The
+  floor is unreachable in this process only: the workers keep theirs."""
+  env = ts_run.corpus_env(world['corpus'])
+  monkeypatch.setattr(V.CF, 'coupling_floor', lambda env: np.inf)
+  reference, _ = V.build_reference(world['collection'], env)
+  cap, end = 2, reference.start + reference.n
+  forks = V.choose_forks(reference)
+  undecided = [t for t in forks if not reference.decidable(t, cap)]
+  assert undecided == [t for t in forks if end - t > cap] and len(undecided) > 16
+  close = env._raw.Close.to_numpy()
+  sample, strata = V.undecided_sample(reference, undecided, 8, close, seed=3)
+  assert len(sample) == 8 and set(sample) <= set(undecided)
+  assert V.undecided_sample(reference, undecided, 8, close, seed=3)[0] == sample
+  sizes = strata['strata'].values()
+  assert sum(s['forks'] for s in sizes) == len(undecided)
+  for s in sizes:  # a systematic draw gives each stratum its share
+    share = s['forks'] * 8 / len(undecided)
+    assert np.floor(share) <= s['simulated'] <= np.ceil(share)
+  assert V.undecided_sample(reference, undecided, 10 ** 6, close)[0] == undecided
+
+  cf = tmp_path / 'cf'
+  meta = V.run_cf(world['policy'], world['corpus'], world['collection'], cf, workers=2,
+                  max_steps=cap, seed=3, budget=8, **QUIET)
+  pairs = [json.loads(line) for line in (cf / 'pairs.jsonl').open()]
+  off = [p for p in pairs if p['status'] == 'UNAVAILABLE_BUDGET']
+  assert len(pairs) == len(forks) and {p['cursor'] for p in off} == set(undecided) - set(sample)
+  for p in off:
+    assert (p['reason'], p['steps'], p['g'], p['delta_g']) == ('BELOW_FLOOR_BEYOND_CAP', 0, None, None)
+    assert p['branch_rewards'] is None and p['trades'] is None and p['end_status'] is None
+  assert all(p['end_status'] for p in pairs if p['status'] != 'UNAVAILABLE_BUDGET')
+  assert meta['counts']['UNAVAILABLE_BUDGET/BELOW_FLOOR_BEYOND_CAP'] == len(off)
+  assert (meta['budget']['forks'], meta['budget']['simulated'], meta['budget']['unavailable']) == (
+      8, 8, len(undecided) - 8)
+  assert meta['forks']['undecided'] == len(undecided) and meta['couple_from'] == end
+  assert sum(meta['end_status'].values()) == len(pairs) - len(off)
+  targets = dict(np.load(cf / 'targets.npz'))
+  assert not targets['q_cf_valid'][[reference.row(p['cursor']) for p in off]].any()
+  np.testing.assert_array_equal(targets['q_real'], reference.g.astype(np.float32))
+
+  # A round that skips L4 keeps the value anchor of the policy it inherits.
+  args = ['--preset', 'small', '--device', 'cpu', '--batch-size', '1', '--batch-length', str(T),
+          '--holdout', str(HOLDOUT)]
+  ts_run.main(['freeze', '--run', str(world['run']), '--name', 'anchored', '--out',
+               str(tmp_path / 'anchored'), '--beta-q', '1', '--kappa-q', '0.7', '--cf', str(cf),
+               *args])
+  ts_run.main(['freeze', '--run', str(world['run']), '--name', 'kept', '--out', str(tmp_path / 'kept'),
+               '--value-anchor-of', str(tmp_path / 'anchored'), *args])
+  anchored, kept = (json.loads((tmp_path / n / 'policy.json').read_text()) for n in ('anchored', 'kept'))
+  for key in ('decision.beta_q', 'decision.kappa_q'):
+    assert kept['ts'][key] == anchored['ts'][key]
+  anchor = kept['teaching']['value_anchor']
+  assert anchor['status'] == 'L4_SKIPPED_ANCHOR_KEPT' and anchor['kept'] == anchored['teaching'][
+      'value_anchor']
+  assert kept['lineage']['value_kept_from'] == str(tmp_path / 'anchored') and 'cf' not in kept['lineage']
+  with pytest.raises(SystemExit):
+    ts_run.main(['freeze', '--run', str(world['run']), '--name', 'both', '--out',
+                 str(tmp_path / 'both'), '--value-anchor-of', str(tmp_path / 'anchored'),
+                 '--beta-q', '1', *args])

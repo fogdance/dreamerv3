@@ -19,6 +19,11 @@ and the coupling witness then compare against decisions of the same
 compiled policy. The targets belong to pi_k only (A6 2.4): a new policy needs
 its own collection and CF.
 
+With a budget, the forks only a full branch can decide (no coupling and no
+true terminal within the cap, ts_v1_cf Budget) are simulated for a sample
+stratified by what is known at the decision; the others are
+UNAVAILABLE_BUDGET and carry no label.
+
   python -m dreamerv3.thinking_student.run cf --policy DIR --corpus DIR [--forks N]
 """
 import json
@@ -80,11 +85,44 @@ def choose_forks(reference, forks=None, seed=0):
   return sorted(int(t) for t in np.concatenate([adds, waits]))
 
 
+def undecided_sample(reference, forks, budget, close, seed=0, window=60):
+  """At most `budget` of the forks only a full branch can decide, drawn
+  systematically over strata known at the decision, never by outcome: the
+  reference action (behavior), the quartile of its equity (account risk) and
+  the half of the volatility of the last `window` closes (market state).
+  Returns the sorted sample and the strata with their sizes."""
+  forks = np.asarray(sorted(forks), np.int64)
+  if not len(forks):
+    return [], dict(strata={})
+  rows = forks - reference.start
+  action, equity = reference.action[rows], reference.equity[rows]
+  log_close = np.log(np.asarray(close, np.float64))
+  vol = np.array([np.std(np.diff(log_close[max(0, t - window):t + 1])) if t else 0.
+                  for t in forks])
+  edges, median = np.quantile(equity, [.25, .5, .75]), float(np.median(vol))
+  risk, high = np.searchsorted(edges, equity, side='right'), (vol > median).astype(np.int64)
+  order = np.lexsort((forks, high, risk, action))
+  n = min(int(budget), len(forks))
+  step = len(forks) / max(n, 1)
+  start = np.random.default_rng([int(seed), 2]).uniform(0, step)
+  taken = np.zeros(len(forks), bool)
+  taken[order[np.floor(start + step * np.arange(n)).astype(np.int64)]] = True
+  strata = {}
+  for a, q, h, took in zip(action, risk, high, taken):
+    s = strata.setdefault(f'{("WAIT", "ADD")[a]}/equity_q{q + 1}/vol_{("low", "high")[h]}',
+                          dict(forks=0, simulated=0))
+    s['forks'], s['simulated'] = s['forks'] + 1, s['simulated'] + int(took)
+  return [int(t) for t in forks[taken]], dict(
+      strata=dict(sorted(strata.items())), equity_quartiles=[float(e) for e in edges],
+      vol_window=window, vol_median=median)
+
+
 class Stepper:
   """ts_v1_cf stepper over run.Autonomous (the frozen pi_k on a Native env)."""
 
   def __init__(self, run):
     self.run, self.first_trade = run, len(run.env.attributions)
+    self.status = None  # the Native status after the last step (MARGIN_CALL, MAIN_ROLL, ...)
 
   def state(self):
     env = self.run.env
@@ -93,6 +131,7 @@ class Stepper:
 
   def step(self, action=None):
     row, arrays = self.run.step(action)
+    self.status = row['status']
     return row['reward'], self.run.done, bool(arrays['terminal'])
 
   def peek(self):
@@ -141,7 +180,7 @@ def _cf_job(job):
     first = 1 - int(reference.action[t - reference.start])
     result = CF.run_branch(stepper, reference, first, job['max_steps'],
                            witness=lambda c: stepper.peek() == own[c])
-    result.update(CF.pair(reference, result), trades=stepper.trades())
+    result.update(CF.pair(reference, result), trades=stepper.trades(), end_status=stepper.status)
     out.append(result)
     if job['log_every'] and len(out) % job['log_every'] == 0:
       print(f'worker {job["index"]}: {len(out)}/{len(forks)} branches', flush=True)
@@ -151,25 +190,46 @@ def _cf_job(job):
 
 
 def run_cf(policy, corpus, collection, out, forks=None, seed=0, workers=4,
-           max_steps=8192, log_every=50, log=print):
-  """Write out/pairs.jsonl, out/targets.npz and out/meta.json."""
+           max_steps=8192, log_every=50, log=print, budget=None):
+  """Write out/pairs.jsonl, out/targets.npz and out/meta.json. With
+  `budget`, at most that many of the forks only a full branch can decide
+  are simulated (undecided_sample), the others are UNAVAILABLE_BUDGET."""
   from .run import corpus_env
   out = Path(out)
   out.mkdir(parents=True, exist_ok=True)
   began = time.time()
-  reference, _ = build_reference(collection, corpus_env(corpus))
+  env = corpus_env(corpus)
+  reference, _ = build_reference(collection, env)
   if not reference.complete:
     raise ValueError('The collection did not reach the true terminal: no complete returns')
+  if budget is not None and budget < 0:
+    raise ValueError(f'A CF budget counts forks, >= 0; got {budget}')
   chosen = choose_forks(reference, forks, seed)
-  groups = [chosen[i::workers] for i in range(workers)]
+  undecided = [t for t in chosen if not reference.decidable(t, max_steps)]
+  sample, strata = undecided, None
+  if budget is not None:
+    sample, strata = undecided_sample(reference, undecided, budget, env._raw.Close.to_numpy(), seed)
+  skipped = sorted(set(undecided) - set(sample))
+  simulated = sorted(set(chosen) - set(skipped))
+  groups = [simulated[i::workers] for i in range(workers)]
   jobs = [dict(index=i, policy=str(policy), corpus=str(corpus), collection=str(collection),
                forks=g, max_steps=max_steps, log_every=log_every)
           for i, g in enumerate(groups) if g]
   log(f'CF: {len(chosen)} forks of {len(reference.forks())} legal flat decisions, '
       f'{len(jobs)} workers')
-  with ProcessPoolExecutor(len(jobs), mp_context=multiprocessing.get_context('spawn')) as pool:
-    parts = list(pool.map(_cf_job, jobs))
-  results = sorted((r for p in parts for r in p['results']), key=lambda r: r['cursor'])
+  if undecided:
+    log(f'CF: {len(undecided)} forks can neither couple nor reach the true terminal within '
+        f'{max_steps} steps: {len(sample)} simulated, {len(skipped)} UNAVAILABLE_BUDGET')
+  parts = []
+  if jobs:
+    with ProcessPoolExecutor(len(jobs), mp_context=multiprocessing.get_context('spawn')) as pool:
+      parts = list(pool.map(_cf_job, jobs))
+  results = [r for p in parts for r in p['results']]
+  for t in skipped:
+    r = CF.unavailable(reference, t, 1 - int(reference.action[reference.row(t)]),
+                       'BELOW_FLOOR_BEYOND_CAP')
+    results.append(dict(r, **CF.pair(reference, r), trades=None, end_status=None))
+  results.sort(key=lambda r: r['cursor'])
   with (out / 'pairs.jsonl').open('w') as f:
     f.writelines(json.dumps(r) + '\n' for r in results)
   targets = cf_targets(reference, results)
@@ -185,7 +245,14 @@ def run_cf(policy, corpus, collection, out, forks=None, seed=0, workers=4,
       coupling_floor=reference.floor, reference_rows=reference.n,
       legal_flat_decisions=len(reference.forks()),
       forks=dict(requested_waits=forks, seed=seed, chosen=len(chosen),
-                 reference_adds=int(sum(r['reference_action'] == ADD for r in results))),
+                 reference_adds=int(sum(r['reference_action'] == ADD for r in results)),
+                 undecided=len(undecided)),
+      couple_from=reference.couple_from,
+      budget=None if budget is None else dict(
+          forks=budget, undecided=len(undecided), simulated=len(sample), unavailable=len(skipped),
+          reason='BELOW_FLOOR_BEYOND_CAP', **strata),
+      end_status={s: sum(r['end_status'] == s for r in results)
+                  for s in sorted({r['end_status'] for r in results} - {None})},
       max_steps=max_steps, counts=counts, valid_pairs=len(valid),
       delta_g=dict(mean=float(np.mean([r['delta_g'] for r in valid])) if valid else None,
                    std=float(np.std([r['delta_g'] for r in valid])) if valid else None),
@@ -194,7 +261,8 @@ def run_cf(policy, corpus, collection, out, forks=None, seed=0, workers=4,
       replay=dict(steps=[p['replay_steps'] for p in parts], z_differs=[p['z_differs'] for p in parts],
                   seconds=[p['replay_seconds'] for p in parts]),
       worker_seconds=[p['seconds'] for p in parts], seconds=round(time.time() - began, 1),
-      inference=dict(platform=parts[0]['platform'], compute_dtype=parts[0]['compute_dtype']),
+      inference=dict(platform=parts[0]['platform'], compute_dtype=parts[0]['compute_dtype'])
+      if parts else None,
       labels=dict(q_real='STUDENT_EXECUTED_NATIVE', q_cf='VERIFIED_CF_NATIVE',
                   policy_bound='targets are Q^{pi_k} of this policy only'))
   (out / 'meta.json').write_text(json.dumps(meta, indent=1))

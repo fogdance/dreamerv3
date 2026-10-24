@@ -630,6 +630,57 @@ def test_orchestrator_starts_windows_from_the_market_carry(pik, two, tmp_path, m
   assert argvs[-1][argvs[-1].index('--carry-root') + 1] == str(lay.carry)
 
 
+def test_orchestrator_keeps_the_value_brain_when_the_cf_is_not_representative(
+    pik, two, tmp_path, monkeypatch):
+  """iteration.cf_budget and cf_min_coverage (user decision 2026-10-24): no
+  cursor may couple (an unreachable floor in this process), so the forks
+  beyond the cap need a full branch; the budget runs none of them and they
+  are UNAVAILABLE_BUDGET. The valid pairs then cover too few forks: the
+  round skips L4, and pi_1 keeps the value brain and anchor of pi_0."""
+  root = tmp_path / 'corpora'
+  root.mkdir()
+  for folder, name in zip(two, CONTRACTS):
+    (root / name).symlink_to(folder)
+  config = tmp_path / 'thin.yaml'
+  config.write_text(yaml.safe_dump(dict(
+      paths=dict(corpus_root='corpora', run_root='run', init_from=str(pik['run'])),
+      student=dict(preset='small', device='cpu', seed=1, batch_size=2, batch_length=T,
+                   log_every=1),
+      foundation=dict(policy_updates=1, save_every=1),
+      iteration=dict(max_rounds=1, cf_wait_forks=1, cf_max_steps=2, cf_budget=0,
+                     cf_min_coverage=0.8, value_updates=1, prior_refresh_updates=1, save_every=1,
+                     kappa_floor=0.05),
+      evaluation=dict(random_seeds=1, smoke_steps=20))))
+  lay = FT.Layout(tmp_path / 'run')
+  calls, argvs = [], []
+  monkeypatch.setattr(FT, '_call', in_process(calls, argvs=argvs))
+  FT.main(['pretrain', '--config', str(config)])
+  monkeypatch.setattr(V.CF, 'coupling_floor', lambda env: np.inf)
+  calls.clear()
+  start = len(argvs)
+  FT.main(['iterate', '--config', str(config)])
+  assert calls[:6] == ['collect', 'collect', 'check', 'check', 'cf', 'cf']
+  assert 'train-value' not in calls and calls[6:8] == ['train-policy', 'freeze']
+  rec = json.loads(lay.state.read_text())['rounds']['1']
+  assert rec['L4'] == 'L4_SKIPPED_CF_NOT_REPRESENTATIVE'
+  assert rec['L4_coverage']['min_coverage'] == 0.8 and set(rec['L4_coverage']['below']) == set(CONTRACTS)
+  for c in CONTRACTS:
+    budget = rec['cf'][c]['budget']
+    assert budget['simulated'] == 0 and budget['unavailable'] == budget['undecided'] > 0
+    assert rec['cf'][c]['coverage'] == rec['L4_coverage']['below'][c] < 0.8
+  freeze = next(a for a in argvs[start:] if a[0] == 'freeze')
+  assert freeze[freeze.index('--value-anchor-of') + 1] == str(lay.policy(0))
+  assert '--cf' not in freeze and '--beta-q' not in freeze
+  assert ts_run.progress(lay.learner(1))['L4'] == 0
+  assert 'value' not in changed_groups(params(lay.policy(0)), params(lay.policy(1)))
+  pi0, pi1 = (json.loads((lay.policy(k) / 'policy.json').read_text()) for k in (0, 1))
+  for key in ('decision.beta_q', 'decision.kappa_q'):
+    assert pi1['ts'][key] == pi0['ts'][key]
+  assert pi1['teaching']['value_anchor']['status'] == rec['value_anchor']['status'] == (
+      'L4_SKIPPED_ANCHOR_KEPT')
+  assert pi1['lineage']['value_kept_from'] == str(lay.policy(0))
+
+
 def test_orchestrator_trains_l2_on_the_carry_of_an_l1_continued_by_hand(pik, two, stores,
                                                                         tmp_path, monkeypatch):
   """formal_v1_l1_l2_10x_continue.yaml: a copied foundation checkpoint whose

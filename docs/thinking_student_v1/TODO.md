@@ -375,6 +375,15 @@
   - `test_ts_v1_c4.py` 17 passed（CPU，12 分钟）。
   - 真实数据冒烟 `C4_L2_CARRY_SMOKE_20261024`：18 合约 size50m，从 ckpt 22000 起步、使用开发 run 的存储，60 次，exit 0，49 s（含启动），RSS 3.6 GB，每个 batch 1024 行都计损失。
 - [ ] E-3：开发 run 第 2–6 轮（`max_rounds: 6`，18 合约轮转一遍），快速跑完以验证代码
+  - 第 2 轮完成；第 3 轮 FG205、FG209 的 CF 完成。FG201 的 CF 原样要跑 19–24 小时，19:53 按用户决定停下（每个 worker 跑到 250/532 个分支，结果只在结束时写出，所以没有保存），修复见 E-5，修好后从磁盘续跑。
+- [ ] E-5：有限预算的精确 CF（用户 2026-10-24 方案 3）
+  - 起因：π_2 在 FG201 上 ADD 1499 次，权益从 300,000 降到 36,987（最低 36,423，始终为正；每份 collection 都正常结束于 MAIN_ROLL，没有 MARGIN_CALL，也没有被拒的 ADD，符合 Native 规则：3 手保证金最多 18,048）。耦合下限是 90,336，参考轨迹每一行都低于它，所以不可能耦合。1596 个分叉里有 1346 个在 8192 步内到不了真实终点，只能跑满上限：没有标签，耗时 19–24 小时。
+  - 定义：无法耦合 ≠ 不会终止。分支自己的账户仍可能在上限内被 MARGIN_CALL，这是有效的 TERMINAL。所以这类分叉（`Reference.decidable` 为假：上限窗口内不可能耦合，真实终点又在上限之外）只能靠完整模拟来判定。
+  - 预算 `iteration.cf_budget: 48`（每个合约）：在这类分叉里按 参考动作 × 权益四分位 × 60 分钟波动率高低 分层，做系统抽样（固定种子，所用信息在决策时都已知，不看结果），精确模拟抽中的；其余标 `UNAVAILABLE_BUDGET/BELOW_FLOOR_BEYOND_CAP`，没有 Reward、回报、TERMINAL 或标签，不进 Q 监督。能耦合或能到终点的分叉照旧全部模拟。`cf_max_steps` 仍为 8192，回报定义不变。
+  - `meta.json` 增加 `forks.undecided`、`couple_from`、`budget`（各层的分叉数和模拟数）、`end_status`（含 MARGIN_CALL 次数）；每个结果带 `end_status`。
+  - L4 代表性：`iteration.cf_min_coverage: 0.8`。只要有一个合约的有效对数不足其分叉数的 80%，本轮就跳过 L4（`L4_SKIPPED_CF_NOT_REPRESENTATIVE`）：π_{k+1} 保留 π_k 的价值脑，freeze 时用 `--value-anchor-of π_k` 保留 β_Q、κ_Q（`L4_SKIPPED_ANCHOR_KEPT`，lineage 记 `value_kept_from`）。
+  - 测试：gym `test_only_a_full_branch_decides_a_fork_that_cannot_couple_or_end_in_the_cap`，s3 `test_a_cf_budget_leaves_unsimulated_forks_unavailable`，c4 `test_orchestrator_keeps_the_value_brain_when_the_cf_is_not_representative`。
+- [ ] E-6（后续研究，用户 2026-10-24）：亏到下限以下的合约，CF 只能覆盖一部分有选择性的状态（FG201 约 16%，都是上限内能到终点的后段），Q 可能主要从容易完成的轨迹学习，错过高风险状态。如果多个合约持续出现这种情况，再优化 Native 快照的完整历史复制和 CF 的重复推进，必要时研究估计目标；不为 FG201 重做 Q 学习算法。
 - [x] E-4：同步：开发分支的新提交快进到 10x 的 run 分支（dreamerv3、gym）
   - 2026-10-24 13:2x：用户的未跟踪草稿备份到会话临时目录后删除，dreamerv3 run 分支快进到 `37cdd85`；gym run 分支即 `0056296`，两个 worktree 都干净。
   - 从 10x 的 gym worktree 运行 `formal_train status`（只读）：配置可读，L1 60,000 / L2 12,000，latest ckpt 72000。

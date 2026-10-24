@@ -749,6 +749,16 @@ def value_anchor(args):
   return record
 
 
+def kept_anchor(policy):
+  """The value anchor of a frozen policy for a snapshot whose round skipped
+  L4: the value brain is the one inherited from it, so are beta_Q and
+  kappa_Q."""
+  data = json.loads((Path(policy) / 'policy.json').read_text())
+  return dict(beta_q=float(data['ts']['decision.beta_q']),
+              kappa_q=float(data['ts']['decision.kappa_q']), status='L4_SKIPPED_ANCHOR_KEPT',
+              kept_from=str(policy), kept=data['teaching'].get('value_anchor'))
+
+
 def _one(folders, flag):
   if not folders or len(folders) != 1:
     raise ValueError(f'This command takes exactly one {flag}')
@@ -801,6 +811,13 @@ def main(argv=None):
   parser.add_argument('--workers', type=int, default=4, help='cf: GPU worker processes')
   parser.add_argument('--max-steps', type=int, default=8192,
                       help='cf: branch steps before NOT_COMPARABLE')
+  parser.add_argument('--budget', type=int, default=None,
+                      help='cf: of the forks only a full branch can decide (no coupling and no true '
+                           'terminal within --max-steps), simulate a stratified sample of at most '
+                           'this many; the others are UNAVAILABLE_BUDGET (default: all)')
+  parser.add_argument('--value-anchor-of', default=None,
+                      help="freeze: keep this frozen policy's beta_Q and kappa_Q (its round "
+                           'skipped L4, the value brain is the inherited one)')
   parser.add_argument('--cf', action='append', default=None,
                       help='cf output folder of one contract (train-value, kappa); '
                            'several of one frozen pi_k')
@@ -846,7 +863,7 @@ def main(argv=None):
     collection = args.collection or policy.parents[1] / 'collect' / f'{name}_policy'
     out = Path(args.out or policy.parents[1] / 'cf' / name)
     run_cf(policy, _one(args.corpus, '--corpus'), collection, out, args.forks, args.seed,
-           args.workers, args.max_steps)
+           args.workers, args.max_steps, budget=args.budget)
     return
   if args.command == 'state-check':
     from .value import window_check
@@ -893,7 +910,13 @@ def main(argv=None):
   elif args.window_start == 'carry' and args.command == 'train-market':
     parser.error('L1 trains the market brain: its windows cannot start from a stored carry')
   updates, anchor = {'agent.ts.stage': stage}, None
-  if args.command == 'freeze' and args.beta_q is not None:
+  if args.command == 'freeze' and args.value_anchor_of:
+    if args.beta_q is not None or args.kappa_q is not None or args.cf:
+      parser.error('--value-anchor-of keeps an anchor: no --beta-q, --kappa-q or --cf')
+    anchor = kept_anchor(args.value_anchor_of)
+    updates['agent.ts.decision.beta_q'] = anchor['beta_q']
+    updates['agent.ts.decision.kappa_q'] = anchor['kappa_q']
+  elif args.command == 'freeze' and args.beta_q is not None:
     anchor = value_anchor(args)
     updates['agent.ts.decision.beta_q'] = anchor['beta_q']
     if anchor['kappa_q'] is not None:
@@ -969,6 +992,8 @@ def main(argv=None):
     if args.cf:
       lineage.update(cf=[str(c) for c in args.cf], q_teacher_policy=sorted(
           {json.loads((Path(c) / 'meta.json').read_text())['policy'] for c in args.cf}))
+    if args.value_anchor_of:
+      lineage['value_kept_from'] = str(args.value_anchor_of)
     print('Frozen', freeze(agent, args.run, args.name, args.preset, args.corpus or (),
                            teaching, lineage, args.out))
   else:
