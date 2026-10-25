@@ -27,10 +27,11 @@ evaluate  the Teacher-free exam of a frozen policy: DEV on the VALIDATION rows
 run       pretrain, then iterate.
 status    progress read from the disk (writes nothing).
 
-iteration.cf_budget bounds the forks of a CF that only a full branch can
-decide (no coupling, no true terminal within cf_max_steps): a stratified
-sample of them is simulated, the others are UNAVAILABLE_BUDGET without a
-label. iteration.cf_min_coverage: when a contract's valid pairs cover a
+Every legal CF candidate gets up to iteration.cf_probe_steps (default 64).
+iteration.cf_budget is the continuation quota for unfinished probes; the
+sampled branches resume their Native/policy state under the same cf_max_steps
+cap. Unselected probes are UNAVAILABLE_BUDGET without a Q label.
+iteration.cf_min_coverage: when a contract's valid pairs cover a
 smaller share of its forks, the round skips L4 and pi_{k+1} keeps the value
 brain and anchor of pi_k (L4_SKIPPED_CF_NOT_REPRESENTATIVE).
 
@@ -82,7 +83,7 @@ DEFAULTS = dict(
     foundation=dict(market_updates=0, outcome_updates=0, policy_updates=0, save_every=0,
                     holdout=0, demo_balance=1.0),
     iteration=dict(max_rounds=0, contracts=None, contracts_per_round=2, parallel_contracts=1,
-                   cf_wait_forks=None, cf_workers=1, cf_max_steps=8192, cf_budget=None,
+                   cf_wait_forks=None, cf_workers=1, cf_max_steps=8192, cf_probe_steps=64, cf_budget=None,
                    cf_min_coverage=None, value_updates=0,
                    prior_refresh_updates=0, cf_boost=16.0, save_every=0, holdout=0,
                    beta_q=1.0, kappa_q='auto', kappa_floor=None, state_check_windows=0,
@@ -133,6 +134,8 @@ def load_config(path):
   it = config['iteration']
   if it['cf_budget'] is not None and not (isinstance(it['cf_budget'], int) and it['cf_budget'] >= 0):
     raise ValueError(f'{path}: iteration.cf_budget is a number of forks >= 0 or null')
+  if not isinstance(it['cf_probe_steps'], int) or not 1 <= it['cf_probe_steps'] <= 64:
+    raise ValueError(f'{path}: iteration.cf_probe_steps is in [1, 64]')
   if it['cf_min_coverage'] is not None and not 0 < it['cf_min_coverage'] <= 1:
     raise ValueError(f'{path}: iteration.cf_min_coverage is in (0, 1] or null')
   l6 = it['l6']
@@ -328,15 +331,16 @@ def _check_problems(out):
 
 def _teaching_items(cfg, lay, state, r, rec, policy, contracts, collect, cf):
   """L6 B1: the teaching items of pi_k on each usable contract of round r
-  (a folder with its summary.json is kept); the --feedback arguments."""
+  (regenerated from the current CF and pooled kappa); the --feedback arguments."""
   it, l6 = cfg['iteration'], cfg['iteration']['l6']
   out = {c: lay.experience(policy, 'feedback', c) for c in cf}
   kappa = [a for folder in cf.values() for a in ('--kappa-cf', folder)]
   floor = [] if it['kappa_floor'] is None else ['--kappa-floor', it['kappa_floor']]
-  missing = [c for c, folder in out.items() if not (folder / 'summary.json').exists()]
-  if missing:
+  # A local CF supplement can change both this contract's pairs and the round's
+  # pooled kappa. Existing summary.json is not evidence of current feedback.
+  if out:
     _step(lay, state, step='feedback')
-  for c in missing:
+  for c in out:
     _call('feedback', ['--collection', collect[c], '--corpus', contracts[c], '--cf', cf[c], *kappa,
                        '--mix', cfg['corpora']['mix'], *floor, '--out', out[c],
                        '--order', l6['order'], '--outcome-error-prob', l6['outcome_error_prob'],
@@ -477,6 +481,7 @@ def iterate(cfg, lay, state, rounds, until=None):
     budget = [] if it['cf_budget'] is None else ['--budget', it['cf_budget']]
     _call_many([('run', ['cf', '--policy', policy, '--corpus', contracts[c], '--collection', collect[c],
                          '--out', out, '--workers', it['cf_workers'], '--max-steps', it['cf_max_steps'],
+                         '--probe-steps', it['cf_probe_steps'],
                          '--seed', s['seed'], *forks, *budget], lay.log(f'r{r:03d}_cf_{c}'))
                 for c, out in cf.items() if not _cf_done(out, policy)], it['parallel_contracts'])
     rec['cf'] = {c: _cf_record(_read(out / 'meta.json')) for c, out in cf.items()}

@@ -632,10 +632,9 @@ def test_orchestrator_starts_windows_from_the_market_carry(pik, two, tmp_path, m
 
 def test_orchestrator_keeps_the_value_brain_when_the_cf_is_not_representative(
     pik, two, tmp_path, monkeypatch):
-  """iteration.cf_budget and cf_min_coverage (user decision 2026-10-24): no
-  cursor may couple (an unreachable floor in this process), so the forks
-  beyond the cap need a full branch; the budget runs none of them and they
-  are UNAVAILABLE_BUDGET. The valid pairs then cover too few forks: the
+  """iteration.cf_budget and cf_min_coverage: every fork gets one probe step;
+  unfinished probes get no continuation and remain UNAVAILABLE_BUDGET.
+  The valid pairs then cover too few forks: the
   round skips L4, and pi_1 keeps the value brain and anchor of pi_0."""
   root = tmp_path / 'corpora'
   root.mkdir()
@@ -647,7 +646,7 @@ def test_orchestrator_keeps_the_value_brain_when_the_cf_is_not_representative(
       student=dict(preset='small', device='cpu', seed=1, batch_size=2, batch_length=T,
                    log_every=1),
       foundation=dict(policy_updates=1, save_every=1),
-      iteration=dict(max_rounds=1, cf_wait_forks=1, cf_max_steps=2, cf_budget=0,
+      iteration=dict(max_rounds=1, cf_wait_forks=1, cf_max_steps=2, cf_probe_steps=1, cf_budget=0,
                      cf_min_coverage=0.8, value_updates=1, prior_refresh_updates=1, save_every=1,
                      kappa_floor=0.05),
       evaluation=dict(random_seeds=1, smoke_steps=20))))

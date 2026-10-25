@@ -13,16 +13,13 @@ targets    per reference row: q_real, the executed action's complete Native
 QWindows   L4 training windows over the reference rows; MultiQWindows mixes
            the targets of one pi_k on several TRAIN contracts (C4 3.1).
 
-Every CF worker first replays the whole reference in its own process and
-refuses any action or reward that differs from the collection: the branches
-and the coupling witness then compare against decisions of the same
-compiled policy. The targets belong to pi_k only (A6 2.4): a new policy needs
-its own collection and CF.
-
-With a budget, the forks only a full branch can decide (no coupling and no
-true terminal within the cap, ts_v1_cf Budget) are simulated for a sample
-stratified by what is known at the decision; the others are
-UNAVAILABLE_BUDGET and carry no label.
+The reference is replayed once per contract. Full fork snapshots are spooled
+to the output directory; each worker holds one live account, reuses its
+environment/policy and reads the compact reference continuation states.
+Every candidate gets a short probe. The budget is a continuation quota for
+unfinished probes, sampled using decision-time strata. A probe and its
+continuation share Native state, policy carry/seeds and one branch cap.
+Targets belong to pi_k only (A6 2.4); a new policy needs its own collection/CF.
 
   python -m dreamerv3.thinking_student.run cf --policy DIR --corpus DIR [--forks N]
 """
@@ -30,6 +27,7 @@ import json
 import multiprocessing
 import os
 import pickle
+import threading
 import time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -86,7 +84,7 @@ def choose_forks(reference, forks=None, seed=0):
 
 
 def undecided_sample(reference, forks, budget, close, seed=0, window=60):
-  """At most `budget` of the forks only a full branch can decide, drawn
+  """At most `budget` of the unfinished probes, drawn
   systematically over strata known at the decision, never by outcome: the
   reference action (behavior), the quartile of its equity (account risk) and
   the half of the volatility of the last `window` closes (market state).
@@ -123,13 +121,48 @@ class Stepper:
   def __init__(self, run):
     self.run, self.first_trade = run, len(run.env.attributions)
     self.status = None  # the Native status after the last step (MARGIN_CALL, MAIN_ROLL, ...)
+    self.policy_calls = 0
+    self.reference, self.first_joint = None, None
+    self.fork_cursor = int(run.env.current_step)
+
+  def continuation(self):
+    # StudentModel.policy reads market, is_first and the three account inputs;
+    # reward/steps/history are not policy inputs. Its only recurrent state is
+    # MarketCarry; the wrapper's n_actions determines all stochastic seeds.
+    import jax
+    run = self.run
+    if run.mode != 'policy':
+      raise ValueError('CF requires the frozen formal policy')
+    return dict(native=CF.native_continuation(run.env), policy=dict(
+        mode=run.mode, first=run.first, done=run.done, n_actions=int(run.agent.n_actions),
+        carry=jax.tree.map(lambda x: np.array(x), run.carry)))
 
   def state(self):
     env = self.run.env
-    return dict(cursor=int(env.current_step), equity=float(env._calculate_equity()),
-                **{k: self.run.obs[k] for k in CF.INPUTS})
+    state = dict(cursor=int(env.current_step), equity=float(env._calculate_equity()),
+                 **{k: self.run.obs[k] for k in CF.INPUTS})
+    if state['position_state'][1] == 0:
+      state.update(self.continuation())
+      ref, c = self.reference, state['cursor']
+      if (ref is not None and self.first_joint is None and c > self.fork_cursor
+          and ref.start <= c < ref.start + ref.n and ref.flat[ref.row(c)]):
+        i, saved = ref.row(c), ref.continuations.get(c)
+        gap = state['equity'] - ref.equity[i]
+        self.first_joint = dict(cursor=c, steps=c - self.fork_cursor,
+            equity=state['equity'], reference_equity=float(ref.equity[i]), equity_gap=gap,
+            input_differences={k: int(np.count_nonzero(np.asarray(state[k]) != ref.inputs[k][i]))
+                               for k in CF.INPUTS},
+            funds_safe=bool(ref.future_min_equity[i] + min(gap, 0.) >= ref.floor),
+            future_min_equity=float(ref.future_min_equity[i]), coupling_floor=ref.floor,
+            native_equal=bool(saved and state['native'] is not None and
+                              CF.same_state(state['native'], saved['native'])),
+            policy_equal=bool(saved and CF.same_state(state['policy'], saved['policy'])),
+            coupling_kind=ref.coupling_kind(state), status=env.status,
+            terminated=bool(env.terminated), truncated=bool(env.truncated))
+    return state
 
   def step(self, action=None):
+    self.policy_calls += 1
     row, arrays = self.run.step(action)
     self.status = row['status']
     return row['reward'], self.run.done, bool(arrays['terminal'])
@@ -141,8 +174,11 @@ class Stepper:
     run, agent = self.run, self.run.agent
     counter = int(agent.n_actions)
     obs = student_obs(run.obs, run.reward, run.first, False, False)
-    _, act, out = agent.policy(run.carry, obs, mode=run.mode)
-    agent.n_actions.value = counter
+    self.policy_calls += 1
+    try:
+      _, act, out = agent.policy(run.carry, obs, mode=run.mode)
+    finally:
+      agent.n_actions.value = counter
     return float(out['answer/z'][0]), int(act['action'][0])
 
   def trades(self):
@@ -151,121 +187,375 @@ class Stepper:
     return [{k: t.get(k) for k in keys} for t in self.run.env.attributions[self.first_trade:]]
 
 
-def _cf_job(job):
-  """One CF worker: replay the reference, then branch at its forks."""
+def _pickle_write(path, value):
+  """Stream one owned checkpoint to disk; never retain all fork histories."""
+  path = Path(path)
+  tmp = path.with_suffix('.tmp')
+  with tmp.open('wb') as f:
+    pickle.dump(value, f, protocol=pickle.HIGHEST_PROTOCOL)
+  tmp.replace(path)
+
+
+def _json_write(path, value):
+  path = Path(path)
+  tmp = path.with_suffix('.tmp')
+  tmp.write_text(json.dumps(value, indent=1))
+  tmp.replace(path)
+
+
+def _cf_init(policy, corpus, work):
+  # One agent and one Native account per worker, reused across both phases.
   os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
-  from .run import Autonomous, corpus_env, load_policy
-  began = time.time()
-  agent, meta = load_policy(job['policy'])
-  env, branch_env = corpus_env(job['corpus']), corpus_env(job['corpus'])
-  reference, recorded = build_reference(job['collection'], env)
-  forks, saved, own = set(job['forks']), {}, {}
-  main = Autonomous(agent, env, 'policy')
-  z_differs = 0
+  from .run import corpus_env, load_policy
+  global _CF_WORKER
+  agent, meta = load_policy(policy, logdir=Path(work) / f'policy_{os.getpid()}')
+  _CF_WORKER = dict(agent=agent, env=corpus_env(corpus), meta=meta, prepared=None)
+
+
+def _cf_prepare(job):
+  """One reference replay per contract, not per worker or candidate."""
+  from .run import Autonomous
+  w, work = _CF_WORKER, Path(job['work'])
+  path = work / 'reference.pkl'
+  if path.exists():
+    with path.open('rb') as f:
+      w['prepared'] = pickle.load(f)
+    return dict(w['prepared']['metrics'], reused=True)
+  began = time.monotonic()
+  reference, recorded = job['reference'], job['recorded']
+  main = Autonomous(w['agent'], w['env'], 'policy')
+  stepper, forks, own = Stepper(main), set(job['forks']), {}
+  z_differs, save_seconds, save_bytes = 0, 0., 0
   while not main.done:
-    t = int(env.current_step)
+    t = int(main.env.current_step)
+    if reference.flat[reference.row(t)]:
+      reference.continuations[t] = stepper.continuation()
     if t in forks:
-      saved[t] = main.state()
-    row, _ = main.step()
-    rec = recorded[t - reference.start]
+      started = time.monotonic()
+      file = work / f'{t}.pkl'
+      _pickle_write(file, dict(run=main.state(), progress=CF.BranchProgress(
+          t, 1 - int(reference.action[reference.row(t)])),
+          first_trade=len(main.env.attributions), first_joint=None, probe_steps=0,
+          phase='fork', cost=dict(native_steps=0, policy_calls=0, seconds=0.,
+                                  save_seconds=0., restore_seconds=0.)))
+      save_seconds += time.monotonic() - started
+      save_bytes += file.stat().st_size
+    row, arrays = main.step()
+    rec = recorded[reference.row(t)]
     if (row['cursor'], row['executed'], row['reward']) != (rec['cursor'], rec['executed'], rec['reward']):
-      raise RuntimeError(f'Worker {job["index"]}: the replay differs from the collection at cursor {t}')
+      raise RuntimeError(f'The frozen reference replay differs from the collection at cursor {t}')
+    if row['equity'] != rec['equity'] or not reference.same_inputs(t, arrays):
+      raise RuntimeError(f'The replayed Native account differs from the collection at cursor {t}')
     z_differs += row['z'] != rec['z']
-    own[t] = (row['z'], row['executed'])
-  replay_seconds = time.time() - began
+    if reference.flat[reference.row(t)]:
+      own[t] = (row['z'], row['executed'])
+  if not main.env.terminated:
+    raise RuntimeError('Reference replay did not reach the Native terminal')
+  metrics = dict(native_steps=main.steps, policy_calls=main.steps, z_differs=z_differs,
+                 seconds=time.monotonic() - began, snapshot_save_seconds=save_seconds,
+                 snapshot_bytes=save_bytes, flat_states=len(reference.continuations),
+                 platform=w['agent'].config.jax.platform,
+                 compute_dtype=w['agent'].config.jax.compute_dtype)
+  w['prepared'] = dict(reference=reference, own=own, metrics=metrics)
+  _pickle_write(path, w['prepared'])
+  return dict(metrics, reused=False)
+
+
+def _cf_job(job):
+  """Probe or continue a batch using the same saved branch state and cap."""
+  from .run import Autonomous
+  w, work = _CF_WORKER, Path(job['work'])
+  if w['prepared'] is None:
+    with (work / 'reference.pkl').open('rb') as f:
+      w['prepared'] = pickle.load(f)
+  reference, own = w['prepared']['reference'], w['prepared']['own']
   out = []
-  for t in sorted(forks):
-    run = Autonomous.restore(agent, branch_env, saved.pop(t))
-    stepper = Stepper(run)
-    first = 1 - int(reference.action[t - reference.start])
-    result = CF.run_branch(stepper, reference, first, job['max_steps'],
-                           witness=lambda c: stepper.peek() == own[c])
-    result.update(CF.pair(reference, result), trades=stepper.trades(), end_status=stepper.status)
+  executed = dict(native_steps=0, policy_calls=0, seconds=0., save_seconds=0., restore_seconds=0.)
+  for t in job['forks']:
+    final = work / f'{t}.json'
+    if final.exists():
+      out.append(json.loads(final.read_text()))
+      continue
+    began = time.monotonic()
+    checkpoint = work / f'{t}.pkl'
+    with checkpoint.open('rb') as f:
+      saved = pickle.load(f)
+    progress, cost = saved['progress'], saved['cost']
+    probe_record = work / f'{t}.probe.json'
+    if saved['phase'] != 'fork' and probe_record.exists():
+      saved['record'] = json.loads(probe_record.read_text())
+      cost = saved['cost'] = saved['record']['cost']
+    # Recovery keeps the advanced probe, including its forced first action.
+    if job['phase'] == 'probe' and saved['phase'] != 'fork':
+      out.append(saved['record'])
+      continue
+    before_cost = dict(cost)
+    stepper = Stepper(Autonomous.restore(w['agent'], w['env'], saved['run']))
+    del saved['run']
+    stepper.first_trade = saved['first_trade']
+    stepper.first_joint = saved['first_joint']
+    stepper.fork_cursor, stepper.reference = t, reference
+    cost['restore_seconds'] += time.monotonic() - began
+    before = len(progress.rewards)
+    stop = min(job['probe_steps'], job['max_steps']) if job['phase'] == 'probe' else job['max_steps']
+    result = CF.advance_branch(stepper, reference, progress, stop, job['max_steps'],
+                               witness=lambda c: stepper.peek() == own[c])
+    cost['native_steps'] += len(progress.rewards) - before
+    cost['policy_calls'] += stepper.policy_calls
+    if job['phase'] == 'probe':
+      saved['probe_steps'] = len(progress.rewards)
+    if result is None:
+      result = CF.unavailable(reference, t, progress.first_action, 'PROBE_UNFINISHED_BUDGET', progress)
+    result.update(CF.pair(reference, result), trades=stepper.trades(),
+                  end_status=stepper.run.env.status,
+                  native_terminal=bool(stepper.run.env.terminated),
+                  native_truncated=bool(stepper.run.env.truncated),
+                  first_joint=stepper.first_joint, probe_steps=saved['probe_steps'],
+                  continuation_steps=len(progress.rewards) - saved['probe_steps'],
+                  completed_in=job['phase'] if result['status'] == 'VALID_COMPLETE' else None)
+    pending = result['status'] == 'UNAVAILABLE_BUDGET'
+    result['cost'] = cost
+    if pending:
+      # Full histories go to disk. Only this branch is live in worker RAM.
+      started = time.monotonic()
+      saved.update(run=stepper.run.state(), first_joint=stepper.first_joint,
+                   phase='probe', record=result)
+      _pickle_write(checkpoint, saved)
+      cost['save_seconds'] += time.monotonic() - started
+    cost['seconds'] += time.monotonic() - began
+    result['cost'] = dict(cost)
+    _json_write(probe_record if pending else final, result)
+    for key in executed:
+      executed[key] += cost[key] - before_cost[key]
     out.append(result)
     if job['log_every'] and len(out) % job['log_every'] == 0:
-      print(f'worker {job["index"]}: {len(out)}/{len(forks)} branches', flush=True)
-  return dict(index=job['index'], results=out, replay_steps=len(own), z_differs=int(z_differs),
-              replay_seconds=round(replay_seconds, 1), seconds=round(time.time() - began, 1),
-              platform=agent.config.jax.platform, compute_dtype=agent.config.jax.compute_dtype)
+      print(f'CF {job["phase"]}: {len(out)}/{len(job["forks"])} branches', flush=True)
+  return dict(results=out, executed=executed)
+
+
+class _PeakMemory:
+  """Sample process-tree RSS (shared pages may be counted more than once)."""
+  def __enter__(self):
+    import psutil
+    self.process, self.peak, self.stop = psutil.Process(), 0, threading.Event()
+    def sample():
+      while not self.stop.is_set():
+        total = 0
+        for p in [self.process, *self.process.children(recursive=True)]:
+          try:
+            total += p.memory_info().rss
+          except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+        self.peak = max(self.peak, total)
+        self.stop.wait(.2)
+    self.thread = threading.Thread(target=sample, daemon=True)
+    self.thread.start()
+    return self
+
+  def __exit__(self, *args):
+    self.stop.set()
+    self.thread.join()
+
+
+def _base_pairs(folder, policy, corpus, collection, reference):
+  """Local supplementation with the same Q semantics; no hash gate."""
+  if folder is None:
+    return {}
+  folder = Path(folder)
+  meta = json.loads((folder / 'meta.json').read_text())
+  for key, value in dict(policy=policy, corpus=corpus, collection=collection).items():
+    if Path(meta[key]).resolve() != Path(value).resolve():
+      raise ValueError(f'Base CF {key} differs; cannot mix Q targets')
+  if (meta['gamma'] != [CF.GAMMA.numerator, CF.GAMMA.denominator] or
+      meta['clock'] != 'S3_MARKET_MINUTE' or meta['reference_rows'] != reference.n):
+    raise ValueError('Base CF discount/clock/reference differs')
+  rows = [json.loads(line) for line in (folder / 'pairs.jsonl').open()]
+  legal = set(reference.forks().tolist())
+  if len({r['cursor'] for r in rows}) != len(rows):
+    raise ValueError('Duplicate base CF cursor')
+  for r in rows:
+    if (r['cursor'] not in legal or r['first_action'] != 1 - reference.action[reference.row(r['cursor'])]
+        or r['reference_action'] != reference.action[reference.row(r['cursor'])]):
+      raise ValueError('Base CF is not a legal opposite-action fork')
+    if r['status'] == 'VALID_COMPLETE':
+      if not all(r.get(k) is not None and np.isfinite(r[k]) for k in ('g', 'g_add', 'g_wait', 'delta_g')):
+        raise ValueError('Base VALID_COMPLETE has no finite pair')
+      expected = CF.pair(reference, r)
+      if any(not np.isclose(r[k], expected[k], rtol=0, atol=1e-12)
+             for k in ('g_add', 'g_wait', 'delta_g')):
+        raise ValueError('Base CF pair does not match the reference return')
+    elif r['g'] is not None or r['delta_g'] is not None:
+      raise ValueError('Incomplete base CF must not contain a numeric Q pair')
+  return {r['cursor']: r for r in rows}
 
 
 def run_cf(policy, corpus, collection, out, forks=None, seed=0, workers=4,
-           max_steps=8192, log_every=50, log=print, budget=None):
-  """Write out/pairs.jsonl, out/targets.npz and out/meta.json. With
-  `budget`, at most that many of the forks only a full branch can decide
-  are simulated (undecided_sample), the others are UNAVAILABLE_BUDGET."""
+           max_steps=8192, log_every=50, log=print, budget=None, probe_steps=64,
+           cursors=None, base_cf=None):
+  """Probe every candidate, then continue a stratified quota from saved state.
+  A larger quota can resume the same output. Partial supplements use a new
+  output and base_cf; completed old Q labels are retained.
+  """
+  with _PeakMemory() as memory:
+    return _run_cf(policy, corpus, collection, out, forks, seed, workers, max_steps,
+                   log_every, log, budget, probe_steps, cursors, base_cf, memory)
+
+
+def _run_cf(policy, corpus, collection, out, forks=None, seed=0, workers=4,
+            max_steps=8192, log_every=50, log=print, budget=None, probe_steps=64,
+            cursors=None, base_cf=None, memory=None):
+  """Probe all candidates, then sample unfinished branches for continuation.
+  Work files retain the shared reference, one checkpoint per fork and atomic
+  results. Rerun the same command to recover completed probes/results. Use a
+  new output + base_cf to supplement an older dataset without overwriting it.
+  """
   from .run import corpus_env
-  out = Path(out)
-  out.mkdir(parents=True, exist_ok=True)
-  began = time.time()
+  if workers < 1 or max_steps < 1 or not 1 <= probe_steps <= 64:
+    raise ValueError('workers/max_steps must be positive and probe_steps in [1, 64]')
+  if budget is not None and budget < 0:
+    raise ValueError('A CF continuation budget counts forks, >= 0')
+  if cursors is not None and forks is not None:
+    raise ValueError('Use explicit cursors or WAIT sampling, not both')
+  out = Path(out).resolve()
+  if base_cf is not None and out == Path(base_cf).resolve():
+    raise ValueError('Supplement CF into a new output; base CF is read-only')
+  began = time.monotonic()
   env = corpus_env(corpus)
-  reference, _ = build_reference(collection, env)
+  reference, recorded = build_reference(collection, env)
   if not reference.complete:
     raise ValueError('The collection did not reach the true terminal: no complete returns')
-  if budget is not None and budget < 0:
-    raise ValueError(f'A CF budget counts forks, >= 0; got {budget}')
-  chosen = choose_forks(reference, forks, seed)
-  undecided = [t for t in chosen if not reference.decidable(t, max_steps)]
-  sample, strata = undecided, None
-  if budget is not None:
-    sample, strata = undecided_sample(reference, undecided, budget, env._raw.Close.to_numpy(), seed)
-  skipped = sorted(set(undecided) - set(sample))
-  simulated = sorted(set(chosen) - set(skipped))
-  groups = [simulated[i::workers] for i in range(workers)]
-  jobs = [dict(index=i, policy=str(policy), corpus=str(corpus), collection=str(collection),
-               forks=g, max_steps=max_steps, log_every=log_every)
-          for i, g in enumerate(groups) if g]
-  log(f'CF: {len(chosen)} forks of {len(reference.forks())} legal flat decisions, '
-      f'{len(jobs)} workers')
-  if undecided:
-    log(f'CF: {len(undecided)} forks can neither couple nor reach the true terminal within '
-        f'{max_steps} steps: {len(sample)} simulated, {len(skipped)} UNAVAILABLE_BUDGET')
-  parts = []
-  if jobs:
-    with ProcessPoolExecutor(len(jobs), mp_context=multiprocessing.get_context('spawn')) as pool:
-      parts = list(pool.map(_cf_job, jobs))
-  results = [r for p in parts for r in p['results']]
-  for t in skipped:
-    r = CF.unavailable(reference, t, 1 - int(reference.action[reference.row(t)]),
-                       'BELOW_FLOOR_BEYOND_CAP')
-    results.append(dict(r, **CF.pair(reference, r), trades=None, end_status=None))
-  results.sort(key=lambda r: r['cursor'])
-  with (out / 'pairs.jsonl').open('w') as f:
+  chosen = choose_forks(reference, forks, seed) if cursors is None else sorted(set(map(int, cursors)))
+  if set(chosen) - set(reference.forks().tolist()):
+    raise ValueError('Requested cursor is not a legal flat fork')
+  inherited = _base_pairs(base_cf, policy, corpus, collection, reference)
+  plan = dict(policy=str(Path(policy).resolve()), corpus=str(Path(corpus).resolve()),
+              collection=str(Path(collection).resolve()), cursors=chosen,
+              max_steps=max_steps, probe_steps=probe_steps, seed=seed, budget=budget,
+              base_cf=str(Path(base_cf).resolve()) if base_cf else None)
+  work = out / 'work'
+  manifest = work / 'plan.json'
+  if not manifest.exists() and (out / 'meta.json').exists():
+    raise ValueError('Existing CF output is read-only; supplement into a new directory')
+  if manifest.exists():
+    previous = json.loads(manifest.read_text())
+    old_budget = previous.pop('budget')
+    if previous != {k: v for k, v in plan.items() if k != 'budget'}:
+      raise ValueError('Existing CF work uses another plan; choose a new output directory')
+    if budget is not None and (old_budget is None or budget < old_budget):
+      raise ValueError('Cannot reduce an already allocated continuation quota')
+  work.mkdir(parents=True, exist_ok=True)
+  _json_write(manifest, plan)
+  close = env._raw.Close.to_numpy()
+  del env
+  jobs = lambda phase, ts: [dict(work=str(work), phase=phase, forks=ts[i::workers],
+                                 probe_steps=probe_steps, max_steps=max_steps, log_every=log_every)
+                            for i in range(workers) if ts[i::workers]]
+  log(f'CF: {len(chosen)} legal candidates, probe <= {min(probe_steps, max_steps)} steps each; '
+      f'continuation quota {budget}; one shared reference replay')
+  reference_metrics, results, sample, survivors, strata = {}, [], [], [], dict(strata={})
+  executed = dict(native_steps=0, policy_calls=0, seconds=0., save_seconds=0., restore_seconds=0.)
+  if chosen:
+    with ProcessPoolExecutor(min(workers, len(chosen)), mp_context=multiprocessing.get_context('spawn'),
+                             initializer=_cf_init, initargs=(str(policy), str(corpus), str(work))) as pool:
+      reference_metrics = pool.submit(_cf_prepare, dict(work=str(work), reference=reference,
+                                        recorded=recorded, forks=chosen)).result()
+      parts = list(pool.map(_cf_job, jobs('probe', chosen)))
+      results = [r for part in parts for r in part['results']]
+      # Recovered final continuations have already used quota slots. Sample
+      # the same original survivor set, including those completed branches.
+      survivors = sorted(r['cursor'] for r in results if r['status'] == 'UNAVAILABLE_BUDGET'
+                         or r.get('continuation_steps', 0))
+      allocation_path = work / 'continuations.json'
+      allocation = json.loads(allocation_path.read_text()) if allocation_path.exists() else dict(
+          cursors=[], draws=[])
+      previous = allocation['cursors']
+      if set(previous) - set(survivors):
+        raise ValueError('Saved continuation allocation differs from probe survivors')
+      quota = len(survivors) if budget is None else min(budget, len(survivors))
+      extra, draw = undecided_sample(reference, sorted(set(survivors) - set(previous)),
+                                     quota - len(previous), close, seed)
+      sample = sorted(previous + extra)
+      if extra:
+        allocation['draws'].append(draw)
+      allocation['cursors'] = sample
+      _json_write(allocation_path, allocation)
+      strata = dict(draws=allocation['draws'])
+      if sample:
+        continued = list(pool.map(_cf_job, jobs('continuation', sample)))
+        parts.extend(continued)
+        by_cursor = {r['cursor']: r for r in results}
+        by_cursor.update((r['cursor'], r) for part in continued for r in part['results'])
+        results = [by_cursor[t] for t in chosen]
+      for part in parts:
+        for key in executed:
+          executed[key] += part['executed'][key]
+  computed = sorted(results, key=lambda r: r['cursor'])
+  for r in computed:
+    old = inherited.get(r['cursor'])
+    if not old or old['status'] != 'VALID_COMPLETE' or r['status'] == 'VALID_COMPLETE':
+      inherited[r['cursor']] = r
+  results = sorted(inherited.values(), key=lambda r: r['cursor'])
+  tmp = out / 'pairs.jsonl.tmp'
+  with tmp.open('w') as f:
     f.writelines(json.dumps(r) + '\n' for r in results)
-  targets = cf_targets(reference, results)
-  np.savez(out / 'targets.npz', **targets)
+  tmp.replace(out / 'pairs.jsonl')
+  with (out / 'targets.tmp').open('wb') as f:
+    np.savez(f, **cf_targets(reference, results))
+  (out / 'targets.tmp').replace(out / 'targets.npz')
   counts = {}
   for r in results:
     key = f"{r['status']}/{r['reason']}"
     counts[key] = counts.get(key, 0) + 1
   valid = [r for r in results if r['delta_g'] is not None]
+  probe_native = sum(r['probe_steps'] for r in computed)
+  continuation_native = sum(r['continuation_steps'] for r in computed)
+  unavailable = sum(r['status'] == 'UNAVAILABLE_BUDGET' for r in computed)
+  cap = min(probe_steps, max_steps)
+  quota = len(chosen) if budget is None else min(budget, len(chosen))
+  cost = {key: sum(r['cost'][key] for r in computed) for key in
+          ('native_steps', 'policy_calls', 'seconds', 'save_seconds', 'restore_seconds')}
   meta = dict(
       policy=str(policy), corpus=str(corpus), collection=str(collection),
       gamma=[CF.GAMMA.numerator, CF.GAMMA.denominator], clock='S3_MARKET_MINUTE',
       coupling_floor=reference.floor, reference_rows=reference.n,
       legal_flat_decisions=len(reference.forks()),
-      forks=dict(requested_waits=forks, seed=seed, chosen=len(chosen),
+      forks=dict(requested_waits=forks, seed=seed, chosen=len(results), requested_cursors=chosen,
                  reference_adds=int(sum(r['reference_action'] == ADD for r in results)),
-                 undecided=len(undecided)),
+                 undecided=len(survivors)),
       couple_from=reference.couple_from,
-      budget=None if budget is None else dict(
-          forks=budget, undecided=len(undecided), simulated=len(sample), unavailable=len(skipped),
-          reason='BELOW_FLOOR_BEYOND_CAP', **strata),
+      budget=None if budget is None else dict(forks=budget, undecided=len(survivors),
+          simulated=len(sample), unavailable=unavailable, reason='PROBE_UNFINISHED_BUDGET', **strata),
+      probe=dict(limit=cap, candidates=len(chosen), native_steps=probe_native,
+                 valid_pairs=sum(r['completed_in'] == 'probe' for r in computed)),
+      continuation=dict(branches=len(sample), native_steps=continuation_native,
+                        valid_pairs=sum(r['completed_in'] == 'continuation' for r in computed)),
+      branch_step_bound=len(chosen) * cap + quota * max(0, max_steps - cap),
       end_status={s: sum(r['end_status'] == s for r in results)
                   for s in sorted({r['end_status'] for r in results} - {None})},
       max_steps=max_steps, counts=counts, valid_pairs=len(valid),
       delta_g=dict(mean=float(np.mean([r['delta_g'] for r in valid])) if valid else None,
                    std=float(np.std([r['delta_g'] for r in valid])) if valid else None),
-      branch_steps=dict(total=int(sum(r['steps'] for r in results)),
-                        max=int(max((r['steps'] for r in results), default=0))),
-      replay=dict(steps=[p['replay_steps'] for p in parts], z_differs=[p['z_differs'] for p in parts],
-                  seconds=[p['replay_seconds'] for p in parts]),
-      worker_seconds=[p['seconds'] for p in parts], seconds=round(time.time() - began, 1),
-      inference=dict(platform=parts[0]['platform'], compute_dtype=parts[0]['compute_dtype'])
-      if parts else None,
+      branch_steps=dict(total=int(sum(r['steps'] for r in computed)),
+                        max=int(max((r['steps'] for r in computed), default=0))),
+      replay=dict(steps=[reference_metrics['native_steps']] if chosen else [],
+                  z_differs=[reference_metrics['z_differs']] if chosen else [],
+                  seconds=[reference_metrics['seconds']] if chosen else []),
+      compute=dict(reference=reference_metrics, branches=cost,
+                   native_steps=reference_metrics.get('native_steps', 0) + cost['native_steps'],
+                   policy_calls=reference_metrics.get('policy_calls', 0) + cost['policy_calls'],
+                   executed_branches=executed,
+                   executed_native_steps=executed['native_steps'] + (
+                       reference_metrics.get('native_steps', 0) if not reference_metrics.get('reused') else 0),
+                   executed_policy_calls=executed['policy_calls'] + (
+                       reference_metrics.get('policy_calls', 0) if not reference_metrics.get('reused') else 0),
+                   peak_rss_bytes=memory.peak, memory_method='process-tree sum RSS sampled every 0.2 s',
+                   note='Native/call totals include recovered work; elapsed/RSS describe this invocation'),
+      seconds=round(time.monotonic() - began, 3),
+      inference={k: reference_metrics[k] for k in ('platform', 'compute_dtype')} if chosen else None,
+      base_cf=str(base_cf) if base_cf else None,
       labels=dict(q_real='STUDENT_EXECUTED_NATIVE', q_cf='VERIFIED_CF_NATIVE',
                   policy_bound='targets are Q^{pi_k} of this policy only'))
-  (out / 'meta.json').write_text(json.dumps(meta, indent=1))
+  _json_write(out / 'meta.json', meta)
   log(f'CF done in {meta["seconds"]} s: {counts}')
   return meta
 
@@ -280,7 +570,7 @@ def cf_targets(reference, results):
   for r in results:
     i = reference.row(r['cursor'])
     out['cf_action'][i] = r['first_action']
-    if r['delta_g'] is not None:
+    if r['status'] == 'VALID_COMPLETE' and r['delta_g'] is not None:
       out['q_cf'][i] = r['g']
       out['q_cf_valid'][i] = 1.
   return out

@@ -275,7 +275,7 @@ def pair_items(pairs, items, end, kappa, margin):
                        f'the collection executed {items["executed"][i]}')
     out['cf_fork'][i] = True
     out['cf_status'][i], out['cf_reason'][i] = p['status'], p['reason']
-    if p['delta_g'] is None:
+    if p['status'] != 'VALID_COMPLETE' or p['delta_g'] is None:
       continue  # NOT_COMPARABLE and UNAVAILABLE_BUDGET abstain
     dg = p['delta_g']
     out['cf_valid'][i] = True
@@ -365,9 +365,6 @@ def main(argv=None):
                       default=DEFAULTS['decision_error_margin'])
   args = parser.parse_args(argv)
   check_order(args.order)
-  if (Path(args.out) / SUMMARY).exists():
-    print(f'{args.out} holds its teaching items already; kept')
-    return
   kappa, folders = None, args.kappa_cf or ([args.cf] if args.cf else [])
   if folders:
     from .value import cf_kappa
