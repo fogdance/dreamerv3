@@ -133,10 +133,29 @@ def test_only_offline_train_releases_feedback(pik, two, tmp_path):
   (dev / 'source.json').write_text(json.dumps({**source, 'fold': 'VALIDATION'}))
   with pytest.raises(ValueError, match='not TRAIN material'):
     F.build(pik['collect'][name], dev)
-  # A built folder is kept as it is.
+  # Existing summaries are regenerated for current CF and thresholds.
   before = (out / 'summary.json').read_text()
   F.main([*args, '--out', str(out), '--outcome-error-prob', '0.9'])
-  assert (out / 'summary.json').read_text() == before
+  assert (out / 'summary.json').read_text() != before
+  assert F.load(out)[1]['thresholds']['outcome_error_prob'] == 0.9
+  # Replacing a CF pair with an unfinished result must remove its old error /
+  # pair supervision, even though this feedback folder already has a summary.
+  changed = tmp_path / 'changed_cf'
+  changed.mkdir()
+  rows = [json.loads(line) for line in (pik['cf'][name] / 'pairs.jsonl').open()]
+  victim = next(r for r in rows if r['delta_g'] is not None)
+  victim.update(status='NOT_COMPARABLE', reason='CAP', g=None, delta_g=None)
+  victim['g_wait' if victim['reference_action'] else 'g_add'] = None
+  (changed / 'pairs.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in rows))
+  meta = json.loads((pik['cf'][name] / 'meta.json').read_text())
+  meta['valid_pairs'] -= 1
+  (changed / 'meta.json').write_text(json.dumps(meta))
+  new_args = [str(changed) if a == str(pik['cf'][name]) else a for a in args]
+  F.main([*new_args, '--out', str(out), '--kappa-cf', str(pik['cf'][name])])
+  updated, summary = F.load(out)
+  assert not updated['cf_valid'][victim['cursor']]
+  assert not updated['decision_error'][victim['cursor']]
+  assert summary['sources']['cf']['items'] == meta['valid_pairs']
 
 
 def test_error_tags_follow_the_answers_and_the_pairs():
@@ -183,6 +202,8 @@ def test_error_tags_follow_the_answers_and_the_pairs():
   # pair has no better action; 4 has no valid strict choice.
   assert out['teachers_agree'].tolist() == [True, True, False, False, False]
   assert not F.pair_items(pairs, items, 10, None, 1.0)['decision_error'].any()
+  invalid = dict(pairs[2], g_add=2., g_wait=0., delta_g=2.)
+  assert not F.pair_items([invalid], items, 10, .5, 1.)['cf_valid'].any()
   with pytest.raises(ValueError, match='forks from action'):
     F.pair_items([dict(pairs[0], reference_action=0)], items, 10, .5, 1.)
   full = dict(items, **out, fact_valid=np.zeros(5, bool), outcome_error=np.zeros(5, bool),
@@ -306,7 +327,7 @@ def test_l6_rounds_teach_offline_train_feedback(pik, two, tmp_path, monkeypatch)
   assert state['rounds']['1']['L6'] == 'L6_SKIPPED_BY_CONFIG' and 'l6' not in state['rounds']['1']
   assert not (lay.root / 'experience' / 'pi_0000' / 'feedback').exists()
 
-  # Round 2 stops in its L2 review; the rerun keeps the teaching items.
+  # Round 2 stops in its L2 review; the rerun refreshes local teaching items.
   calls.clear()
   monkeypatch.setattr(FT, '_call', guarded(in_process(calls, fail='train-outcome', argvs=argvs)))
   with pytest.raises(RuntimeError, match='train-outcome failed'):
@@ -315,14 +336,16 @@ def test_l6_rounds_teach_offline_train_feedback(pik, two, tmp_path, monkeypatch)
                    'train-outcome']
   pi1 = lay.policy(1)
   items = {c: lay.experience(pi1, 'feedback', c) for c in CONTRACTS}
-  kept = {c: (f / 'items.npz').read_bytes() for c, f in items.items()}
+  kept = {c: F.load(f)[0] for c, f in items.items()}
   calls.clear()
   start = len(argvs)
   monkeypatch.setattr(FT, '_call', guarded(in_process(calls, argvs=argvs)))
   FT.main(['iterate', '--config', str(config)])
-  assert calls == ['train-outcome', 'train-value', 'train-policy', 'freeze', 'exam', 'exam']
-  assert {c: (f / 'items.npz').read_bytes() for c, f in items.items()} == kept
-  review, value, policy, freeze = argvs[start:start + 4]
+  assert calls == ['feedback', 'feedback', 'train-outcome', 'train-value', 'train-policy', 'freeze', 'exam', 'exam']
+  for c, folder in items.items():
+    for key, value in F.load(folder)[0].items():
+      np.testing.assert_array_equal(value, kept[c][key])
+  review, value, policy, freeze = argvs[start + 2:start + 6]
   for argv in (review, value, policy, freeze):
     assert flags(argv, '--feedback') == [str(items[c]) for c in CONTRACTS]
   assert flags(review, '--remedial-fraction') == flags(policy, '--remedial-fraction') == ['0.5']
@@ -362,12 +385,12 @@ def test_l6_rounds_teach_offline_train_feedback(pik, two, tmp_path, monkeypatch)
       c: True for c in CONTRACTS}
 
   # Round 3 without representative pairs (cf_budget 0 and cf_min_coverage;
-  # no cursor may couple, an unreachable floor in this process): the L2
+  # one-step probes with no continuation quota): the L2
   # review still runs on the outcome errors of the facts, L4 is skipped, L5
   # takes no decision remediation from the same CF, and pi_3 keeps the value
   # brain and anchor of pi_2.
   data = yaml.safe_load(config.read_text())
-  data['iteration'].update(max_rounds=3, cf_max_steps=2, cf_budget=0, cf_min_coverage=0.8)
+  data['iteration'].update(max_rounds=3, cf_max_steps=2, cf_probe_steps=1, cf_budget=0, cf_min_coverage=0.8)
   config.write_text(yaml.safe_dump(data))
   monkeypatch.setattr(V.CF, 'coupling_floor', lambda env: np.inf)
   calls.clear()
@@ -389,8 +412,8 @@ def test_l6_rounds_teach_offline_train_feedback(pik, two, tmp_path, monkeypatch)
     assert budget['simulated'] == 0 and budget['unavailable'] == budget['undecided'] > 0
     assert summary['abstained']['cf_unavailable_budget'] == budget['unavailable']
     assert summary['abstained']['cf_not_comparable'] == 0
-    assert summary['cf_coverage'] == record['cf'][c]['coverage'] == 0
-    assert summary['thresholds']['decision_errors'] == 'DECISION_ERRORS_NOT_TAGGED'
+    assert summary['cf_coverage'] == record['cf'][c]['coverage'] < 0.8
+    assert summary['sources']['cf']['items'] == record['cf'][c]['valid_pairs']
   review, policy, freeze = (next(a for a in argvs[start:] if a[0] == name)
                             for name in ('train-outcome', 'train-policy', 'freeze'))
   assert flags(review, '--feedback') == flags(freeze, '--feedback') == [

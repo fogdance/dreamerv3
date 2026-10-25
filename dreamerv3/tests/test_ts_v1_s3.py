@@ -45,10 +45,18 @@ def world(tmp_path_factory):
   return dict(root=root, corpus=corpus, run=run, policy=policy, collection=collection)
 
 
-def job(world, forks, max_steps=8192):
-  return dict(index=0, policy=str(world['policy']), corpus=str(world['corpus']),
-              collection=str(world['collection']), forks=forks, max_steps=max_steps,
-              log_every=0)
+def worker(world, work, forks, max_steps=8192):
+  work.mkdir()
+  V._cf_init(str(world['policy']), str(world['corpus']), str(work))
+  ref, rows = V.build_reference(world['collection'], V._CF_WORKER['env'])
+  replay = V._cf_prepare(dict(work=str(work), reference=ref, recorded=rows, forks=forks))
+  job = dict(work=str(work), forks=forks, max_steps=max_steps, probe_steps=64, log_every=0)
+  probe = V._cf_job(dict(job, phase='probe'))['results']
+  pending = [r['cursor'] for r in probe if r['status'] == 'UNAVAILABLE_BUDGET']
+  rows = {r['cursor']: r for r in probe}
+  rows.update((r['cursor'], r) for r in V._cf_job(dict(job, phase='continuation', forks=pending))['results'])
+  return dict(results=list(rows.values()), replay_steps=replay['native_steps'],
+              z_differs=replay['z_differs'])
 
 
 def test_l4_update_moves_only_the_value_brain(tmp_path):
@@ -91,19 +99,20 @@ def test_q_targets_need_the_complete_formal_trajectory(world, tmp_path):
     V.run_cf(world['policy'], world['corpus'], tmp_path / 'short', tmp_path / 'cf', workers=1, **QUIET)
 
 
-def test_cf_branches_of_the_frozen_student_are_exact(world, monkeypatch):
+def test_cf_branches_of_the_frozen_student_are_exact(world, tmp_path, monkeypatch):
   reference, _ = V.build_reference(world['collection'], ts_run.corpus_env(world['corpus']))
   assert reference.complete and reference.n > HOLDOUT
-  forks = V.choose_forks(reference, forks=12, seed=0)
+  forks = sorted([int(t) for a in (V.ADD, V.WAIT) for t in reference.forks()[
+      reference.action[reference.forks() - reference.start] == a][:4]])
   own = reference.action[np.asarray(forks) - reference.start]
-  assert (own == V.ADD).any() and (own == V.WAIT).sum() == 12
-  # Every worker replays the collection first; on the recorded CPU float32
+  assert set(own) == {V.ADD, V.WAIT}
+  # The shared reference replay on the recorded CPU float32
   # the replayed answers are the recorded ones.
-  coupled = V._cf_job(job(world, forks))
+  coupled = worker(world, tmp_path / 'coupled', forks)
   assert coupled['replay_steps'] == reference.n and coupled['z_differs'] == 0
   # Never coupling runs every branch with the same student to the true terminal.
-  monkeypatch.setattr(V.CF, 'coupling_floor', lambda env: np.inf)
-  full = {r['cursor']: r for r in V._cf_job(job(world, forks))['results']}
+  monkeypatch.setattr(V.CF.Reference, 'coupling_kind', lambda self, state: None)
+  full = {r['cursor']: r for r in worker(world, tmp_path / 'full', forks)['results']}
   monkeypatch.undo()
   reasons = set()
   for r in coupled['results']:
@@ -117,7 +126,7 @@ def test_cf_branches_of_the_frozen_student_are_exact(world, monkeypatch):
   long = [r for r in coupled['results'] if r['reason'] == 'COUPLED' and r['trades']]
   assert long, 'a coupled branch that traded on its own'
   # Without coupling or the true terminal inside the cap: no numeric label.
-  capped = V._cf_job(job(world, forks, max_steps=1))['results']
+  capped = worker(world, tmp_path / 'cap', forks, max_steps=1)['results']
   capped = [r for r in capped if r['status'] == 'NOT_COMPARABLE']
   assert capped and all(r['reason'] == 'CAP' and r['g'] is None and r['delta_g'] is None
                         for r in capped)
@@ -130,7 +139,7 @@ def test_cf_targets_train_the_value_brain_and_freeze_the_anchor(world, tmp_path)
   reference, _ = V.build_reference(world['collection'], ts_run.corpus_env(world['corpus']))
   assert len(pairs) == meta['forks']['chosen'] == len(reference.forks())
   assert meta['valid_pairs'] == sum(p['delta_g'] is not None for p in pairs) > 0
-  assert meta['replay']['z_differs'] == [0, 0] and meta['inference']['platform'] == 'cpu'
+  assert meta['replay']['z_differs'] == [0] and meta['inference']['platform'] == 'cpu'
   targets = dict(np.load(cf / 'targets.npz'))
   np.testing.assert_array_equal(targets['q_real'], reference.g.astype(np.float32))
   for p in pairs:
@@ -200,47 +209,49 @@ def test_cf_targets_train_the_value_brain_and_freeze_the_anchor(world, tmp_path)
                  '--kappa-q', '0', *args])
 
 
-def test_a_cf_budget_leaves_unsimulated_forks_unavailable(world, tmp_path, monkeypatch):
-  """Forks only a full branch can decide (no coupling, no true terminal in
-  the cap): a stratified exact sample runs, the others are
-  UNAVAILABLE_BUDGET and never a Q label (user decision 2026-10-24). The
-  floor is unreachable in this process only: the workers keep theirs."""
+def test_a_cf_budget_probes_every_fork_and_resumes_only_the_sample(world, tmp_path):
   env = ts_run.corpus_env(world['corpus'])
-  monkeypatch.setattr(V.CF, 'coupling_floor', lambda env: np.inf)
   reference, _ = V.build_reference(world['collection'], env)
-  cap, end = 2, reference.start + reference.n
   forks = V.choose_forks(reference)
-  undecided = [t for t in forks if not reference.decidable(t, cap)]
-  assert undecided == [t for t in forks if end - t > cap] and len(undecided) > 16
-  close = env._raw.Close.to_numpy()
-  sample, strata = V.undecided_sample(reference, undecided, 8, close, seed=3)
-  assert len(sample) == 8 and set(sample) <= set(undecided)
-  assert V.undecided_sample(reference, undecided, 8, close, seed=3)[0] == sample
-  sizes = strata['strata'].values()
-  assert sum(s['forks'] for s in sizes) == len(undecided)
-  for s in sizes:  # a systematic draw gives each stratum its share
-    share = s['forks'] * 8 / len(undecided)
-    assert np.floor(share) <= s['simulated'] <= np.ceil(share)
-  assert V.undecided_sample(reference, undecided, 10 ** 6, close)[0] == undecided
-
+  sample, strata = V.undecided_sample(reference, forks, 8, env._raw.Close.to_numpy(), seed=3)
+  assert len(sample) == 8 and set(sample) <= set(forks)
+  assert V.undecided_sample(reference, forks, 8, env._raw.Close.to_numpy(), seed=3)[0] == sample
+  assert sum(s['forks'] for s in strata['strata'].values()) == len(forks)
   cf = tmp_path / 'cf'
   meta = V.run_cf(world['policy'], world['corpus'], world['collection'], cf, workers=2,
-                  max_steps=cap, seed=3, budget=8, **QUIET)
+                  max_steps=50, probe_steps=1, seed=3, budget=8, **QUIET)
   pairs = [json.loads(line) for line in (cf / 'pairs.jsonl').open()]
   off = [p for p in pairs if p['status'] == 'UNAVAILABLE_BUDGET']
-  assert len(pairs) == len(forks) and {p['cursor'] for p in off} == set(undecided) - set(sample)
+  assert len(pairs) == len(forks) and off
   for p in off:
-    assert (p['reason'], p['steps'], p['g'], p['delta_g']) == ('BELOW_FLOOR_BEYOND_CAP', 0, None, None)
-    assert p['branch_rewards'] is None and p['trades'] is None and p['end_status'] is None
-  assert all(p['end_status'] for p in pairs if p['status'] != 'UNAVAILABLE_BUDGET')
-  assert meta['counts']['UNAVAILABLE_BUDGET/BELOW_FLOOR_BEYOND_CAP'] == len(off)
-  assert (meta['budget']['forks'], meta['budget']['simulated'], meta['budget']['unavailable']) == (
-      8, 8, len(undecided) - 8)
-  assert meta['forks']['undecided'] == len(undecided) and meta['couple_from'] == end
-  assert sum(meta['end_status'].values()) == len(pairs) - len(off)
+    assert (p['reason'], p['steps'], p['g'], p['delta_g']) == ('PROBE_UNFINISHED_BUDGET', 1, None, None)
+    assert p['end_status'] == 'ACTIVE' and not p['native_terminal']
+  assert meta['probe']['candidates'] == len(forks) and meta['probe']['native_steps'] == len(forks)
+  assert meta['continuation']['branches'] == 8
+  assert sum(p['continuation_steps'] > 0 for p in pairs) == 8
+  assert meta['branch_steps']['total'] == sum(p['steps'] for p in pairs) <= meta['branch_step_bound']
+  assert all(p['steps'] <= 50 and p['cost']['native_steps'] == p['steps'] for p in pairs)
+  assert meta['replay']['steps'] == [reference.n]
   targets = dict(np.load(cf / 'targets.npz'))
   assert not targets['q_cf_valid'][[reference.row(p['cursor']) for p in off]].any()
   np.testing.assert_array_equal(targets['q_real'], reference.g.astype(np.float32))
+  # Recovery reuses completed probes and results; no branch or reference repeats.
+  again = V.run_cf(world['policy'], world['corpus'], world['collection'], cf, workers=1,
+                   max_steps=50, probe_steps=1, seed=3, budget=8, **QUIET)
+  assert again['branch_steps'] == meta['branch_steps']
+  assert again['compute']['executed_native_steps'] == again['compute']['executed_policy_calls'] == 0
+  assert [json.loads(line) for line in (cf / 'pairs.jsonl').open()] == pairs
+  # A local supplement cannot replace existing complete Q with a shorter CAP.
+  good = next(p for p in pairs if p['status'] == 'VALID_COMPLETE' and p['steps'] > 1)
+  added = tmp_path / 'supplement'
+  supplement = V.run_cf(world['policy'], world['corpus'], world['collection'], added,
+                         workers=1, max_steps=1, cursors=[good['cursor']], base_cf=cf, **QUIET)
+  merged = {p['cursor']: p for p in map(json.loads, (added / 'pairs.jsonl').open())}
+  assert merged[good['cursor']]['status'] == 'VALID_COMPLETE'
+  rejected = json.loads((added / 'work' / f'{good["cursor"]}.json').read_text())
+  assert rejected['reason'] == 'CAP' and rejected['g'] is None
+  assert merged[good['cursor']]['g'] == pytest.approx(good['g'], abs=1e-12)
+  assert supplement['valid_pairs'] >= meta['valid_pairs']
 
   # A round that skips L4 keeps the value anchor of the policy it inherits.
   args = ['--preset', 'small', '--device', 'cpu', '--batch-size', '1', '--batch-length', str(T),
