@@ -1,8 +1,8 @@
 # Thinking Student V1 formal training with ten times the steps of
 # formal_v1_carry.yaml (user decision 2026-10-24). The development run of
 # formal_v1_carry.yaml trains fast to check the code; this run trains every
-# stage ten times longer, for a comparison later. Only step counts differ from
-# formal_v1_carry.yaml; everything else is kept the same.
+# stage ten times longer, for a comparison later. Besides the step counts it
+# differs from formal_v1_carry.yaml only in cf_wait_forks and cf_coverage.
 #
 # The budgets below are cumulative targets, not additional update counts. The
 # foundation continues the L1/L2 checkpoint of formal_v1.yaml (ckpt 22000,
@@ -14,14 +14,22 @@
 # fresh MarketCarry stores from the new L1 brain, trains the 108,000 remaining
 # L2 updates and then L3 on the same stores, freezes pi_0000 and examines it.
 #
-# One change besides the steps: formal_v1_carry.yaml samples 100 WAIT forks
+# cf_wait_forks: formal_v1_carry.yaml samples 100 WAIT forks
 # per contract for a fast development round. Ten times the L4 updates on that
 # much CF would only fit it closer (see value_updates), so this run samples
 # ten times the WAIT forks; every real ADD of the policy is forked as before.
 #
+# cf_coverage: exploratory (user 2026-10-28), as the pi_2 -> pi_3 mainline
+# formal_v1_carry_pi2_cf_explore.yaml; see iteration.cf_coverage.
+#
 #   cd gym-trading-env && env PYTHONPATH=.:src:../dreamerv3 \
 #     /home/v/miniconda3/envs/dreamerv3/bin/python -m dreamerv3.thinking_student.formal_train \
 #     pretrain --config ../dreamerv3/configs/thinking_student/formal_v1_l1_l2_10x_continue.yaml
+#
+# Then the rounds: round 1 up to its CF (--until cf), the L4 pilot of
+# value_updates on held-out pairs of that CF, then --rounds 9 (it goes on
+# from the disk and stops at max_rounds):
+#     iterate --config ../dreamerv3/configs/thinking_student/formal_v1_l1_l2_10x_continue.yaml --until cf
 
 paths:  # relative paths are relative to this file
   markets: markets/pool.json
@@ -74,6 +82,11 @@ iteration:
   # L4 needs valid pairs for >= 80% of each contract's forks; else the round
   # keeps pi_k's value brain and anchor (no Q learning from a selective set).
   cf_min_coverage: 0.8
+  # The Astra CF covered 0.51-0.61 of each contract's forks in rounds 3-4 of
+  # the mainline; without this switch such rounds keep the value brain. Below
+  # 0.8 L4 still learns on the valid pairs, recorded as
+  # S3_Q_TARGETS_EXPLORATORY with L4_coverage; no label or coverage changes.
+  cf_coverage: exploratory
   # Ten times the L4 of formal_v1_carry.yaml. Its pilot on held-out pairs
   # (C4_STATE_CHECK_20261024/carry_pilot_l4, 614 pairs) was best after 500
   # updates and worse from 1000 on. With about five times the pairs, 5000 is
