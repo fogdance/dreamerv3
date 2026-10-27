@@ -524,3 +524,36 @@
   - 配置 README 不需要改：E-7 未定，配置没有变化。
   - 提交 dreamerv3 `90bfc1d`（只有文档）；gym 没有新提交，仍为 `2b4e894`。
   - 2026-10-27：10x 没有步骤在运行（`pi_0000` 已冻结，iterate 未开始），dreamerv3 run 分支快进到 `90bfc1d`，gym 仍为 `2b4e894`，两个 worktree 都干净。
+
+## E-8：归档 Claude CF，Review 并集成 Astra 修复（用户 2026-10-27）
+- [x] 归档 Claude 方案：两仓 `archive/ts-v1-cf-claude-20261027`，gym `21105bf`，dreamer `25c7a42`（含开发 worktree 中未提交的流式修改，未测试）。开发 worktree 未清理、未重置。
+- [x] 集成分支 `integration/ts-v1-cf-astra-20261027`（worktree `fg-s3-ts-v1-cf-integration-20261027/`），基于 S5 最新提交，没有冲突：
+  - gym：`08e3464` 回退 Claude，`c359c29` 引入 Astra `7596566`；
+  - dreamer：`54a7184` 回退 Claude，`a9388cc` 引入 `4c1916f`，`e64eb5f` 引入 `b403091`。
+  - 只保留一套 CF 生产器；S5 代码与记录保留。
+- [x] Review（读源码和已有结果），没有发现必须修的 Bug：
+  - EXACT_STATE：
+    - `native_continuation` 包含 Claude 独立核对过的全部未来相关状态，还多了若干项（只会更保守）。
+    - 策略只读市场、is_first 和三个账户输入，不读 reward；carry 和 `n_actions` 逐项比较。env 的 RNG 只在 reset 时使用。
+    - FG201 t=7 的 G = 0.21897048173250155，与 Claude 跑完整 Native 的值相差 −1.39e−16。
+  - FUNDS_SAFE：
+    - 资金不等式没有改，只增加了策略状态相同和控制项相同两个条件，没有放宽。
+    - TS env 的 `max_entries_per_day` 为 int64 最大值，所以每日上限保护不会触发。
+  - 标签：
+    - 旧 250 条与补算文件逐条相同；新增 664 条全部是 EXACT_STATE，权益差为 0。
+    - 639 条 UNAVAILABLE 和 43 条 CAP 都没有 g 和 delta_g；`branch_rewards` 没有被任何读取方使用。
+    - `cf_targets` 与 `pair_items` 只认 VALID_COMPLETE。
+  - 产物：开发 run 的 pi_0002、CF 和 market_carry 在 10-25 之后没有被改动。
+  - 运维提示：每个合约 CF 的 `work/` 目录约 4.5 GB（FG201）。/data 剩余 291 GB，/ 剩余 69 GB。
+- [ ] GPU 定向回归（集成代码，输出到 `/data/logdir/fg_single3/thinking_student/CF_ASTRA_INTEGRATION_20261027/`）：
+  - FG201 pi_0002 `--cursors 7 20789 31153 31229 --budget 2`，预期：
+    - 7：EXACT，在 c=11 合并；
+    - 31153、31229：TERMINAL，G 与旧值相同；
+    - 20789：CAP。
+  - FG205 pi_0002 `--cursors 243 3932 --budget 2`，预期：
+    - 在 244 和 4350 处 FUNDS_SAFE 合并；
+    - G 分别为 0.7659586225999391 和 0.027956332827719615。
+- [ ] 显式探索开关：`iteration.cf_coverage: exploratory`。`cf_min_coverage` 保持 0.8；覆盖不足时 L4 照常训练，轮记录写明 `L4_coverage` 和 EXPLORATORY。另建 π₂→π₃ 探索配置：新 run 用符号链接接入开发 run 的 pi_0002 经历，FG201 的 CF 用补算结果，L6 从第 3 轮开始。提醒用户 E-7 尚未决定。
+- [ ] TS 测试：gym `test_ts_v1_cf` 等；dreamer s3、s4、s5、c4。
+- [ ] 小预算编排器验证（只用于验证，不是正式轮次）：feedback 读到 914 条，L4 更新价值脑，从 π₂ 续训。
+- [ ] 文档和报告；在没有步骤运行时快进 10x 分支；更新 memory。
