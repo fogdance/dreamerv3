@@ -72,9 +72,9 @@ S5 的 L6 见下文“L6：离线教学循环”：
 | 训练阶段 L1–L5 | 剩余次数 = 配置预算 − `progress.json` 已记的次数，从最新 checkpoint 恢复参数和优化器。采样种子由（seed, 阶段, 已完成次数）决定，最多重做最后一段尚未保存的更新 |
 | 采集 | `meta.json` 的 `done` 为真则跳过，否则从 `state.pkl` 接着采 |
 | check | `check.json` 已存在则跳过。有违规或 facts 不一致的合约不进入本轮 CF 和 L4；一个可用合约都没有时，本轮报错停止 |
-| CF | 已有同一 π_k 的 `meta.json` 则跳过。`meta.json` 属于另一个策略时报错。没有 `meta.json`（中途被打断）时，该合约整段重做。`cf_budget` 限制只能靠完整模拟判定的分叉（上限窗口内不可能耦合，真实终点又在 `cf_max_steps` 之外），只精确模拟分层抽中的那些，其余记 `UNAVAILABLE_BUDGET` |
+| CF | 已有同一 π_k 的 `meta.json` 则跳过。`meta.json` 属于另一个策略时报错。没有 `meta.json`（中途被打断）时，同一命令从 `work/` 中已完成的记录和快照接着算。每个合法分叉先探测至多 `cf_probe_steps` 步；`cf_budget` 是未闭合探测的续算配额（分层抽样），其余记 `UNAVAILABLE_BUDGET`。输出完成后删除已结束分叉的快照，只保留未续算探测的快照和参考重放 |
 | Q 标签 | `MultiQWindows` 要求所有 `--cf` 来自同一个冻结策略（解析后的路径一致），否则报错。NOT_COMPARABLE 和 UNAVAILABLE_BUDGET 行没有 Q 监督 |
-| L4 代表性 | 某合约的有效对数不足其分叉数的 `cf_min_coverage` 时，本轮跳过 L4（`L4_SKIPPED_CF_NOT_REPRESENTATIVE`，`L4_coverage` 记各合约覆盖率）。π_{k+1} 保留 π_k 的价值脑，freeze 用 `--value-anchor-of π_k` 保留 β_Q、κ_Q（`L4_SKIPPED_ANCHOR_KEPT`） |
+| L4 代表性 | 某合约的有效对数不足其分叉数的 `cf_min_coverage` 时，本轮跳过 L4（`L4_SKIPPED_CF_NOT_REPRESENTATIVE`，`L4_coverage` 记各合约覆盖率）。π_{k+1} 保留 π_k 的价值脑，freeze 用 `--value-anchor-of π_k` 保留 β_Q、κ_Q（`L4_SKIPPED_ANCHOR_KEPT`）。探索配置 `cf_coverage: exploratory` 下 L4 照常用已有的有效对训练，轮记录写 `S3_Q_TARGETS_EXPLORATORY` 和 `L4_coverage`；标签和覆盖率不变 |
 | 价值锚点 | β_Q > 0 需要 `--cf` 中至少 2 个有效 ADD/WAIT 成对样本；不足时冻结为 β_Q = 0，`value_anchor` 记 `Q_ANCHOR_NOT_READY`，编排器把它记入该轮。`kappa_floor` 只替代真实成对样本的零方差或过小尺度，不顶替缺失的监督 |
 | 冻结策略 | 目标目录已有 `policy.json` 时拒绝写入；写入顺序是先 `agent.pkl` 再 `policy.json` |
 | 考试 | `exam.json` 最后原子写入，存在即表示考完，已存在则跳过。`iterate` 每轮开始前先补完最新冻结策略缺的考试，再看轮数上限或开新轮；对 `pi_k`（k ≥ 1）这就是完成第 k 轮，计入本次调用的轮数 |
@@ -314,7 +314,7 @@ S5 的 L6 见下文“L6：离线教学循环”：
   2. 训练 L2 剩下的 108,000 次；
   3. 训练 L3 120,000 次；
   4. 冻结 `pi_0000` 并考试。
-- **有限预算的精确 CF（2026-10-25 修复，待独立 Review）：**
+- **有限预算的精确 CF（2026-10-25 Astra 修复；2026-10-27 独立 Review 通过并集成为唯一正式 CF，Claude 方案只归档，见 `CF_ASTRA_INTEGRATION_20261027.md`）：**
   - FG201 最终权益为 `300000 - 263022 = 36978`。旧资金充分条件拒绝的是每个游标的**未来最低权益**，不表示参考每一行权益都低于 90336，也不证明分支无法精确耦合。
   - 删除 `Reference.decidable()` 及其预筛选。每个合法候选先执行至多 `cf_probe_steps: 64` 步；真实 TERMINAL、严格状态等价或原高资金安全耦合均产生 `VALID_COMPLETE`。
   - `cf_budget` 现在是**未闭合探测的续算配额**。沿用参考动作 × 权益四分位 × 60 分钟波动率分层抽样；未入选者为 `UNAVAILABLE_BUDGET/PROBE_UNFINISHED_BUDGET`，记录实际探测步数，但没有 Q。
@@ -323,6 +323,9 @@ S5 的 L6 见下文“L6：离线教学循环”：
   - 参考按合约重放一次；完整分支状态落盘，每 worker 复用一个 Native 环境。中断后可原命令恢复，也可增加同一输出的续算配额；已分配样本保持不变。
   - 局部补算使用 `cf --cursors ... --base-cf OLD --out NEW`，保留旧合法完整标签。新 CF 写入后重新生成当前相关 S5 反馈，不能以已有 `summary.json` 跳过。
   - 既有配置的 `cf_budget: 48`、`cf_min_coverage: 0.8` 数值未改；预算语义按上述更新。任务与验收清单见 [CF_FIX_TASK_20261025.md](CF_FIX_TASK_20261025.md)。正式资产未在本次修复中重跑。
+  - 集成时增加（2026-10-27）：
+    - 输出完成后删除已结束分叉的快照，未续算的探测保留快照，`meta.json` 记 `snapshots`（删除数、字节数、保留数）。FG201 一份 CF 的快照约 4.5 GB，其中已结束的约 2.3 GB。
+    - 探索开关 `iteration.cf_coverage: exploratory`（见上表“L4 代表性”）。
 - **L2 carry 开窗的验证：** 开发 run 的 L2 是继承来的，没有走过这条路径。
   - 新测试覆盖：
     - L2 只改 outcome 组；
@@ -339,7 +342,7 @@ S5 的 L6 见下文“L6：离线教学循环”：
   - `order` 只接受 `OFFLINE_TRAIN`；写 `TIME_ORDERED` 时 `load_config` 报 `TIME_ORDERED_NOT_SUPPORTED` 并拒绝。
 - **开启 L6 的一轮：**
   1. collect → check → CF；
-  2. `feedback`：每个合约在 `experience/π_k/feedback/<合约>/` 写 `items.npz` 和 `summary.json`，已存在就跳过；
+  2. `feedback`：每个合约在 `experience/π_k/feedback/<合约>/` 写 `items.npz` 和 `summary.json`。每次都按当前 CF 和同轮合并 κ_Q 重写（秒级），已有的 `summary.json` 不作为跳过的依据，所以补算的 CF 会进入教学；
   3. L2 复习（`train-outcome --feedback`，后果错补课），只动 outcome，`l2_fusion` 为真时含 fusion；
   4. L4（决策错行 ×`remedial_boost`）；
   5. L5（示范错补课）；
@@ -355,7 +358,8 @@ S5 的 L6 见下文“L6：离线教学循环”：
 - **开发 run 实跑（2026-10-25，`S5_RECORD_20261024.md`）：**
   - 第 7–9 轮跑通；第 9 轮 FG201 的 CF 覆盖率 0.169，按规则跳过 L4 和决策错补课。
   - DEV 没有看出改进，`best_dev` 仍是 `pi_0001`。
-  - 诊断发现固定比例补课有副作用：后果错补课让后果脑在自然分布上校准变差；错题很少时，同几道题会被反复补课。改法待用户决定（`TODO.md` E-7），10x 跑到第 7 轮之前要定下来。
+  - 诊断发现固定比例补课有副作用：后果错补课让后果脑在自然分布上校准变差；错题很少时，同几道题会被反复补课。
+- **E-7 方案 A（用户 2026-10-28）：** 三份正式配置都设 `l6.remedial_fraction: 0`，L2 复习和 L5 只用自然窗口。教学题、L2 自然复习和 L4 决策错加权（`remedial_boost: 4.0`）保留。补课代码不变。
 
 ## 可恢复的 Checkpoint 与策略
 
@@ -380,7 +384,6 @@ S5 的 L6 见下文“L6：离线教学循环”：
 
 ## 未完成 / 待办
 
-- **L6 补课规则（E-7，待用户决定）：** 固定比例补课在 L2 会让后果脑在自然分布上校准变差；错题很少时，同几道题会被反复补课。要在 10x 跑到第 7 轮之前定下来，见 `S5_RECORD_20261024.md`。
 - **TIME_ORDERED 实习：** 未实现（`TIME_ORDERED_NOT_SUPPORTED`）。以后按方案 2 逐步做：
   - 单合约分段推进，段末只用已到期的反馈更新，并冻结新版本；
   - 段内 Q 只用在 `coupled_at` 到期的 ΔG 做成对监督；
@@ -388,7 +391,7 @@ S5 的 L6 见下文“L6：离线教学循环”：
 - **Checkpoint 清理：** 没有自动清理，每份 388 MB；目前靠 `save_every` 控制份数。
 - **CF 重放开销：** 每个 worker 都重放整个合约，所以 worker 越多，重放的总开销越大。如果正式轮次中 CF 成为瓶颈，可以考虑让 worker 只重放到自己的 fork，或者共享一次重放。
 - **CF 覆盖的选择性（后续研究，用户 2026-10-24）：**
-  - 亏到耦合下限以下的合约，CF 只覆盖一部分有选择性的状态。FG201 约 16%，都是上限内能到终点的后段，加上预算样本。
+  - 亏到耦合下限以下的合约，CF 只覆盖一部分有选择性的状态。旧 CF 下 FG201 约 16%，都是上限内能到终点的后段，加上预算样本。Astra 修复后 `pi_0002` 的 FG201 为 914 / 1596（57.27%），其余 639 个是未续算的探测、43 个到上限；用户决定按探索项目继续，不再为剩余缺口扩大专项开发（2026-10-27）。
   - 这样 Q 可能主要从容易完成的轨迹学习，错过高风险状态。
   - 如果多个合约持续出现这种情况，再优化 Native 快照的完整历史复制和 CF 的重复推进，必要时研究估计目标。
 - **短窗口与连续状态：** 已改为从连续 carry 起步（见“训练窗口继承连续市场 carry”）。剩下的差异来自随机隐变量的采样：换一组种子后，近边界合法行有约 2–4% 的翻转，两个方向对称，与开窗方式无关。如果希望部署决策不依赖种子，需要另行设计，例如用隐变量的众数。本次没有改动。

@@ -158,10 +158,14 @@
   - 随机入场基线：同样的分钟、同样的 Native 规则、相同的入场率。
   - 指标附定义；`best_dev` 按 DEV 每分钟 Reward 选取。
 - **L5 = S4 先验刷新。** L6 见下文 S5 节；没开 L6 的轮记 `L6_SKIPPED_BY_CONFIG`。
-- **有限预算的精确 CF（用户 2026-10-24）：**
-  - 状态 `UNAVAILABLE_BUDGET`：分叉只能靠完整模拟判定（上限窗口内不可能耦合，真实终点又在 `cf_max_steps` 之外），但没有被分层预算抽中，所以没有回报、TERMINAL 和 Q 标签。
-  - `meta.json` 增加 `forks.undecided`、`couple_from`、`budget`（各层数量）、`end_status`（含 MARGIN_CALL）。
+- **有限预算的精确 CF（用户 2026-10-24；Astra 修复 2026-10-25，2026-10-27 集成为唯一正式 CF）：**
+  - 耦合：EXACT_STATE 要求未来相关的 Native 状态和策略状态（carry、`n_actions` 等）都相同；FUNDS_SAFE 沿用原资金不等式，并要求策略状态和控制项相同。
+  - 每个合法分叉先探测至多 `cf_probe_steps`（64）步；`cf_budget` 是未闭合探测的续算配额（分层抽样），从保存的状态接着算，合计不超过 `cf_max_steps`。
+  - 状态 `UNAVAILABLE_BUDGET/PROBE_UNFINISHED_BUDGET`：探测没有结束、也没被抽中续算，所以没有回报、TERMINAL 和 Q 标签。
+  - 局部补算：`cf --cursors … --base-cf OLD --out NEW`，旧的有效标签原样继承。
+  - `meta.json` 增加 `forks.undecided`、`budget`（各层数量）、`end_status`（含 MARGIN_CALL）和 `snapshots`（输出完成后删除的已结束分叉快照数、字节数，以及保留的未续算探测快照数）。
   - 某合约的有效对覆盖率低于 `cf_min_coverage` 时，本轮跳过 L4，`freeze --value-anchor-of π_k` 保留 π_k 的 β_Q、κ_Q（`L4_SKIPPED_ANCHOR_KEPT`）。
+  - 探索配置 `iteration.cf_coverage: exploratory`：覆盖不足时 L4 仍用已有的有效对训练，轮记录写 `S3_Q_TARGETS_EXPLORATORY` 和 `L4_coverage`。
 
 **S5：离线教学循环 L6**（`PLAN_S5_20261024.md`；只实现 OFFLINE_TRAIN）
 - **B1 教学题**（`feedback.py`）：
@@ -189,7 +193,8 @@
   - CF 没有代表性的轮次：跳过 L4，L5 不带补课。
 - **实跑（开发 run 第 7–9 轮，2026-10-25）：** 见 `S5_RECORD_20261024.md`。
   - 固定比例的后果错补课会让后果脑在自然分布上校准变差。
-  - 补课规则待用户决定（`TODO.md` E-7）。
+  - E-7 方案 A（用户 2026-10-28）：`l6.remedial_fraction: 0`，L2 复习和 L5 只用自然窗口；教学题、L2 自然复习和 L4 决策错加权保留。
+- **教学题每轮重建：** 开启 L6 的轮次每次都按当前 CF 和同轮合并 κ_Q 重写 feedback，已有的 `summary.json` 不再使跳过生效，所以补算的 CF 会进入教学。
 - **训练窗口的市场状态（R3，用户决定 2026-10-24）：**
   - 问题：零状态 64 行窗口训练出的 `pi_0000`，在 FG005 的训练窗口里 ADD 240 次，连续路径只有 99 次（WAIT→ADD 148，ADD→WAIT 7）。
   - 解决：窗口改为从连续路径的因果市场 carry 起步。

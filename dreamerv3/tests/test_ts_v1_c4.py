@@ -693,6 +693,9 @@ def test_orchestrator_keeps_the_value_brain_when_the_cf_is_not_representative(
   data = yaml.safe_load(config.read_text())
   data['paths']['run_root'] = 'branch'
   data['iteration']['cf_coverage'] = 'exploratory'
+  # pi_0 never trained L4 here: its L4 optimizer warms up from a zero rate,
+  # so the first update moves no weight and the second one does.
+  data['iteration']['value_updates'] = 2
   explore = tmp_path / 'explore.yaml'
   explore.write_text(yaml.safe_dump(data))
   calls.clear()
@@ -707,7 +710,7 @@ def test_orchestrator_keeps_the_value_brain_when_the_cf_is_not_representative(
   assert '--value-anchor-of' not in freeze and [freeze[i + 1] for i, a in enumerate(freeze)
                                                 if a == '--cf'] == [
       str(blay.experience(blay.policy(0), 'cf', c)) for c in CONTRACTS]
-  assert ts_run.progress(blay.learner(1))['L4'] == 1
+  assert ts_run.progress(blay.learner(1))['L4'] == 2
   assert 'value' in changed_groups(params(lay.policy(0)), params(blay.policy(1)))
   assert files(lay.root) == before
   data['iteration']['cf_coverage'] = 'yes'

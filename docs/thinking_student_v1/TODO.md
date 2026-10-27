@@ -430,7 +430,9 @@
   - L4 代表性：`iteration.cf_min_coverage: 0.8`。只要有一个合约的有效对数不足其分叉数的 80%，本轮就跳过 L4（`L4_SKIPPED_CF_NOT_REPRESENTATIVE`）：π_{k+1} 保留 π_k 的价值脑，freeze 时用 `--value-anchor-of π_k` 保留 β_Q、κ_Q（`L4_SKIPPED_ANCHOR_KEPT`，lineage 记 `value_kept_from`）。
   - 测试：gym `test_only_a_full_branch_decides_a_fork_that_cannot_couple_or_end_in_the_cap`，s3 `test_a_cf_budget_leaves_unsimulated_forks_unavailable`，c4 `test_orchestrator_keeps_the_value_brain_when_the_cf_is_not_representative`。
 - [ ] E-6（后续研究，用户 2026-10-24）：亏到下限以下的合约，CF 只能覆盖一部分有选择性的状态（FG201 约 16%，都是上限内能到终点的后段），Q 可能主要从容易完成的轨迹学习，错过高风险状态。如果多个合约持续出现这种情况，再优化 Native 快照的完整历史复制和 CF 的重复推进，必要时研究估计目标；不为 FG201 重做 Q 学习算法。
-- [ ] E-7（待用户决定，2026-10-25；10x 跑到第 7 轮之前定下来）：L6 固定比例补课的副作用
+- [x] E-7（用户 2026-10-28 选方案 A）：L6 固定比例补课的副作用
+  - 实施（集成分支 dreamer `86597da`）：`formal_v1_carry.yaml`、`formal_v1_l1_l2_10x_continue.yaml` 和探索配置都设 `l6.remedial_fraction: 0`；L2 复习和 L5 只用自然窗口；教学题、L2 自然复习和 L4 决策错加权（`remedial_boost: 4.0`）保留。补课代码和 S5 架构不变。
+  - 实跑核对见 E-8 的小预算编排器验证：L2 复习和 L5 的 `remedial_windows` 为 0，L4 的决策错行照常加权。
   - **后果错补课让后果脑在自然分布上变差**（`S5_L2_REVIEW_DIAG_20261025/`）：
     - 从 `pi_0006` 起做 200 次 L2 复习，在留出数据上评估（18 个合约各最后 2048 个 cursor）：
 
@@ -545,15 +547,24 @@
     - `cf_targets` 与 `pair_items` 只认 VALID_COMPLETE。
   - 产物：开发 run 的 pi_0002、CF 和 market_carry 在 10-25 之后没有被改动。
   - 运维提示：每个合约 CF 的 `work/` 目录约 4.5 GB（FG201）。/data 剩余 291 GB，/ 剩余 69 GB。
-- [ ] GPU 定向回归（集成代码，输出到 `/data/logdir/fg_single3/thinking_student/CF_ASTRA_INTEGRATION_20261027/`）：
-  - FG201 pi_0002 `--cursors 7 20789 31153 31229 --budget 2`，预期：
-    - 7：EXACT，在 c=11 合并；
-    - 31153、31229：TERMINAL，G 与旧值相同；
-    - 20789：CAP。
-  - FG205 pi_0002 `--cursors 243 3932 --budget 2`，预期：
-    - 在 244 和 4350 处 FUNDS_SAFE 合并；
-    - G 分别为 0.7659586225999391 和 0.027956332827719615。
-- [ ] 显式探索开关：`iteration.cf_coverage: exploratory`。`cf_min_coverage` 保持 0.8；覆盖不足时 L4 照常训练，轮记录写明 `L4_coverage` 和 EXPLORATORY。另建 π₂→π₃ 探索配置：新 run 用符号链接接入开发 run 的 pi_0002 经历，FG201 的 CF 用补算结果，L6 从第 3 轮开始。提醒用户 E-7 尚未决定。
-- [ ] TS 测试：gym `test_ts_v1_cf` 等；dreamer s3、s4、s5、c4。
-- [ ] 小预算编排器验证（只用于验证，不是正式轮次）：feedback 读到 914 条，L4 更新价值脑，从 π₂ 续训。
-- [ ] 文档和报告；在没有步骤运行时快进 10x 分支；更新 memory。
+- [x] GPU 定向回归（集成代码 gym `c359c29`、dreamer `86597da`；`CF_ASTRA_INTEGRATION_20261027/regression.py`，2026-10-28 00:06–00:13）：11/11 通过。
+  - FG201 pi_0002 `--cursors 7 20789 31153 31229 --budget 2`：
+    - 7：EXACT_STATE，4 步后在 11 处合并，G 与补算、完整 Native 相同；
+    - 31229：探测内 TERMINAL；31153：探测 64 + 续算 42 步后 TERMINAL，G 与旧值相同；
+    - 20789：8192 步 CAP，没有 g、delta_g。
+  - FG205 pi_0002 `--cursors 243 3932 --budget 2`：在 244、4350 处 FUNDS_SAFE 合并，G 为 0.7659586225999391、0.027956332827719615，与旧值相同；3932 在续算中完成。
+  - 参考重放与采集一致；`q_cf_valid` 只在有效对上为 1；已结束分叉的快照在输出完成后删除。
+- [x] 显式探索开关 `iteration.cf_coverage: exploratory`（`86597da`）：`cf_min_coverage` 保持 0.8；覆盖不足时 L4 照常训练，轮记录写 `S3_Q_TARGETS_EXPLORATORY` 和 `L4_coverage`，标签与覆盖率不变。π₂→π₃ 探索配置 `formal_v1_carry_pi2_cf_explore.yaml`：新 run 用符号链接接入开发 run 的 pi_0002 经历，FG201 的 CF 用补算结果，L6 从第 3 轮开始。E-7 已由用户定为方案 A。
+- [x] TS 测试（CPU，2026-10-28 00:07 起，gym `c359c29`、dreamer `86597da`，`CF_ASTRA_INTEGRATION_20261027/tests/`）：
+  - gym（cf、account、corpus、市场分钟、Native env、MACD、行情缓存）61 passed；dreamer s0–s3 29 passed；s4–s5 10 passed；c4 17 passed、1 failed。
+  - 失败的是集成时新加的探索断言：夹具中 pi_0 没训练过 L4，L4 优化器从学习率 0 线性预热（`linear_schedule(0, lr, 1000)`），所以唯一一次 L4 更新只改优化器状态、不改权重。生产代码不变；测试的探索分支改为 2 次 L4 更新后通过（`c4_fixed_test.log`）。
+- [x] 小预算编排器验证 π₂→π₃′（只用于验证，不是正式轮次；`verify_pi2_r3/`，`verify.json` 14/14 通过）：
+  - `--until cf` 后从磁盘续跑，第三次调用报 max_rounds；不重采集、不重算 CF。
+  - FG201 914/1596 原样进入，`L4 = S3_Q_TARGETS_EXPLORATORY`，`L4_coverage.below = {FG201: 0.5727}`。
+  - 教学题：FG201 的 CF 914 条；三份反馈与 Astra 独立重建的逐列相同；合并 κ_Q 0.6244509768525569。
+  - L4：2340 对（914 + 818 + 608），决策错 289 行 ×4；价值锚 β_Q 1.0 来自这 2340 对。
+  - E-7 方案 A：L2 复习、L5 的补课窗口为 0。
+  - 只改 outcome、fusion、value、decision；从 pi_0002 继承（35200 → 35216）；DEV FG409 完整；开发 run 和补算的源文件指纹前后相同。
+- [x] 磁盘：删除 FG201 补算中 707 个已结束分叉的快照（2.48 GB，`clean_supplement_snapshots.json`）；保留 639 个未续算探测的快照、参考重放、全部标签和 checkpoint。正式训练的估算见 `CF_ASTRA_INTEGRATION_20261027.md` 第 6 节。
+- [x] 文档：报告 `CF_ASTRA_INTEGRATION_20261027.md`；INTERFACE_SUMMARY、FORMAL_TRAINING_IMPLEMENTATION、配置 README。
+- [ ] 开发分支合并：开发 worktree 仍有未提交修改（已在归档提交中），待处理后 `git merge --ff-only integration/ts-v1-cf-astra-20261027`。

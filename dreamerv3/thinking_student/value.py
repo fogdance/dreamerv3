@@ -407,7 +407,8 @@ def _run_cf(policy, corpus, collection, out, forks=None, seed=0, workers=4,
             cursors=None, base_cf=None, memory=None):
   """Probe all candidates, then sample unfinished branches for continuation.
   Work files retain the shared reference, one checkpoint per fork and atomic
-  results; a finished fork's checkpoint is deleted once the output is complete. Rerun the same command to recover completed probes/results. Use a
+  results; a finished fork's checkpoint is deleted once the output is
+  complete. Rerun the same command to recover completed probes/results. Use a
   new output + base_cf to supplement an older dataset without overwriting it.
   """
   from .run import corpus_env
