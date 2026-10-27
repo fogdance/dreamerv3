@@ -351,6 +351,10 @@ S5 的 L6 见下文“L6：离线教学循环”：
 - **不训练 L1：** L6 不训 L1，所以 MarketCarry 存储仍是部署时的市场记忆。
 - **记录：** `run_state.json` 每轮记 `L6: S5_FEEDBACK_CURRICULUM` 或 `L6_SKIPPED_BY_CONFIG`，以及各合约的反馈摘要、错题数、L2 复习次数和补课曝光（补课窗口、错题行、唯一行与重复曝光）。
 - **结论的边界：** 这是离线 TRAIN 教学：教师可以使用 TRAIN 的完整后缀。ready_at 逐条保存，但不参与放行，所以结果不是严格时间顺序的在线学习。
+- **开发 run 实跑（2026-10-25，`S5_RECORD_20261024.md`）：**
+  - 第 7–9 轮跑通；第 9 轮 FG201 的 CF 覆盖率 0.169，按规则跳过 L4 和决策错补课。
+  - DEV 没有看出改进，`best_dev` 仍是 `pi_0001`。
+  - 诊断发现固定比例补课有副作用：后果错补课让后果脑在自然分布上校准变差；错题很少时，同几道题会被反复补课。改法待用户决定（`TODO.md` E-7），10x 跑到第 7 轮之前要定下来。
 
 ## 可恢复的 Checkpoint 与策略
 
@@ -361,8 +365,10 @@ S5 的 L6 见下文“L6：离线教学循环”：
 | `FORMAL_V1_CARRY_20261024/foundation/ckpt/000000034000` | carry 开窗 L3 之后的基础学生（ckpt 23000–34000，每 1000 次一份） |
 | `FORMAL_V1_CARRY_20261024/policies/pi_0000` | 当前正式 `pi_0000`；`experience/pi_0000/` 中有 FG001、FG005、FG009 的采集和 CF |
 | `FORMAL_V1_CARRY_20261024/learners/pi_0001/ckpt/000000034600`、`policies/pi_0001` | 第 1 轮学习器（L4 500 / L5 100）与冻结的 `pi_0001`（`best_dev`） |
+| `FORMAL_V1_CARRY_20261024/learners/pi_0002`–`pi_0009`、`policies/pi_0002`–`pi_0009` | 第 2–9 轮的学习器与冻结策略。第 7–9 轮带 L6，教学题在 `experience/pi_0006`–`pi_0008/feedback/`；统计脚本 `s5_rounds_report.py`、`s5_param_groups.py` |
+| `S5_FEEDBACK_DIAG_20261024/`、`S5_L2_REVIEW_DIAG_20261025/` | S5 诊断：第 1–3 轮的对照教学题；L2 复习和 L5 的自然窗口与补课对照（4 份 checkpoint，1.6 GB，可删除） |
 | `C4_STATE_CHECK_20261024/carry_pi_0000/`、`carry_pilot_l4/`、`carry_pi_0001/` | 新 `pi_0000` 和 `pi_0001` 的 state-check；诊断 L4（run、`pilot_l4` 快照、Q state-check），只用于定 L4 预算 |
-| `FORMAL_V1_L1_100K_L2_120K_CONTINUE_20261024/foundation/ckpt/` | 10x 正式 run：ckpt 22000 拷自 `FORMAL_V1_20261024`，L1 每 10,000 次一份（进行中） |
+| `FORMAL_V1_L1_100K_L2_120K_CONTINUE_20261024/foundation/ckpt/`、`policies/pi_0000` | 10x 正式 run：ckpt 22000 拷自 `FORMAL_V1_20261024`；L1 100k、L2 120k、L3 120k 已完成，`pi_0000` 于 2026-10-25 10:36 冻结，iterate 还没开始 |
 | `C4_L2_CARRY_SMOKE_20261024/` | L2 carry 开窗的真实数据冒烟（60 次，388 MB，可删除） |
 | `C4_SMOKE_2C_50M_20261023/foundation/ckpt/000000000140` | size50m 冒烟的基础学生（L1 40 / L2 60 / L3 40） |
 | `C4_SMOKE_2C_50M_20261023/learners/pi_0001/ckpt/000000000200` | 第 1 轮学习器（L4 40 / L5 20） |
@@ -373,6 +379,7 @@ S5 的 L6 见下文“L6：离线教学循环”：
 
 ## 未完成 / 待办
 
+- **L6 补课规则（E-7，待用户决定）：** 固定比例补课在 L2 会让后果脑在自然分布上校准变差；错题很少时，同几道题会被反复补课。要在 10x 跑到第 7 轮之前定下来，见 `S5_RECORD_20261024.md`。
 - **TIME_ORDERED 实习：** 未实现（`TIME_ORDERED_NOT_SUPPORTED`）。以后按方案 2 逐步做：
   - 单合约分段推进，段末只用已到期的反馈更新，并冻结新版本；
   - 段内 Q 只用在 `coupled_at` 到期的 ΔG 做成对监督；

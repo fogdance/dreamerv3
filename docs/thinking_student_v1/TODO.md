@@ -430,6 +430,25 @@
   - L4 代表性：`iteration.cf_min_coverage: 0.8`。只要有一个合约的有效对数不足其分叉数的 80%，本轮就跳过 L4（`L4_SKIPPED_CF_NOT_REPRESENTATIVE`）：π_{k+1} 保留 π_k 的价值脑，freeze 时用 `--value-anchor-of π_k` 保留 β_Q、κ_Q（`L4_SKIPPED_ANCHOR_KEPT`，lineage 记 `value_kept_from`）。
   - 测试：gym `test_only_a_full_branch_decides_a_fork_that_cannot_couple_or_end_in_the_cap`，s3 `test_a_cf_budget_leaves_unsimulated_forks_unavailable`，c4 `test_orchestrator_keeps_the_value_brain_when_the_cf_is_not_representative`。
 - [ ] E-6（后续研究，用户 2026-10-24）：亏到下限以下的合约，CF 只能覆盖一部分有选择性的状态（FG201 约 16%，都是上限内能到终点的后段），Q 可能主要从容易完成的轨迹学习，错过高风险状态。如果多个合约持续出现这种情况，再优化 Native 快照的完整历史复制和 CF 的重复推进，必要时研究估计目标；不为 FG201 重做 Q 学习算法。
+- [ ] E-7（待用户决定，2026-10-25；10x 跑到第 7 轮之前定下来）：L6 固定比例补课的副作用
+  - **后果错补课让后果脑在自然分布上变差**（`S5_L2_REVIEW_DIAG_20261025/`）：
+    - 从 `pi_0006` 起做 200 次 L2 复习，在留出数据上评估（18 个合约各最后 2048 个 cursor）：
+
+      | 留出指标 | 起点 | 补课组 | 只用自然窗口的一组 |
+      | --- | --- | --- | --- |
+      | 事件 NLL | 2.325 | 2.435 | 2.33–2.40（波动） |
+      | quality | 1.800 | 2.146 | 1.800（不变） |
+      | 平均 p_SL（实际 SL 占 14.4%） | 0.141 | 0.198 | — |
+
+    - 开发 run 中同一 cursor 的部署答卷结论相同：`pi_0007` 在没补过课的 FG101、105、109 上，log loss 从 0.42–0.47 升到 0.47–0.52。
+  - **原因：** 后果错多半是校准正常的低概率尾部，无法逐条与偶然区分。补课窗口又集中在 SL 密集的时段，改变了后果脑看到的类别频率。
+  - **错题少时同几道题被反复补：** 第 8 轮 6 道后果错配了 800 个补课窗口，每道约 133 次。10x 的 L2 复习是 2,000 次，重复次数也会乘 10。
+  - **L5 示范错补课：** 100 次后，补课组的留出示范损失为 0.608，只用自然窗口为 0.584（起点 0.656）。自然改进少了约三分之一。
+  - **没测的部分：** 补课能否让学生在自己的同类错误上泛化得更好。
+  - **可选方案：**
+    - A（建议）：`l6.remedial_fraction: 0`，L2 复习和 L5 只用自然窗口；保留教学题、L2 自然复习和 L4 的决策错加权。只改两份配置。
+    - B：保留补课，但不改变自然分布：补课窗口按抽样概率反加权，并限制每道错题的补课窗口数；再用下一轮新错题检验效果。需要改代码和测试。
+    - C：保持现状。
 - [x] E-4：同步：开发分支的新提交快进到 10x 的 run 分支（dreamerv3、gym）
   - 2026-10-24 13:2x：用户的未跟踪草稿备份到会话临时目录后删除，dreamerv3 run 分支快进到 `37cdd85`；gym run 分支即 `0056296`，两个 worktree 都干净。
   - 从 10x 的 gym worktree 运行 `formal_train status`（只读）：配置可读，L1 60,000 / L2 12,000，latest ckpt 72000。
@@ -466,5 +485,40 @@
   - 唯一一次失败是测试写错了：regret 的期望值符号反了。已执行 WAIT、ΔG = +1e-17 时 regret 应为 +1e-17。改正后该测试通过，代码没有改。
   - S5 编排测试新增第 3 轮：CF 覆盖不足时，L2 复习照常，跳过 L4，L5 不带补课，`pi_3` 保留 `pi_2` 的价值脑和锚。
   - 拷入开发 worktree 后，用 `diff -rq` 核对与副本逐字节相同；`test_ts_v1_c4.py` 第 547 行的期望改为 `L6_SKIPPED_BY_CONFIG`。
-- [ ] S5-5：配置并实跑：开发 `formal_v1_carry.yaml` 的 `max_rounds` 9、`l6.from_round` 7；10x 配置同一块、L2 复习 ×10；开发 run 第 7–9 轮（与第 1–3 轮同合约），DEV Teacher-free 考试；`pi_0009` 在 FG005 上做 carry state-check
+- [x] S5-5：配置并实跑：开发 `formal_v1_carry.yaml` 的 `max_rounds` 9、`l6.from_round` 7；10x 配置同一块、L2 复习 ×10；开发 run 第 7–9 轮（与第 1–3 轮同合约），DEV Teacher-free 考试；`pi_0009` 在 FG005 上做 carry state-check
+  - 配置随 S5 提交（`fbcb368`）。
+  - 开发 run 于 2026-10-25 00:42–03:45 跑完第 7–9 轮和 state-check（`formal_carry_r7_r9.sh`，exit 0）。
+  - 结果：`S5_RECORD_20261024.md`；各轮的表：`FORMAL_V1_CARRY_20261024/s5_rounds_report_7_9.md`。
+  - 每轮依次为：教学题 → L2 复习 200 次 → L4 500 次 → L5 100 次 → freeze → DEV。
+  - 第 9 轮：
+    - FG201 的 CF 覆盖率 0.169：1591 个分叉中 1274 个 UNAVAILABLE_BUDGET。
+    - 按规则跳过 L4 和决策错补课。
+    - `pi_0009` 保留 `pi_0008` 的价值脑和锚（`L4_SKIPPED_ANCHOR_KEPT`）。
+  - 错题数（第 7 / 8 / 9 轮）：
+
+    | 类别 | 第 7 轮 | 第 8 轮 | 第 9 轮 |
+    | --- | --- | --- | --- |
+    | 后果错 | 432 | 6 | 91 |
+    | 决策错 | 81 | 347 | 255 |
+    | 示范错 | 38 | 284 | 182 |
+
+  - 9 份采集都没有违规，成交与事实逐笔一致。
+  - 参数：L2 复习只改 fusion、outcome、`opt_l2`；三轮中 market、account、`opt_l1` 都不变。
+  - DEV 每分钟 Reward：
+
+    | 策略 | `pi_0006` | `pi_0007` | `pi_0008` | `pi_0009` |
+    | --- | --- | --- | --- | --- |
+    | Reward | 0.000386 | 0.000335 | 0.000394 | 0.000371 |
+
+    都低于同入场率随机基线的均值；`best_dev` 仍是 `pi_0001`。
+  - `pi_0009` 的 state-check：
+    - 存储与部署路径的差为 0；
+    - 合法行翻转 6.9%，方向对称，集中在边界附近；
+    - ΔQ 符号一致率 0.911。
+  - 补课诊断（`S5_L2_REVIEW_DIAG_20261025/`）发现固定比例补课有副作用，见 E-7。
 - [ ] S5-6：记录 `S5_RECORD_20261024.md`；更新 INTERFACE_SUMMARY、FORMAL_TRAINING_IMPLEMENTATION、配置 README、memory；提交、同步 10x 分支
+  - 已写：
+    - 记录 `S5_RECORD_20261024.md`；
+    - INTERFACE_SUMMARY 和 FORMAL_TRAINING_IMPLEMENTATION 的实跑结果、checkpoint 表与待办；
+    - memory。
+  - 配置 README 不需要改：E-7 未定，配置没有变化。
