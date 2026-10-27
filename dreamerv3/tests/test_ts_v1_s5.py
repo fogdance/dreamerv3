@@ -361,13 +361,15 @@ def test_l6_rounds_teach_offline_train_feedback(pik, two, tmp_path, monkeypatch)
   assert FT.status(FT.load_config(config), lay)['experience']['pi_0001']['feedback'] == {
       c: True for c in CONTRACTS}
 
-  # Round 3 without representative pairs (cf_budget 0 and cf_min_coverage;
-  # no cursor may couple, an unreachable floor in this process): the L2
+  # Round 3 without representative pairs (cf_budget 0 with one-step probes
+  # and cf_min_coverage; no cursor may couple by FUNDS, an unreachable
+  # floor, the CF's): the L2
   # review still runs on the outcome errors of the facts, L4 is skipped, L5
   # takes no decision remediation from the same CF, and pi_3 keeps the value
   # brain and anchor of pi_2.
   data = yaml.safe_load(config.read_text())
-  data['iteration'].update(max_rounds=3, cf_max_steps=2, cf_budget=0, cf_min_coverage=0.8)
+  data['iteration'].update(max_rounds=3, cf_max_steps=2, cf_budget=0, cf_probe_steps=1,
+                           cf_min_coverage=0.8)
   config.write_text(yaml.safe_dump(data))
   monkeypatch.setattr(V.CF, 'coupling_floor', lambda env: np.inf)
   calls.clear()
@@ -386,10 +388,11 @@ def test_l6_rounds_teach_offline_train_feedback(pik, two, tmp_path, monkeypatch)
   for c in CONTRACTS:
     summary = json.loads((items[c] / 'summary.json').read_text())
     budget = record['cf'][c]['budget']
-    assert budget['simulated'] == 0 and budget['unavailable'] == budget['undecided'] > 0
-    assert summary['abstained']['cf_unavailable_budget'] == budget['unavailable']
+    assert budget['full'] == 0 and budget['probed'] == budget['undecided'] > 0
+    assert budget['unavailable'] + budget['probe_closed'] == budget['probed']
+    assert summary['abstained']['cf_unavailable_budget'] == budget['unavailable'] > 0
     assert summary['abstained']['cf_not_comparable'] == 0
-    assert summary['cf_coverage'] == record['cf'][c]['coverage'] == 0
+    assert summary['cf_coverage'] == record['cf'][c]['coverage'] < 0.8
     assert summary['thresholds']['decision_errors'] == 'DECISION_ERRORS_NOT_TAGGED'
   review, policy, freeze = (next(a for a in argvs[start:] if a[0] == name)
                             for name in ('train-outcome', 'train-policy', 'freeze'))

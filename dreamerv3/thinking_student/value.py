@@ -6,7 +6,10 @@ reference  pi_k's formal TRAIN collection (run.collect): one decision per
            ts_v1_cf.Reference with its complete discounted Native returns.
 cf         same-state ADD/WAIT branches from legal flat decisions of the
            reference, continued by the same frozen pi_k on its recorded device
-           and dtype; coupled branches get exact returns (ts_v1_cf).
+           and dtype; coupled branches get exact returns (ts_v1_cf: EXACT
+           where the branch's Native account and the policy's own memory
+           equal the reference's, FUNDS where enough equity keeps cash out of
+           every later decision).
 targets    per reference row: q_real, the executed action's complete Native
            return (STUDENT_EXECUTED_NATIVE); per fork row: q_cf, the other
            action's branch return (VERIFIED_CF_NATIVE, VALID_COMPLETE only).
@@ -16,16 +19,21 @@ QWindows   L4 training windows over the reference rows; MultiQWindows mixes
 Every CF worker first replays the whole reference in its own process and
 refuses any action or reward that differs from the collection: the branches
 and the coupling witness then compare against decisions of the same
-compiled policy. The targets belong to pi_k only (A6 2.4): a new policy needs
-its own collection and CF.
+compiled policy. The replay records, at each flat decision, the Native
+state and the policy's own memory that an EXACT coupling compares. The
+targets belong to pi_k only (A6 2.4): a new policy needs its own
+collection and CF.
 
-With a budget, the forks only a full branch can decide (no coupling and no
-true terminal within the cap, ts_v1_cf Budget) are simulated for a sample
-stratified by what is known at the decision; the others are
-UNAVAILABLE_BUDGET and carry no label.
+With a budget, of the forks the reference cannot decide (no FUNDS coupling
+and no true terminal within the cap, ts_v1_cf Budget) a sample stratified
+by what is known at the decision runs to the cap, and every other one runs
+a probe: an EXACT coupling or the branch's own terminal within the probe
+gives the exact label, a branch still open after it is UNAVAILABLE_BUDGET
+and carries no label.
 
   python -m dreamerv3.thinking_student.run cf --policy DIR --corpus DIR [--forks N]
 """
+import hashlib
 import json
 import multiprocessing
 import os
@@ -63,15 +71,16 @@ def load_collection(folder):
   return rows, arrays, run
 
 
-def build_reference(folder, env):
+def build_reference(folder, env, floor=None):
   """The collection as a ts_v1_cf.Reference (complete only when the
-  collection ended at the true terminal)."""
+  collection ended at the true terminal); the coupling floor of the
+  contract unless `floor` gives the one of the CF."""
   rows, arrays, run = load_collection(folder)
   terminal = bool(run['done'] and run['env']['terminated'])
   return CF.Reference(
       env.market_clock_counter, [r['cursor'] for r in rows], arrays['reward'],
       [r['equity'] for r in rows], {k: arrays[k] for k in CF.INPUTS},
-      arrays['action'], terminal, CF.coupling_floor(env)), rows
+      arrays['action'], terminal, CF.coupling_floor(env) if floor is None else floor), rows
 
 
 def choose_forks(reference, forks=None, seed=0):
@@ -86,8 +95,9 @@ def choose_forks(reference, forks=None, seed=0):
 
 
 def undecided_sample(reference, forks, budget, close, seed=0, window=60):
-  """At most `budget` of the forks only a full branch can decide, drawn
-  systematically over strata known at the decision, never by outcome: the
+  """At most `budget` of the forks the reference cannot decide, to run to
+  the cap, drawn systematically over strata known at the decision, never by
+  outcome (the others get a probe): the
   reference action (behavior), the quartile of its equity (account risk) and
   the half of the volatility of the last `window` closes (market state).
   Returns the sorted sample and the strata with their sizes."""
@@ -115,6 +125,19 @@ def undecided_sample(reference, forks, budget, close, seed=0, window=60):
   return [int(t) for t in forks[taken]], dict(
       strata=dict(sorted(strata.items())), equity_quartiles=[float(e) for e in edges],
       vol_window=window, vol_median=median)
+
+
+def policy_memory(agent, carry):
+  """What the frozen policy carries from one decision to the next besides
+  the observation: its seed counter and (a digest of the bytes of) its
+  recurrent state."""
+  import jax
+  digest = hashlib.blake2b(digest_size=16)
+  for leaf in jax.tree.leaves(jax.device_get(carry)):
+    leaf = np.asarray(leaf)
+    digest.update(f'{leaf.dtype}{leaf.shape}'.encode())
+    digest.update(leaf.tobytes())
+  return int(agent.n_actions), digest.hexdigest()
 
 
 class Stepper:
@@ -145,6 +168,14 @@ class Stepper:
     agent.n_actions.value = counter
     return float(out['answer/z'][0]), int(act['action'][0])
 
+  def native(self):
+    """The branch account's ts_v1_cf.native_state (EXACT coupling)."""
+    return CF.native_state(self.run.env)
+
+  def memory(self):
+    """policy_memory of the branch before its next decision."""
+    return policy_memory(self.run.agent, self.run.carry)
+
   def trades(self):
     keys = ('entry_cursor', 'exit_cursor', 'reason', 'entry_price', 'exit_price',
             'net_trade_pnl')
@@ -158,14 +189,19 @@ def _cf_job(job):
   began = time.time()
   agent, meta = load_policy(job['policy'])
   env, branch_env = corpus_env(job['corpus']), corpus_env(job['corpus'])
-  reference, recorded = build_reference(job['collection'], env)
-  forks, saved, own = set(job['forks']), {}, {}
+  reference, recorded = build_reference(job['collection'], env, job['floor'])
+  forks, probe, saved, own, memory = set(job['forks']), set(job['probe']), {}, {}, {}
   main = Autonomous(agent, env, 'policy')
   z_differs = 0
   while not main.done:
     t = int(env.current_step)
     if t in forks:
       saved[t] = main.state()
+    if reference.flat[t - reference.start]:
+      # What an EXACT coupling at t compares: the Native account and the
+      # policy's own memory before its decision.
+      reference.record(t, CF.native_state(env))
+      memory[t] = policy_memory(agent, main.carry)
     row, _ = main.step()
     rec = recorded[t - reference.start]
     if (row['cursor'], row['executed'], row['reward']) != (rec['cursor'], rec['executed'], rec['reward']):
@@ -178,8 +214,10 @@ def _cf_job(job):
     run = Autonomous.restore(agent, branch_env, saved.pop(t))
     stepper = Stepper(run)
     first = 1 - int(reference.action[t - reference.start])
-    result = CF.run_branch(stepper, reference, first, job['max_steps'],
-                           witness=lambda c: stepper.peek() == own[c])
+    result = CF.run_branch(
+        stepper, reference, first, job['max_steps'],
+        witness=lambda c: (stepper.peek(), stepper.memory()) == (own[c], memory[c]),
+        probe=job['probe_steps'] if t in probe else None)
     result.update(CF.pair(reference, result), trades=stepper.trades(), end_status=stepper.status)
     out.append(result)
     if job['log_every'] and len(out) % job['log_every'] == 0:
@@ -190,10 +228,11 @@ def _cf_job(job):
 
 
 def run_cf(policy, corpus, collection, out, forks=None, seed=0, workers=4,
-           max_steps=8192, log_every=50, log=print, budget=None):
+           max_steps=8192, log_every=50, log=print, budget=None, probe_steps=512):
   """Write out/pairs.jsonl, out/targets.npz and out/meta.json. With
-  `budget`, at most that many of the forks only a full branch can decide
-  are simulated (undecided_sample), the others are UNAVAILABLE_BUDGET."""
+  `budget`, at most that many of the forks the reference cannot decide run
+  to the cap (undecided_sample), the others for `probe_steps` steps; those
+  still open then are UNAVAILABLE_BUDGET."""
   from .run import corpus_env
   out = Path(out)
   out.mkdir(parents=True, exist_ok=True)
@@ -204,32 +243,30 @@ def run_cf(policy, corpus, collection, out, forks=None, seed=0, workers=4,
     raise ValueError('The collection did not reach the true terminal: no complete returns')
   if budget is not None and budget < 0:
     raise ValueError(f'A CF budget counts forks, >= 0; got {budget}')
+  if budget is not None and not 0 < probe_steps < max_steps:
+    raise ValueError(f'A CF probe runs 0 < steps < max_steps ({max_steps}); got {probe_steps}')
   chosen = choose_forks(reference, forks, seed)
   undecided = [t for t in chosen if not reference.decidable(t, max_steps)]
-  sample, strata = undecided, None
+  full, strata = undecided, None
   if budget is not None:
-    sample, strata = undecided_sample(reference, undecided, budget, env._raw.Close.to_numpy(), seed)
-  skipped = sorted(set(undecided) - set(sample))
-  simulated = sorted(set(chosen) - set(skipped))
-  groups = [simulated[i::workers] for i in range(workers)]
+    full, strata = undecided_sample(reference, undecided, budget, env._raw.Close.to_numpy(), seed)
+  probed = set(undecided) - set(full)
+  groups = [chosen[i::workers] for i in range(workers)]
   jobs = [dict(index=i, policy=str(policy), corpus=str(corpus), collection=str(collection),
-               forks=g, max_steps=max_steps, log_every=log_every)
+               floor=reference.floor, forks=g, probe=[t for t in g if t in probed],
+               probe_steps=probe_steps, max_steps=max_steps, log_every=log_every)
           for i, g in enumerate(groups) if g]
   log(f'CF: {len(chosen)} forks of {len(reference.forks())} legal flat decisions, '
       f'{len(jobs)} workers')
   if undecided:
-    log(f'CF: {len(undecided)} forks can neither couple nor reach the true terminal within '
-        f'{max_steps} steps: {len(sample)} simulated, {len(skipped)} UNAVAILABLE_BUDGET')
+    log(f'CF: {len(undecided)} forks the reference cannot decide within {max_steps} steps '
+        f'(no FUNDS coupling, no true terminal): {len(full)} run to the cap, {len(probed)} '
+        f'probed for {probe_steps} steps')
   parts = []
   if jobs:
     with ProcessPoolExecutor(len(jobs), mp_context=multiprocessing.get_context('spawn')) as pool:
       parts = list(pool.map(_cf_job, jobs))
-  results = [r for p in parts for r in p['results']]
-  for t in skipped:
-    r = CF.unavailable(reference, t, 1 - int(reference.action[reference.row(t)]),
-                       'BELOW_FLOOR_BEYOND_CAP')
-    results.append(dict(r, **CF.pair(reference, r), trades=None, end_status=None))
-  results.sort(key=lambda r: r['cursor'])
+  results = sorted((r for p in parts for r in p['results']), key=lambda r: r['cursor'])
   with (out / 'pairs.jsonl').open('w') as f:
     f.writelines(json.dumps(r) + '\n' for r in results)
   targets = cf_targets(reference, results)
@@ -249,8 +286,12 @@ def run_cf(policy, corpus, collection, out, forks=None, seed=0, workers=4,
                  undecided=len(undecided)),
       couple_from=reference.couple_from,
       budget=None if budget is None else dict(
-          forks=budget, undecided=len(undecided), simulated=len(sample), unavailable=len(skipped),
-          reason='BELOW_FLOOR_BEYOND_CAP', **strata),
+          forks=budget, undecided=len(undecided), full=len(full), probed=len(probed),
+          probe_steps=probe_steps,
+          probe_closed=sum(r['cursor'] in probed and r['status'] != 'UNAVAILABLE_BUDGET'
+                           for r in results),
+          unavailable=sum(r['status'] == 'UNAVAILABLE_BUDGET' for r in results), **strata),
+      coupled={k: sum(r['coupling'] == k for r in results) for k in ('EXACT', 'FUNDS')},
       end_status={s: sum(r['end_status'] == s for r in results)
                   for s in sorted({r['end_status'] for r in results} - {None})},
       max_steps=max_steps, counts=counts, valid_pairs=len(valid),

@@ -6,6 +6,7 @@ Synthetic native market, TS teaching material and a small real student
 (engineering checks). Run from gym-trading-env with
 PYTHONPATH=.:src:../dreamerv3:tests/entry_v1.
 """
+import itertools
 import json
 import pickle
 
@@ -45,10 +46,12 @@ def world(tmp_path_factory):
   return dict(root=root, corpus=corpus, run=run, policy=policy, collection=collection)
 
 
-def job(world, forks, max_steps=8192):
+def job(world, forks, max_steps=8192, floor=None, probe=(), probe_steps=None):
+  if floor is None:
+    floor = V.CF.coupling_floor(ts_run.corpus_env(world['corpus']))
   return dict(index=0, policy=str(world['policy']), corpus=str(world['corpus']),
-              collection=str(world['collection']), forks=forks, max_steps=max_steps,
-              log_every=0)
+              collection=str(world['collection']), floor=floor, forks=forks,
+              probe=list(probe), probe_steps=probe_steps, max_steps=max_steps, log_every=0)
 
 
 def test_l4_update_moves_only_the_value_brain(tmp_path):
@@ -101,21 +104,33 @@ def test_cf_branches_of_the_frozen_student_are_exact(world, monkeypatch):
   # the replayed answers are the recorded ones.
   coupled = V._cf_job(job(world, forks))
   assert coupled['replay_steps'] == reference.n and coupled['z_differs'] == 0
+  # Without the FUNDS floor only EXACT couples (the Native account and the
+  # student's own memory equal to the reference's, the witness checks both).
+  exact = V._cf_job(job(world, forks, floor=np.inf))['results']
   # Never coupling runs every branch with the same student to the true terminal.
-  monkeypatch.setattr(V.CF, 'coupling_floor', lambda env: np.inf)
-  full = {r['cursor']: r for r in V._cf_job(job(world, forks))['results']}
+  monkeypatch.setattr(V.Stepper, 'native', None)
+  full = {r['cursor']: r for r in V._cf_job(job(world, forks, floor=np.inf))['results']}
   monkeypatch.undo()
-  reasons = set()
-  for r in coupled['results']:
+  reasons, channels = set(), {}
+  for r in coupled['results'] + exact:
     f = full[r['cursor']]
     assert r['status'] == f['status'] == 'VALID_COMPLETE' and f['reason'] == 'TERMINAL'
-    assert f['steps'] == reference.n - reference.row(r['cursor'])
+    assert f['steps'] == reference.n - reference.row(r['cursor']) and f['coupling'] is None
     assert r['g'] == pytest.approx(f['g'], rel=1e-9, abs=1e-9)
     assert r['first_action'] == 1 - own[forks.index(r['cursor'])]
     reasons.add(r['reason'])
+    channels[r['coupling']] = channels.get(r['coupling'], 0) + 1
   assert 'COUPLED' in reasons and {r['first_action'] for r in coupled['results']} == {0, 1}
+  assert {r['coupling'] for r in exact} <= {'EXACT', None}
+  assert sum(r['coupling'] == 'EXACT' for r in exact) > 0, channels
   long = [r for r in coupled['results'] if r['reason'] == 'COUPLED' and r['trades']]
   assert long, 'a coupled branch that traded on its own'
+  # A policy whose own memory differs at the coupling cursor is refused.
+  calls = itertools.count()
+  monkeypatch.setattr(V, 'policy_memory', lambda agent, carry: next(calls))
+  with pytest.raises(RuntimeError, match='differs from the reference'):
+    V._cf_job(job(world, forks, floor=np.inf))
+  monkeypatch.undo()
   # Without coupling or the true terminal inside the cap: no numeric label.
   capped = V._cf_job(job(world, forks, max_steps=1))['results']
   capped = [r for r in capped if r['status'] == 'NOT_COMPARABLE']
@@ -200,15 +215,17 @@ def test_cf_targets_train_the_value_brain_and_freeze_the_anchor(world, tmp_path)
                  '--kappa-q', '0', *args])
 
 
-def test_a_cf_budget_leaves_unsimulated_forks_unavailable(world, tmp_path, monkeypatch):
-  """Forks only a full branch can decide (no coupling, no true terminal in
-  the cap): a stratified exact sample runs, the others are
-  UNAVAILABLE_BUDGET and never a Q label (user decision 2026-10-24). The
-  floor is unreachable in this process only: the workers keep theirs."""
+def test_a_cf_budget_probes_the_forks_it_does_not_run_to_the_cap(world, tmp_path, monkeypatch):
+  """Forks the reference cannot decide (no FUNDS coupling, no true terminal
+  in the cap): a stratified sample runs to the cap, every other fork runs a
+  probe, where an EXACT coupling still gives its label; a probe still open
+  is UNAVAILABLE_BUDGET and never a Q label (user decisions 2026-10-24,
+  2026-10-27). The unreachable floor of this process is the CF's: the
+  workers get it with their job."""
   env = ts_run.corpus_env(world['corpus'])
   monkeypatch.setattr(V.CF, 'coupling_floor', lambda env: np.inf)
   reference, _ = V.build_reference(world['collection'], env)
-  cap, end = 2, reference.start + reference.n
+  cap, probe, end = 8, 3, reference.start + reference.n
   forks = V.choose_forks(reference)
   undecided = [t for t in forks if not reference.decidable(t, cap)]
   assert undecided == [t for t in forks if end - t > cap] and len(undecided) > 16
@@ -224,20 +241,36 @@ def test_a_cf_budget_leaves_unsimulated_forks_unavailable(world, tmp_path, monke
   assert V.undecided_sample(reference, undecided, 10 ** 6, close)[0] == undecided
 
   cf = tmp_path / 'cf'
+  with pytest.raises(ValueError, match='probe'):
+    V.run_cf(world['policy'], world['corpus'], world['collection'], cf, max_steps=cap,
+             budget=8, probe_steps=cap, **QUIET)
   meta = V.run_cf(world['policy'], world['corpus'], world['collection'], cf, workers=2,
-                  max_steps=cap, seed=3, budget=8, **QUIET)
-  pairs = [json.loads(line) for line in (cf / 'pairs.jsonl').open()]
-  off = [p for p in pairs if p['status'] == 'UNAVAILABLE_BUDGET']
-  assert len(pairs) == len(forks) and {p['cursor'] for p in off} == set(undecided) - set(sample)
+                  max_steps=cap, seed=3, budget=8, probe_steps=probe, **QUIET)
+  pairs = {p['cursor']: p for p in map(json.loads, (cf / 'pairs.jsonl').open())}
+  assert sorted(pairs) == forks and meta['coupling_floor'] == np.inf
+  probed = set(undecided) - set(sample)
+  off = [p for p in pairs.values() if p['status'] == 'UNAVAILABLE_BUDGET']
+  assert {p['cursor'] for p in off} <= probed
   for p in off:
-    assert (p['reason'], p['steps'], p['g'], p['delta_g']) == ('BELOW_FLOOR_BEYOND_CAP', 0, None, None)
-    assert p['branch_rewards'] is None and p['trades'] is None and p['end_status'] is None
-  assert all(p['end_status'] for p in pairs if p['status'] != 'UNAVAILABLE_BUDGET')
-  assert meta['counts']['UNAVAILABLE_BUDGET/BELOW_FLOOR_BEYOND_CAP'] == len(off)
-  assert (meta['budget']['forks'], meta['budget']['simulated'], meta['budget']['unavailable']) == (
-      8, 8, len(undecided) - 8)
+    assert (p['reason'], p['steps'], p['g'], p['delta_g'], p['coupling']) == (
+        'OPEN_AFTER_PROBE', probe, None, None, None)
+    assert p['branch_rewards'] is None and p['end_status'] == 'ACTIVE'
+  for t in probed - {p['cursor'] for p in off}:  # closed within the probe
+    assert pairs[t]['status'] == 'VALID_COMPLETE' and pairs[t]['steps'] <= probe
+    assert pairs[t]['coupling'] == 'EXACT' or pairs[t]['reason'] == 'TERMINAL'
+  for t in sample:
+    assert pairs[t]['steps'] <= cap and pairs[t]['status'] != 'UNAVAILABLE_BUDGET'
+    assert pairs[t]['reason'] in ('CAP', 'COUPLED', 'TERMINAL')
+  assert all(p['coupling'] != 'FUNDS' for p in pairs.values())
+  assert meta['counts'].get('UNAVAILABLE_BUDGET/OPEN_AFTER_PROBE', 0) == len(off) > 0
+  budget = meta['budget']
+  assert (budget['forks'], budget['full'], budget['probed'], budget['probe_steps']) == (
+      8, 8, len(probed), probe)
+  assert budget['unavailable'] == len(off) and budget['probe_closed'] == len(probed) - len(off)
+  assert meta['coupled']['EXACT'] == sum(p['coupling'] == 'EXACT' for p in pairs.values())
   assert meta['forks']['undecided'] == len(undecided) and meta['couple_from'] == end
-  assert sum(meta['end_status'].values()) == len(pairs) - len(off)
+  assert sum(meta['end_status'].values()) == len(pairs)
+  assert meta['branch_steps']['total'] == sum(p['steps'] for p in pairs.values())
   targets = dict(np.load(cf / 'targets.npz'))
   assert not targets['q_cf_valid'][[reference.row(p['cursor']) for p in off]].any()
   np.testing.assert_array_equal(targets['q_real'], reference.g.astype(np.float32))

@@ -449,6 +449,16 @@
     - A（建议）：`l6.remedial_fraction: 0`，L2 复习和 L5 只用自然窗口；保留教学题、L2 自然复习和 L4 的决策错加权。只改两份配置。
     - B：保留补课，但不改变自然分布：补课窗口按抽样概率反加权，并限制每道错题的补课窗口数；再用下一轮新错题检验效果。需要改代码和测试。
     - C：保持现状。
+- [ ] E-8（2026-10-27，用户要求：依 `/data/research/fg201_cf_investigation_20261024/REPORT.md` 独立修复，精确状态重合与预算预筛一起修）：CF 精确状态耦合 + 预算探测；记录 `CF_EXACT_COUPLING_20261027.md`
+  - 根因：
+    - 耦合只有资金通道（FUNDS），FG201 参考全程低于下限 90,336，账户已与参考完全相同的分支也不合并（t=7 在 c=11 就相同）；
+    - 预筛把 1,298 个参考上不能判定的分叉直接记 `UNAVAILABLE_BUDGET`，没有运行 Native。
+  - 修复（gym `21105bf`）：
+    - gym `ts_v1_cf`：`native_state`，`Reference.record`/`coupling`（EXACT 在 FUNDS 之前，见证加策略记忆），`run_branch(probe=…)`、`OPEN_AFTER_PROBE`；
+    - dreamerv3 `value.run_cf`：重放时记录 Native 状态与 `policy_memory`，未抽中的不能判定分叉跑 `cf_probe_steps` 步探测；`meta.json` 的 `budget`（full / probed / probe_steps / probe_closed / unavailable）和 `coupled`；
+    - `run cf --probe-steps`、`iteration.cf_probe_steps: 512`（两份配置）。
+  - 测试（CPU）：gym `test_ts_v1_cf.py` 8 passed，gym 的 TS 测试文件共 63 passed；dreamerv3 `test_ts_v1_s3.py` 5 passed；`s4` + `c4` + `s5` 28 passed。
+  - 真实回归（GPU，`CF_EXACT_COUPLING_20261027/regression.json`）11 项全过：FG201 t=7 EXACT 于 c=11（4 步），G 与跑满 31,252 步到 MAIN_ROLL 的 G 差 −1.39e−16，此后 1,495 笔成交逐笔相同；t=20789（现金 +564）不合并；t=31153、t=31229、FG205 两个 FUNDS 分叉与原 CF 逐位相同。
 - [x] E-4：同步：开发分支的新提交快进到 10x 的 run 分支（dreamerv3、gym）
   - 2026-10-24 13:2x：用户的未跟踪草稿备份到会话临时目录后删除，dreamerv3 run 分支快进到 `37cdd85`；gym run 分支即 `0056296`，两个 worktree 都干净。
   - 从 10x 的 gym worktree 运行 `formal_train status`（只读）：配置可读，L1 60,000 / L2 12,000，latest ckpt 72000。

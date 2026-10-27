@@ -63,14 +63,21 @@ iteration:
   # pairs on the same contracts, about 30 min per contract.
   cf_wait_forks: 1000
   cf_workers: 3
-  # Forks that only a full branch can decide (the reference below the
-  # coupling floor through the whole cap window, its true terminal beyond
-  # cf_max_steps; FG201 of pi_0002: 1346 of 1596) end validly only by a
-  # MARGIN_CALL of the branch's own account. 48 of them per contract, a
-  # sample stratified by action, equity quartile and 60-minute volatility,
-  # run exactly (~0.4M branch steps, ~20-40 min); the others are
-  # UNAVAILABLE_BUDGET without a label (user decision 2026-10-24).
+  # Forks the reference cannot decide (its equity below the coupling floor
+  # through the whole cap window, so no FUNDS coupling, and its true
+  # terminal beyond cf_max_steps; FG201 of pi_0002: 1346 of 1596) end
+  # validly only by an EXACT coupling (the branch's Native account equal to
+  # the reference's) or a MARGIN_CALL of the branch's own account. 48 of
+  # them per contract, a sample stratified by action, equity quartile and
+  # 60-minute volatility, run to the cap (~0.4M branch steps, ~20-40 min);
+  # every other one runs a probe of cf_probe_steps and, still open after
+  # it, is UNAVAILABLE_BUDGET without a label (user decision 2026-10-24;
+  # probes since the exact-coupling fix of 2026-10-27).
   cf_budget: 48
+  # The FG201 CF investigation (2026-10-25) found the first equal-cash
+  # common flat cursor 2-435 steps after the fork in 170 of 298 real
+  # branches. At most 512 x ~1300 = 0.67M probe steps on FG201.
+  cf_probe_steps: 512
   # L4 needs valid pairs for >= 80% of each contract's forks; else the round
   # keeps pi_k's value brain and anchor (no Q learning from a selective set).
   cf_min_coverage: 0.8

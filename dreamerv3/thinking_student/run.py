@@ -837,9 +837,12 @@ def main(argv=None):
   parser.add_argument('--max-steps', type=int, default=8192,
                       help='cf: branch steps before NOT_COMPARABLE')
   parser.add_argument('--budget', type=int, default=None,
-                      help='cf: of the forks only a full branch can decide (no coupling and no true '
-                           'terminal within --max-steps), simulate a stratified sample of at most '
-                           'this many; the others are UNAVAILABLE_BUDGET (default: all)')
+                      help='cf: of the forks the reference cannot decide (no FUNDS coupling and no '
+                           'true terminal within --max-steps), run a stratified sample of at most '
+                           'this many to the cap and the others for --probe-steps; those still '
+                           'open then are UNAVAILABLE_BUDGET (default: all to the cap)')
+  parser.add_argument('--probe-steps', type=int, default=512,
+                      help='cf with --budget: branch steps of a probe (< --max-steps)')
   parser.add_argument('--value-anchor-of', default=None,
                       help="freeze: keep this frozen policy's beta_Q and kappa_Q (its round "
                            'skipped L4, the value brain is the inherited one)')
@@ -902,7 +905,7 @@ def main(argv=None):
     collection = args.collection or policy.parents[1] / 'collect' / f'{name}_policy'
     out = Path(args.out or policy.parents[1] / 'cf' / name)
     run_cf(policy, _one(args.corpus, '--corpus'), collection, out, args.forks, args.seed,
-           args.workers, args.max_steps, budget=args.budget)
+           args.workers, args.max_steps, budget=args.budget, probe_steps=args.probe_steps)
     return
   if args.command == 'state-check':
     from .value import window_check

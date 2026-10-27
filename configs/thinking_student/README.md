@@ -16,12 +16,14 @@ on `/data`, never to another worktree.
 
 - **Network size:** a Dreamer size preset is named in `student.preset`
   (formal: `size50m`); its definition stays in `dreamerv3/configs.yaml`.
-- **CF budget:** `iteration.cf_budget` bounds the forks of a CF that only a
-  full branch can decide (no coupling and no true terminal within
-  `cf_max_steps`): a stratified sample runs exactly, the others are
-  `UNAVAILABLE_BUDGET` without a label. With `iteration.cf_min_coverage`
-  a round whose valid pairs cover too few forks of a contract skips L4 and
-  keeps the value brain and anchor of its pi_k.
+- **CF budget:** `iteration.cf_budget` bounds the forks of a CF that the
+  reference cannot decide (no FUNDS coupling and no true terminal within
+  `cf_max_steps`): a stratified sample runs to the cap, every other one a
+  probe of `iteration.cf_probe_steps`; a probe that couples EXACT or ends
+  gives the exact label, one still open is `UNAVAILABLE_BUDGET` without a
+  label. With `iteration.cf_min_coverage` a round whose valid pairs cover
+  too few forks of a contract skips L4 and keeps the value brain and anchor
+  of its pi_k.
 - **Market data:** the 1-minute CSV of each contract is data, not
   configuration. `pool.json` and the env files give its absolute path.
 - **Built artifacts, not configs:**

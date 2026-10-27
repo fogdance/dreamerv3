@@ -27,10 +27,12 @@ evaluate  the Teacher-free exam of a frozen policy: DEV on the VALIDATION rows
 run       pretrain, then iterate.
 status    progress read from the disk (writes nothing).
 
-iteration.cf_budget bounds the forks of a CF that only a full branch can
-decide (no coupling, no true terminal within cf_max_steps): a stratified
-sample of them is simulated, the others are UNAVAILABLE_BUDGET without a
-label. iteration.cf_min_coverage: when a contract's valid pairs cover a
+iteration.cf_budget bounds the forks of a CF that the reference cannot
+decide (no FUNDS coupling, no true terminal within cf_max_steps): a
+stratified sample of them runs to the cap, the others for cf_probe_steps,
+where an EXACT coupling or the branch's own terminal still gives the
+label; a branch still open then is UNAVAILABLE_BUDGET without a label.
+iteration.cf_min_coverage: when a contract's valid pairs cover a
 smaller share of its forks, the round skips L4 and pi_{k+1} keeps the value
 brain and anchor of pi_k (L4_SKIPPED_CF_NOT_REPRESENTATIVE).
 
@@ -83,7 +85,7 @@ DEFAULTS = dict(
                     holdout=0, demo_balance=1.0),
     iteration=dict(max_rounds=0, contracts=None, contracts_per_round=2, parallel_contracts=1,
                    cf_wait_forks=None, cf_workers=1, cf_max_steps=8192, cf_budget=None,
-                   cf_min_coverage=None, value_updates=0,
+                   cf_probe_steps=512, cf_min_coverage=None, value_updates=0,
                    prior_refresh_updates=0, cf_boost=16.0, save_every=0, holdout=0,
                    beta_q=1.0, kappa_q='auto', kappa_floor=None, state_check_windows=0,
                    state_check_seed_offset=0,
@@ -133,6 +135,10 @@ def load_config(path):
   it = config['iteration']
   if it['cf_budget'] is not None and not (isinstance(it['cf_budget'], int) and it['cf_budget'] >= 0):
     raise ValueError(f'{path}: iteration.cf_budget is a number of forks >= 0 or null')
+  if it['cf_budget'] is not None and not (isinstance(it['cf_probe_steps'], int)
+                                          and 0 < it['cf_probe_steps'] < it['cf_max_steps']):
+    raise ValueError(f'{path}: iteration.cf_probe_steps is a number of steps in '
+                     f'(0, cf_max_steps)')
   if it['cf_min_coverage'] is not None and not 0 < it['cf_min_coverage'] <= 1:
     raise ValueError(f'{path}: iteration.cf_min_coverage is in (0, 1] or null')
   l6 = it['l6']
@@ -307,10 +313,11 @@ def _cf_record(meta):
   """One CF in the round record; coverage is the share of its forks with a
   valid ADD/WAIT pair (the strata stay in its meta.json)."""
   rec = {k: v for k, v in meta.items()
-         if k in ('counts', 'valid_pairs', 'forks', 'delta_g', 'seconds', 'end_status')}
+         if k in ('counts', 'valid_pairs', 'forks', 'coupled', 'delta_g', 'seconds', 'end_status')}
   if meta.get('budget'):
     rec['budget'] = {k: v for k, v in meta['budget'].items()
-                     if k in ('forks', 'undecided', 'simulated', 'unavailable', 'reason')}
+                     if k in ('forks', 'undecided', 'full', 'probed', 'probe_steps',
+                              'probe_closed', 'unavailable')}
   chosen = meta['forks']['chosen']
   rec['coverage'] = round(meta['valid_pairs'] / chosen, 4) if chosen else None
   return rec
@@ -474,7 +481,8 @@ def iterate(cfg, lay, state, rounds, until=None):
     _step(lay, state, step='cf')
     cf = {c: lay.experience(policy, 'cf', c) for c in usable}
     forks = [] if it['cf_wait_forks'] is None else ['--forks', it['cf_wait_forks']]
-    budget = [] if it['cf_budget'] is None else ['--budget', it['cf_budget']]
+    budget = [] if it['cf_budget'] is None else ['--budget', it['cf_budget'],
+                                                 '--probe-steps', it['cf_probe_steps']]
     _call_many([('run', ['cf', '--policy', policy, '--corpus', contracts[c], '--collection', collect[c],
                          '--out', out, '--workers', it['cf_workers'], '--max-steps', it['cf_max_steps'],
                          '--seed', s['seed'], *forks, *budget], lay.log(f'r{r:03d}_cf_{c}'))
