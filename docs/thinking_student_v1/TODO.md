@@ -516,9 +516,11 @@
     - 合法行翻转 6.9%，方向对称，集中在边界附近；
     - ΔQ 符号一致率 0.911。
   - 补课诊断（`S5_L2_REVIEW_DIAG_20261025/`）发现固定比例补课有副作用，见 E-7。
-- [ ] S5-6：记录 `S5_RECORD_20261024.md`；更新 INTERFACE_SUMMARY、FORMAL_TRAINING_IMPLEMENTATION、配置 README、memory；提交、同步 10x 分支
+- [x] S5-6：记录 `S5_RECORD_20261024.md`；更新 INTERFACE_SUMMARY、FORMAL_TRAINING_IMPLEMENTATION、配置 README、memory；提交、同步 10x 分支
   - 已写：
     - 记录 `S5_RECORD_20261024.md`；
     - INTERFACE_SUMMARY 和 FORMAL_TRAINING_IMPLEMENTATION 的实跑结果、checkpoint 表与待办；
     - memory。
   - 配置 README 不需要改：E-7 未定，配置没有变化。
+  - 提交 dreamerv3 `90bfc1d`（只有文档）；gym 没有新提交，仍为 `2b4e894`。
+  - 2026-10-27：10x 没有步骤在运行（`pi_0000` 已冻结，iterate 未开始），dreamerv3 run 分支快进到 `90bfc1d`，gym 仍为 `2b4e894`，两个 worktree 都干净。
