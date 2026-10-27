@@ -633,11 +633,10 @@ def test_orchestrator_starts_windows_from_the_market_carry(pik, two, tmp_path, m
 def test_orchestrator_keeps_the_value_brain_when_the_cf_is_not_representative(
     pik, two, tmp_path, monkeypatch):
   """iteration.cf_budget and cf_min_coverage (user decision 2026-10-24): no
-  cursor may couple by FUNDS (an unreachable floor, the CF's), so the forks
-  beyond the cap need the branch; the budget runs none of them to the cap,
-  each runs a one-step probe, and those still open are UNAVAILABLE_BUDGET.
-  The valid pairs then cover too few forks: the round skips L4, and pi_1
-  keeps the value brain and anchor of pi_0."""
+  cursor may couple (an unreachable floor in this process), so the forks
+  beyond the cap need a full branch; the budget runs none of them and they
+  are UNAVAILABLE_BUDGET. The valid pairs then cover too few forks: the
+  round skips L4, and pi_1 keeps the value brain and anchor of pi_0."""
   root = tmp_path / 'corpora'
   root.mkdir()
   for folder, name in zip(two, CONTRACTS):
@@ -649,7 +648,7 @@ def test_orchestrator_keeps_the_value_brain_when_the_cf_is_not_representative(
                    log_every=1),
       foundation=dict(policy_updates=1, save_every=1),
       iteration=dict(max_rounds=1, cf_wait_forks=1, cf_max_steps=2, cf_budget=0,
-                     cf_probe_steps=1, cf_min_coverage=0.8, value_updates=1, prior_refresh_updates=1, save_every=1,
+                     cf_min_coverage=0.8, value_updates=1, prior_refresh_updates=1, save_every=1,
                      kappa_floor=0.05),
       evaluation=dict(random_seeds=1, smoke_steps=20))))
   lay = FT.Layout(tmp_path / 'run')
@@ -667,9 +666,7 @@ def test_orchestrator_keeps_the_value_brain_when_the_cf_is_not_representative(
   assert rec['L4_coverage']['min_coverage'] == 0.8 and set(rec['L4_coverage']['below']) == set(CONTRACTS)
   for c in CONTRACTS:
     budget = rec['cf'][c]['budget']
-    assert budget['full'] == 0 and budget['probed'] == budget['undecided'] > 0
-    assert budget['probe_steps'] == 1 and budget['unavailable'] > 0
-    assert budget['unavailable'] + budget['probe_closed'] == budget['probed']
+    assert budget['simulated'] == 0 and budget['unavailable'] == budget['undecided'] > 0
     assert rec['cf'][c]['coverage'] == rec['L4_coverage']['below'][c] < 0.8
   freeze = next(a for a in argvs[start:] if a[0] == 'freeze')
   assert freeze[freeze.index('--value-anchor-of') + 1] == str(lay.policy(0))

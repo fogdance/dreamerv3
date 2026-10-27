@@ -92,11 +92,9 @@
 - 分支的终点：分支与 π_k 自己的完整 TRAIN 正式轨迹在汇合点 c 汇合。汇合点需同时满足：
   - 两边同时空仓；
   - `position_state` / `action_mask` / `account_native` 逐位相等；
-  - 以下二者之一（2026-10-27 起按此顺序判断）：
-    - EXACT：此后各步要读的 Native 状态完全相同；
-    - FUNDS：资金不构成约束。
+  - 资金不构成约束。
 - 回报精确，不需要尾值：G = Σ_{t≤i<c} γ^{advance(t,i)} · r_i + γ^{advance(t,c)} · G_ref(c)。
-- 汇合处由同一个编译后的策略复核一次决策；EXACT 还要复核策略的记忆。
+- 汇合处由同一个编译后的策略复核一次决策。
 - 状态：
   - 汇合或到达真终止 → `VALID_COMPLETE`；
   - 数据截断或超过步数上限 → `NOT_COMPARABLE`，不给数值标签；
@@ -160,20 +158,9 @@
   - 随机入场基线：同样的分钟、同样的 Native 规则、相同的入场率。
   - 指标附定义；`best_dev` 按 DEV 每分钟 Reward 选取。
 - **L5 = S4 先验刷新。** L6 见下文 S5 节；没开 L6 的轮记 `L6_SKIPPED_BY_CONFIG`。
-- **有限预算的精确 CF（用户 2026-10-24；精确耦合与探测 2026-10-27，见 `CF_EXACT_COUPLING_20261027.md`）：**
-  - 耦合有两个通道，按顺序判断。前提相同：分支与参考在同一 cursor 都空仓，`position_state`、`action_mask`、`account_native` 相同。
-    - EXACT：分支的 `ts_v1_cf.native_state` 等于参考重放时在该 cursor 记录的值（`Reference.record`），见证再确认策略的记忆（`n_actions` 和 carry 摘要）与答卷相同。`native_state` 包括 Decimal 账本、持仓与 entries、奖励记分器的活动状态与时钟、pending 与标志、已发布 Mask、序号和 env RNG，不包括只记历史的部分。这个通道没有资金条件。
-    - FUNDS：原来的资金下限条件（`coupling_floor`、`couple_from`）。
-  - 每个结果多一个 `coupling` 字段（`EXACT`、`FUNDS` 或 null）。
-  - 参考上不能判定的分叉：`Reference.decidable` 为假，即上限窗口内不能 FUNDS 耦合，真实终点又在 `cf_max_steps` 之外。
-    - 分层预算抽中的跑到上限。
-    - 其余每个跑 `cf_probe_steps` 步探测。探测内 EXACT 耦合、分支自己终止或数据结束时，结果与跑满相同。
-    - 到时仍未结束的记 `UNAVAILABLE_BUDGET/OPEN_AFTER_PROBE`，`steps` 为探测步数，没有回报、TERMINAL 和 Q 标签。
-  - `meta.json`：
-    - `forks.undecided`、`couple_from`；
-    - `budget`：`full`、`probed`、`probe_steps`、`probe_closed`、`unavailable`，以及各层数量；
-    - `coupled`：EXACT 和 FUNDS 各自的次数；
-    - `end_status`，含 MARGIN_CALL。
+- **有限预算的精确 CF（用户 2026-10-24）：**
+  - 状态 `UNAVAILABLE_BUDGET`：分叉只能靠完整模拟判定（上限窗口内不可能耦合，真实终点又在 `cf_max_steps` 之外），但没有被分层预算抽中，所以没有回报、TERMINAL 和 Q 标签。
+  - `meta.json` 增加 `forks.undecided`、`couple_from`、`budget`（各层数量）、`end_status`（含 MARGIN_CALL）。
   - 某合约的有效对覆盖率低于 `cf_min_coverage` 时，本轮跳过 L4，`freeze --value-anchor-of π_k` 保留 π_k 的 β_Q、κ_Q（`L4_SKIPPED_ANCHOR_KEPT`）。
 
 **S5：离线教学循环 L6**（`PLAN_S5_20261024.md`；只实现 OFFLINE_TRAIN）
