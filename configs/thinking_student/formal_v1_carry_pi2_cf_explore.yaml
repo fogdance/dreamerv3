@@ -1,0 +1,121 @@
+# Thinking Student V1: the pi_2 -> pi_3 mainline after the CF fix, an
+# EXPLORATION config (user decision 2026-10-27). It differs from
+# formal_v1_carry.yaml only in run_root, iteration.cf_coverage and
+# iteration.l6.from_round.
+#
+# The new run goes on from pi_0002 of the development run FORMAL_V1_CARRY_20261024
+# (whose pi_0003-pi_0009 stay as they are). Round 3 uses the round-3
+# experience of pi_0002, so nothing is collected or forked again:
+# - FG205 and FG209 use the CFs of the development run;
+# - FG201 uses the Astra supplement of the same pi_0002 collection: 914 valid
+#   exact pairs of 1596 forks (0.5727, FG201_CF_SUPPLEMENT_20261025.md).
+# cf_min_coverage stays 0.8. With cf_coverage: exploratory, a round below it
+# still runs L4 on its valid exact pairs. The round then records
+# S3_Q_TARGETS_EXPLORATORY and lists the contracts below 0.8 in L4_coverage.
+# Missing pairs stay missing: no label or coverage is changed.
+# L6 (S5) joins from round 3, so the supplement also reaches the teaching
+# items. E-7 option A applies (remedial_fraction 0).
+#
+# Prepare the run once. Only links are made; nothing of the development run
+# or of the supplement is written:
+#   SRC=/data/logdir/fg_single3/thinking_student/FORMAL_V1_CARRY_20261024
+#   NEW=/data/logdir/fg_single3/thinking_student/FORMAL_V1_CARRY_PI2_CF_EXPLORE_20261028
+#   mkdir -p $NEW/policies $NEW/eval $NEW/experience/pi_0002/collect $NEW/experience/pi_0002/cf
+#   ln -s $SRC/policies/pi_0002 $NEW/policies/pi_0002
+#   ln -s $SRC/eval/pi_0002 $NEW/eval/pi_0002
+#   ln -s $SRC/market_carry $NEW/market_carry
+#   for c in CZCE.FG201 CZCE.FG205 CZCE.FG209; do
+#     ln -s $SRC/experience/pi_0002/collect/$c $NEW/experience/pi_0002/collect/$c; done
+#   ln -s /data/research/fg201_cf_supplement_20261025/CZCE.FG201 $NEW/experience/pi_0002/cf/CZCE.FG201
+#   for c in CZCE.FG205 CZCE.FG209; do
+#     ln -s $SRC/experience/pi_0002/cf/$c $NEW/experience/pi_0002/cf/$c; done
+#
+# Then run iterate only, never pretrain (round 3 is pi_0002 -> pi_0003):
+#   cd gym-trading-env && env PYTHONPATH=.:src:../dreamerv3 \
+#     /home/v/miniconda3/envs/dreamerv3/bin/python -m dreamerv3.thinking_student.formal_train \
+#     iterate --config ../dreamerv3/configs/thinking_student/formal_v1_carry_pi2_cf_explore.yaml --rounds 1
+
+paths:  # relative paths are relative to this file
+  markets: markets/pool.json
+  corpus_root: /data/logdir/fg_single3/thinking_student/corpus
+  run_root: /data/logdir/fg_single3/thinking_student/FORMAL_V1_CARRY_PI2_CF_EXPLORE_20261028
+  # L1 (10000 updates) and L2 (12000 updates) of formal_v1.yaml, saved before its L3.
+  init_from: /data/logdir/fg_single3/thinking_student/FORMAL_V1_20261024/foundation/ckpt/000000022000
+
+corpora:
+  contracts: discover   # every TRAIN corpus under corpus_root (18)
+  mix: uniform_contract
+
+dev:
+  contracts: [CZCE.FG409]
+
+student:
+  preset: size50m
+  device: cuda
+  seed: 20261024
+  batch_size: 16
+  batch_length: 64
+  log_every: 100
+  window_start: carry
+  carry_parallel: 6       # market-carry processes, ~1 GB GPU and ~1.7 GB RAM each
+
+foundation:
+  market_updates: 0       # inherited: formal_v1 L1
+  outcome_updates: 0      # inherited: formal_v1 L2
+  policy_updates: 12000   # L3: 0.11 s/update, ~22 min
+  save_every: 1000        # 388 MB per checkpoint
+  holdout: 0
+
+iteration:
+  max_rounds: 9             # one rotation through the 18 contracts, then rounds 7-9 with L6
+  contracts_per_round: 3    # rotates through the 18 contracts round by round
+  parallel_contracts: 2     # x cf_workers GPU processes, ~1.7 GB RAM and 1.2 GB GPU each
+  cf_wait_forks: 100
+  cf_workers: 3
+  # Every legal fork first gets a Native probe of cf_probe_steps; it ends
+  # validly at an exact (EXACT_STATE) or funds-safe coupling or at the true
+  # terminal. 48 of the unfinished probes per contract, a sample stratified by
+  # action, equity quartile and 60-minute volatility, continue from their saved
+  # state up to cf_max_steps; the others are UNAVAILABLE_BUDGET without a label
+  # (Astra CF fix, user decision 2026-10-27; FG201 of pi_0002: 914 of 1596).
+  cf_probe_steps: 64
+  cf_budget: 48
+  # L4 needs valid pairs for >= 80% of each contract's forks; else the round
+  # keeps pi_k's value brain and anchor (no Q learning from a selective set).
+  cf_min_coverage: 0.8
+  cf_coverage: exploratory  # below 0.8: L4 still learns, recorded as exploratory
+  # L4 budget from the pilot L4 (C4_STATE_CHECK_20261024/carry_pilot_l4, 3000
+  # updates from pi_0000 on this round's CF, TRAIN_INTERNAL_DIAGNOSTIC holdout
+  # of 135 pairs): the held-out q_pair and q_cf are best after 500 updates
+  # (q_pair 0.354, constant 0.352; sign agreement 0.55, constant 0.46) and
+  # worsen from there on (q_pair 0.40 at 1000, 0.50 at 2000).
+  value_updates: 500
+  prior_refresh_updates: 100
+  save_every: 250
+  holdout: 0
+  beta_q: 1.0             # 0 with Q_ANCHOR_NOT_READY when the round's CF holds < 2 valid pairs
+  kappa_q: auto
+  kappa_floor: 0.05       # replaces a zero or smaller std of real pairs, never missing pairs
+  state_check_windows: 0  # by hand on FG005: run.py state-check --window-start carry
+  state_check_seed_offset: 1000003
+  # L6 (S5) from round 7 on: rounds 7-9 take the contracts of rounds 1-3 again
+  # (FG001/005/009, FG101/105/109, FG201/205/209), so each L6 round has a
+  # round without L6 on the same contracts to compare with. OFFLINE_TRAIN
+  # only: TRAIN feedback is released whatever its ready_at
+  # (TIME_ORDERED_NOT_SUPPORTED). Thresholds from round 1 (feedback.DEFAULTS).
+  l6:
+    from_round: 3   # this run starts at round 3
+    order: OFFLINE_TRAIN
+    outcome_review_updates: 200   # L2 review before L4, ~0.1 s/update
+    # E-7 option A (user 2026-10-28): the L2 review and L5 take natural
+    # windows only. The teaching items, the natural L2 review and the L4
+    # decision-error weight (remedial_boost) stay.
+    remedial_fraction: 0
+    remedial_boost: 4.0           # L4: decision-error rows weigh 4x
+    outcome_error_prob: 0.1
+    decision_error_margin: 1.0    # x kappa_Q of the round's CF
+
+evaluation:
+  random_seeds: 5
+  smoke_contracts: 2
+  smoke_steps: 6000

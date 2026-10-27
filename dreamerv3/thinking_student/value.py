@@ -14,7 +14,8 @@ QWindows   L4 training windows over the reference rows; MultiQWindows mixes
            the targets of one pi_k on several TRAIN contracts (C4 3.1).
 
 The reference is replayed once per contract. Full fork snapshots are spooled
-to the output directory; each worker holds one live account, reuses its
+to the output directory (only the unfinished probes keep theirs once the
+output is complete); each worker holds one live account, reuses its
 environment/policy and reads the compact reference continuation states.
 Every candidate gets a short probe. The budget is a continuation quota for
 unfinished probes, sampled using decision-time strata. A probe and its
@@ -406,7 +407,7 @@ def _run_cf(policy, corpus, collection, out, forks=None, seed=0, workers=4,
             cursors=None, base_cf=None, memory=None):
   """Probe all candidates, then sample unfinished branches for continuation.
   Work files retain the shared reference, one checkpoint per fork and atomic
-  results. Rerun the same command to recover completed probes/results. Use a
+  results; a finished fork's checkpoint is deleted once the output is complete. Rerun the same command to recover completed probes/results. Use a
   new output + base_cf to supplement an older dataset without overwriting it.
   """
   from .run import corpus_env
@@ -514,6 +515,10 @@ def _run_cf(policy, corpus, collection, out, forks=None, seed=0, workers=4,
   quota = len(chosen) if budget is None else min(budget, len(chosen))
   cost = {key: sum(r['cost'][key] for r in computed) for key in
           ('native_steps', 'policy_calls', 'seconds', 'save_seconds', 'restore_seconds')}
+  # A finished branch needs no recovery: its snapshot goes once the output is
+  # complete. Unfinished probes keep theirs (a larger quota resumes them).
+  finished = [work / f"{r['cursor']}.pkl" for r in computed if r['status'] != 'UNAVAILABLE_BUDGET']
+  finished = [p for p in finished if p.exists()]
   meta = dict(
       policy=str(policy), corpus=str(corpus), collection=str(collection),
       gamma=[CF.GAMMA.numerator, CF.GAMMA.denominator], clock='S3_MARKET_MINUTE',
@@ -553,9 +558,13 @@ def _run_cf(policy, corpus, collection, out, forks=None, seed=0, workers=4,
       seconds=round(time.monotonic() - began, 3),
       inference={k: reference_metrics[k] for k in ('platform', 'compute_dtype')} if chosen else None,
       base_cf=str(base_cf) if base_cf else None,
+      snapshots=dict(removed=len(finished), removed_bytes=sum(p.stat().st_size for p in finished),
+                     kept=unavailable),
       labels=dict(q_real='STUDENT_EXECUTED_NATIVE', q_cf='VERIFIED_CF_NATIVE',
                   policy_bound='targets are Q^{pi_k} of this policy only'))
   _json_write(out / 'meta.json', meta)
+  for p in finished:
+    p.unlink()
   log(f'CF done in {meta["seconds"]} s: {counts}')
   return meta
 

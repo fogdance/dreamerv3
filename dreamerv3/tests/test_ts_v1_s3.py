@@ -235,10 +235,14 @@ def test_a_cf_budget_probes_every_fork_and_resumes_only_the_sample(world, tmp_pa
   targets = dict(np.load(cf / 'targets.npz'))
   assert not targets['q_cf_valid'][[reference.row(p['cursor']) for p in off]].any()
   np.testing.assert_array_equal(targets['q_real'], reference.g.astype(np.float32))
+  # Once the output is complete only the unfinished probes keep a snapshot.
+  snapshots = sorted(int(p.stem) for p in (cf / 'work').glob('*.pkl') if p.stem.isdigit())
+  assert snapshots == sorted(p['cursor'] for p in off) and (cf / 'work' / 'reference.pkl').exists()
+  assert (meta['snapshots']['removed'], meta['snapshots']['kept']) == (len(pairs) - len(off), len(off))
   # Recovery reuses completed probes and results; no branch or reference repeats.
   again = V.run_cf(world['policy'], world['corpus'], world['collection'], cf, workers=1,
                    max_steps=50, probe_steps=1, seed=3, budget=8, **QUIET)
-  assert again['branch_steps'] == meta['branch_steps']
+  assert again['branch_steps'] == meta['branch_steps'] and again['snapshots']['removed'] == 0
   assert again['compute']['executed_native_steps'] == again['compute']['executed_policy_calls'] == 0
   assert [json.loads(line) for line in (cf / 'pairs.jsonl').open()] == pairs
   # A local supplement cannot replace existing complete Q with a shorter CAP.

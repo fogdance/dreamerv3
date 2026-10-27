@@ -63,13 +63,13 @@ iteration:
   # pairs on the same contracts, about 30 min per contract.
   cf_wait_forks: 1000
   cf_workers: 3
-  # Forks that only a full branch can decide (the reference below the
-  # coupling floor through the whole cap window, its true terminal beyond
-  # cf_max_steps; FG201 of pi_0002: 1346 of 1596) end validly only by a
-  # MARGIN_CALL of the branch's own account. 48 of them per contract, a
-  # sample stratified by action, equity quartile and 60-minute volatility,
-  # run exactly (~0.4M branch steps, ~20-40 min); the others are
-  # UNAVAILABLE_BUDGET without a label (user decision 2026-10-24).
+  # Every legal fork first gets a Native probe of cf_probe_steps; it ends
+  # validly at an exact (EXACT_STATE) or funds-safe coupling or at the true
+  # terminal. 48 of the unfinished probes per contract, a sample stratified by
+  # action, equity quartile and 60-minute volatility, continue from their saved
+  # state up to cf_max_steps; the others are UNAVAILABLE_BUDGET without a label
+  # (Astra CF fix, user decision 2026-10-27; FG201 of pi_0002: 914 of 1596).
+  cf_probe_steps: 64
   cf_budget: 48
   # L4 needs valid pairs for >= 80% of each contract's forks; else the round
   # keeps pi_k's value brain and anchor (no Q learning from a selective set).
@@ -94,7 +94,10 @@ iteration:
     from_round: 7
     order: OFFLINE_TRAIN
     outcome_review_updates: 2000
-    remedial_fraction: 0.25
+    # E-7 option A (user 2026-10-28): the L2 review and L5 take natural
+    # windows only. The teaching items, the natural L2 review and the L4
+    # decision-error weight (remedial_boost) stay.
+    remedial_fraction: 0
     remedial_boost: 4.0
     outcome_error_prob: 0.1
     decision_error_margin: 1.0

@@ -33,7 +33,10 @@ sampled branches resume their Native/policy state under the same cf_max_steps
 cap. Unselected probes are UNAVAILABLE_BUDGET without a Q label.
 iteration.cf_min_coverage: when a contract's valid pairs cover a
 smaller share of its forks, the round skips L4 and pi_{k+1} keeps the value
-brain and anchor of pi_k (L4_SKIPPED_CF_NOT_REPRESENTATIVE).
+brain and anchor of pi_k (L4_SKIPPED_CF_NOT_REPRESENTATIVE). An exploration
+config sets iteration.cf_coverage: exploratory; such a round then runs L4 on
+its valid exact pairs as S3_Q_TARGETS_EXPLORATORY, with the contracts below
+the threshold in L4_coverage. No label or coverage changes.
 
 student.window_start 'carry' starts the L2-L5 windows from the causal
 market carry of the continuous path (market_carry/<contract>/, computed
@@ -84,7 +87,7 @@ DEFAULTS = dict(
                     holdout=0, demo_balance=1.0),
     iteration=dict(max_rounds=0, contracts=None, contracts_per_round=2, parallel_contracts=1,
                    cf_wait_forks=None, cf_workers=1, cf_max_steps=8192, cf_probe_steps=64, cf_budget=None,
-                   cf_min_coverage=None, value_updates=0,
+                   cf_min_coverage=None, cf_coverage='representative', value_updates=0,
                    prior_refresh_updates=0, cf_boost=16.0, save_every=0, holdout=0,
                    beta_q=1.0, kappa_q='auto', kappa_floor=None, state_check_windows=0,
                    state_check_seed_offset=0,
@@ -138,6 +141,8 @@ def load_config(path):
     raise ValueError(f'{path}: iteration.cf_probe_steps is in [1, 64]')
   if it['cf_min_coverage'] is not None and not 0 < it['cf_min_coverage'] <= 1:
     raise ValueError(f'{path}: iteration.cf_min_coverage is in (0, 1] or null')
+  if it['cf_coverage'] not in ('representative', 'exploratory'):
+    raise ValueError(f'{path}: iteration.cf_coverage is representative or exploratory')
   l6 = it['l6']
   try:
     check_order(l6['order'])
@@ -509,12 +514,16 @@ def iterate(cfg, lay, state, rounds, until=None):
     common = ['--run', learner, '--init-from', policy, '--save-every', it['save_every'],
               '--holdout', it['holdout'], *_windows(cfg, lay), *_student(cfg)]
     floor = it['cf_min_coverage']
-    thin = {c: m['coverage'] for c, m in rec['cf'].items()
-            if floor is not None and m['coverage'] is not None and m['coverage'] < floor}
+    low = {c: m['coverage'] for c, m in rec['cf'].items()
+           if floor is not None and m['coverage'] is not None and m['coverage'] < floor}
+    # An exploration config (iteration.cf_coverage: exploratory) still
+    # teaches the valid exact pairs of such a round and records it so.
+    thin = {} if it['cf_coverage'] == 'exploratory' else low
     rec['L4'] = 'L4_SKIPPED_CF_NOT_REPRESENTATIVE' if thin else (
-        'S3_Q_TARGETS' if it['value_updates'] else 'L4_SKIPPED_BY_CONFIG')
-    if thin:
-      rec['L4_coverage'] = dict(min_coverage=floor, below=thin)
+        ('S3_Q_TARGETS_EXPLORATORY' if low else 'S3_Q_TARGETS') if it['value_updates']
+        else 'L4_SKIPPED_BY_CONFIG')
+    if low:
+      rec['L4_coverage'] = dict(min_coverage=floor, below=low, cf_coverage=it['cf_coverage'])
     # L6 (S5): teaching items, the L2 review and remediation in L4 and L5;
     # without representative pairs the round takes no decision remediation
     # either (its errors come from the same CF).

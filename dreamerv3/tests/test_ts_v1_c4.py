@@ -679,6 +679,42 @@ def test_orchestrator_keeps_the_value_brain_when_the_cf_is_not_representative(
       'L4_SKIPPED_ANCHOR_KEPT')
   assert pi1['lineage']['value_kept_from'] == str(lay.policy(0))
 
+  # An explicit exploration config, in a new run that goes on from pi_0 of
+  # this one (its policy, exams and experience linked and only read): the
+  # same pairs below the threshold now teach L4, and the round says so.
+  before = files(lay.root)
+  blay = FT.Layout(tmp_path / 'branch')
+  links = [(blay.policy(0), lay.policy(0)), (blay.root / 'eval' / 'pi_0000', lay.root / 'eval' / 'pi_0000')]
+  links += [(blay.experience(blay.policy(0), kind, c), lay.experience(lay.policy(0), kind, c))
+            for kind in ('collect', 'cf') for c in CONTRACTS]
+  for link, target in links:
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(target)
+  data = yaml.safe_load(config.read_text())
+  data['paths']['run_root'] = 'branch'
+  data['iteration']['cf_coverage'] = 'exploratory'
+  explore = tmp_path / 'explore.yaml'
+  explore.write_text(yaml.safe_dump(data))
+  calls.clear()
+  start = len(argvs)
+  FT.main(['iterate', '--config', str(explore)])
+  assert calls[:3] == ['train-value', 'train-policy', 'freeze']
+  assert not {'collect', 'check', 'cf'} & set(calls)
+  branch = json.loads(blay.state.read_text())['rounds']['1']
+  assert branch['L4'] == 'S3_Q_TARGETS_EXPLORATORY' and branch['cf'] == rec['cf']
+  assert branch['L4_coverage'] == dict(rec['L4_coverage'], cf_coverage='exploratory')
+  freeze = next(a for a in argvs[start:] if a[0] == 'freeze')
+  assert '--value-anchor-of' not in freeze and [freeze[i + 1] for i, a in enumerate(freeze)
+                                                if a == '--cf'] == [
+      str(blay.experience(blay.policy(0), 'cf', c)) for c in CONTRACTS]
+  assert ts_run.progress(blay.learner(1))['L4'] == 1
+  assert 'value' in changed_groups(params(lay.policy(0)), params(blay.policy(1)))
+  assert files(lay.root) == before
+  data['iteration']['cf_coverage'] = 'yes'
+  explore.write_text(yaml.safe_dump(data))
+  with pytest.raises(ValueError, match='cf_coverage is representative or exploratory'):
+    FT.load_config(explore)
+
 
 def test_orchestrator_trains_l2_on_the_carry_of_an_l1_continued_by_hand(pik, two, stores,
                                                                         tmp_path, monkeypatch):
