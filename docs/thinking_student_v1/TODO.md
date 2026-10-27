@@ -567,4 +567,27 @@
   - 只改 outcome、fusion、value、decision；从 pi_0002 继承（35200 → 35216）；DEV FG409 完整；开发 run 和补算的源文件指纹前后相同。
 - [x] 磁盘：删除 FG201 补算中 707 个已结束分叉的快照（2.48 GB，`clean_supplement_snapshots.json`）；保留 639 个未续算探测的快照、参考重放、全部标签和 checkpoint。正式训练的估算见 `CF_ASTRA_INTEGRATION_20261027.md` 第 6 节。
 - [x] 文档：报告 `CF_ASTRA_INTEGRATION_20261027.md`；INTERFACE_SUMMARY、FORMAL_TRAINING_IMPLEMENTATION、配置 README。
-- [ ] 开发分支合并：开发 worktree 仍有未提交修改（已在归档提交中），待处理后 `git merge --ff-only integration/ts-v1-cf-astra-20261027`。
+- [x] 开发分支合并（2026-10-28，用户同意 `reset --hard`）：开发 worktree 的未提交修改（dreamer 两个文件，Claude 的流式分叉快照）与归档提交 `25c7a42` 逐文件相同，没有未跟踪文件。`reset --hard` 后两仓 `git merge --ff-only integration/ts-v1-cf-astra-20261027`，`feat/thinking-student-v1-20261022` 到 dreamer `f9f67c6`、gym `c359c29`。
+  - 流式修改不进主线：它减少的是 Claude `_cf_job` 在内存中同时保留的分叉状态；Astra 在参考重放时就把每个分叉写入 `work/<t>.pkl`，没有这个内存问题。
+
+## E-9：正式 L6 第 3–9 轮（π₂ → π₉，用户 2026-10-28）
+不再改 CF 算法，不再研究 FG201 剩余 682 条缺失标签；只在真实运行阻断时修复。
+- Run：`FORMAL_V1_CARRY_PI2_CF_EXPLORE_20261028`，配置 `formal_v1_carry_pi2_cf_explore.yaml`，代码 `feat/thinking-student-v1-20261022`。启动脚本 `explore_rounds.sh ROUNDS TAG` 在 run 目录中。
+- 结果表：`rounds_report.py` → `rounds_report.md`（同目录，只读）。每轮与开发 run 同轮、同合约对比：
+  - ADD/WAIT 行为；
+  - Outcome（实际结果的 NLL、后果错、TP 对 SL 的 AUC）；
+  - Q（ΔQ 与 CF ΔG 的符号一致率和 Spearman、平均遗憾、决策错）；
+  - L4 和 L2 复习的训练批次指标；
+  - DEV FG409。
+  - 开发 run 的教学题在 `S5_BASELINE_ITEMS_20261028/`，只作诊断。
+- [x] 第 3 轮：π₂ → π₃（2026-10-28 06:24–06:33，用补算后的 CF，不重新采集）。
+  - 记录：L4 = `S3_Q_TARGETS_EXPLORATORY`，`L4_coverage.below = {FG201: 0.5727}`，L6 = `S5_FEEDBACK_CURRICULUM`。
+  - 更新数：L2 复习 200、L4 500、L5 100；补课窗口 0/0。
+  - 价值锚：β_Q 1.0，κ_Q 0.6245，2340 对。
+- [x] 核对第 3 轮产出（`verify_round.py 3`，结果在 `verify/round_3.json`）：11/11 通过。
+  - learner：`learners/pi_0003/ckpt/000000036000`，由 35200 加 800 次更新得到，继承本 run 的 pi_0002。
+  - 冻结的 π₃：权重哈希 `76ddca40…`，与 π₂ 的 `2da8671c…`、π₃′ 的 `edca0f5a…`、开发 run π₃ 的 `59a44f93…` 都不同；lineage 记为 OFFLINE_TRAIN。
+  - 冻结时代码为合并后的干净版本。DEV FG409 考试完整（31034 分钟，Teacher-free），没有 TEST 考试。
+  - π₃′ 和 Astra 独立 L4 不算正式轮次。
+- [ ] 第 4–9 轮：每轮重新采集、计算 CF、生成教学题、L2 复习、L4、L5、冻结、DEV。
+- [ ] 各轮结果与对比，写入记录文档。
