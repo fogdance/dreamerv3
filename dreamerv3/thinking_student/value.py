@@ -183,7 +183,14 @@ class Stepper:
 
 
 def _cf_job(job):
-  """One CF worker: replay the reference, then branch at its forks."""
+  """One CF worker: replay the reference and branch at its forks.
+
+  A branch from fork t compares with the reference's records up to cursor
+  t + its step bound (max_steps, or probe_steps for a probe). It runs as
+  soon as the replay has recorded them, from the fork's saved state, so the
+  worker holds only the saved states of the forks still within that window
+  (each one is the whole Native account with its history, up to ~8 MB on
+  FG201), pickled."""
   os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
   from .run import Autonomous, corpus_env, load_policy
   began = time.time()
@@ -191,12 +198,33 @@ def _cf_job(job):
   env, branch_env = corpus_env(job['corpus']), corpus_env(job['corpus'])
   reference, recorded = build_reference(job['collection'], env, job['floor'])
   forks, probe, saved, own, memory = set(job['forks']), set(job['probe']), {}, {}, {}
+  reach = {t: t + (job['probe_steps'] if t in probe else job['max_steps']) for t in forks}
+  out, branch_seconds, saved_peak = [], 0., 0
+
+  def branch(t):
+    nonlocal branch_seconds
+    start, counter = time.time(), int(agent.n_actions)
+    run = Autonomous.restore(agent, branch_env, pickle.loads(saved.pop(t)))
+    stepper = Stepper(run)
+    first = 1 - int(reference.action[t - reference.start])
+    result = CF.run_branch(
+        stepper, reference, first, job['max_steps'],
+        witness=lambda c: (stepper.peek(), stepper.memory()) == (own[c], memory[c]),
+        probe=job['probe_steps'] if t in probe else None)
+    result.update(CF.pair(reference, result), trades=stepper.trades(), end_status=stepper.status)
+    out.append(result)
+    agent.n_actions.value = counter  # the replay's policy seeds go on from here
+    branch_seconds += time.time() - start
+    if job['log_every'] and len(out) % job['log_every'] == 0:
+      print(f'worker {job["index"]}: {len(out)}/{len(forks)} branches', flush=True)
+
   main = Autonomous(agent, env, 'policy')
   z_differs = 0
   while not main.done:
     t = int(env.current_step)
     if t in forks:
-      saved[t] = main.state()
+      saved[t] = pickle.dumps(main.state(), protocol=pickle.HIGHEST_PROTOCOL)
+      saved_peak = max(saved_peak, len(saved))
     if reference.flat[t - reference.start]:
       # What an EXACT coupling at t compares: the Native account and the
       # policy's own memory before its decision.
@@ -208,23 +236,16 @@ def _cf_job(job):
       raise RuntimeError(f'Worker {job["index"]}: the replay differs from the collection at cursor {t}')
     z_differs += row['z'] != rec['z']
     own[t] = (row['z'], row['executed'])
-  replay_seconds = time.time() - began
-  out = []
-  for t in sorted(forks):
-    run = Autonomous.restore(agent, branch_env, saved.pop(t))
-    stepper = Stepper(run)
-    first = 1 - int(reference.action[t - reference.start])
-    result = CF.run_branch(
-        stepper, reference, first, job['max_steps'],
-        witness=lambda c: (stepper.peek(), stepper.memory()) == (own[c], memory[c]),
-        probe=job['probe_steps'] if t in probe else None)
-    result.update(CF.pair(reference, result), trades=stepper.trades(), end_status=stepper.status)
-    out.append(result)
-    if job['log_every'] and len(out) % job['log_every'] == 0:
-      print(f'worker {job["index"]}: {len(out)}/{len(forks)} branches', flush=True)
+    for f in sorted(f for f in saved if reach[f] <= t):
+      branch(f)
+  for f in sorted(saved):
+    branch(f)
+  out.sort(key=lambda r: r['cursor'])
+  seconds = time.time() - began
   return dict(index=job['index'], results=out, replay_steps=len(own), z_differs=int(z_differs),
-              replay_seconds=round(replay_seconds, 1), seconds=round(time.time() - began, 1),
-              platform=agent.config.jax.platform, compute_dtype=agent.config.jax.compute_dtype)
+              replay_seconds=round(seconds - branch_seconds, 1), seconds=round(seconds, 1),
+              saved_peak=saved_peak, platform=agent.config.jax.platform,
+              compute_dtype=agent.config.jax.compute_dtype)
 
 
 def run_cf(policy, corpus, collection, out, forks=None, seed=0, workers=4,
@@ -300,7 +321,8 @@ def run_cf(policy, corpus, collection, out, forks=None, seed=0, workers=4,
       branch_steps=dict(total=int(sum(r['steps'] for r in results)),
                         max=int(max((r['steps'] for r in results), default=0))),
       replay=dict(steps=[p['replay_steps'] for p in parts], z_differs=[p['z_differs'] for p in parts],
-                  seconds=[p['replay_seconds'] for p in parts]),
+                  seconds=[p['replay_seconds'] for p in parts],
+                  saved_peak=[p['saved_peak'] for p in parts]),
       worker_seconds=[p['seconds'] for p in parts], seconds=round(time.time() - began, 1),
       inference=dict(platform=parts[0]['platform'], compute_dtype=parts[0]['compute_dtype'])
       if parts else None,

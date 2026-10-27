@@ -104,6 +104,21 @@ def test_cf_branches_of_the_frozen_student_are_exact(world, monkeypatch):
   # the replayed answers are the recorded ones.
   coupled = V._cf_job(job(world, forks))
   assert coupled['replay_steps'] == reference.n and coupled['z_differs'] == 0
+  # A branch runs as soon as the replay has recorded the cursors it may
+  # reach. With a cap of m steps they run during the replay (fewer saved
+  # states at once, the replay's own seeds untouched), and every fork that
+  # couples or ends within m steps has the result of the branch that ran
+  # after the whole replay.
+  m = int(np.median([r['steps'] for r in coupled['results']]))
+  streamed = V._cf_job(job(world, forks, max_steps=m))
+  assert streamed['z_differs'] == 0 and streamed['saved_peak'] < len(forks)
+  for r, s in zip(coupled['results'], streamed['results']):
+    if r['steps'] <= m:
+      assert s == r
+    else:
+      assert (s['reason'], s['steps'], s['g']) == ('CAP', m, None)
+  assert any(r['steps'] <= m and r['cursor'] + m < reference.start + reference.n - 1
+             for r in coupled['results'])
   # Without the FUNDS floor only EXACT couples (the Native account and the
   # student's own memory equal to the reference's, the witness checks both).
   exact = V._cf_job(job(world, forks, floor=np.inf))['results']
