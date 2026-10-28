@@ -70,7 +70,7 @@ iteration:
   # 9-12 min per contract, about 4 s of a worker per fork. Here about 3300
   # pairs on the same contracts, about 30 min per contract.
   cf_wait_forks: 1000
-  cf_workers: 3
+  cf_workers: 4             # 2 x (4 + 1 parent) processes, ~17 GB: free RAM is the bound
   # Every legal fork first gets a Native probe of cf_probe_steps; it ends
   # validly at an exact (EXACT_STATE) or funds-safe coupling or at the true
   # terminal. 48 of the unfinished probes per contract, a sample stratified by

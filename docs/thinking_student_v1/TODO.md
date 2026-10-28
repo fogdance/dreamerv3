@@ -589,8 +589,15 @@
   - 冻结的 π₃：权重哈希 `76ddca40…`，与 π₂ 的 `2da8671c…`、π₃′ 的 `edca0f5a…`、开发 run π₃ 的 `59a44f93…` 都不同；lineage 记为 OFFLINE_TRAIN。
   - 冻结时代码为合并后的干净版本。DEV FG409 考试完整（31034 分钟，Teacher-free），没有 TEST 考试。
   - π₃′ 和 Astra 独立 L4 不算正式轮次。
-- [ ] 第 4–9 轮：每轮重新采集、计算 CF、生成教学题、L2 复习、L4、L5、冻结、DEV。
+- [x] 第 4–9 轮：每轮重新采集、计算 CF、生成教学题、L2 复习、L4、L5、冻结、DEV。
+  - 2026-10-28 06:34–10:10，`explore_rounds.sh 6 explore_r4_r9`，退出码 0。
+  - 每轮 `verify_round.py` 都是 11/11 通过（`verify/round_4.json` … `round_9.json`）。π₉ 的 learner 是 `learners/pi_0009/ckpt/000000040800`。
+  - 各轮 L4 都是 `S3_Q_TARGETS_EXPLORATORY`，补课窗口都是 0/0。
 - [ ] 各轮结果与对比，写入记录文档。
+- [x] 用满主机（用户 2026-10-28）：
+  - 实测（10x π₀，FG205）：每个 CF worker 约 1.6 GB 内存、1.1 GB 显存；1、3、6 个并发分别为每秒 131、348、545 个决策。
+  - 瓶颈是空闲内存（约 18 GB），不是 CPU 或 GPU。
+  - 开发、主线和 10x 配置的 `cf_workers` 都从 3 改为 4：2 个合约 ×（4 个 worker + 1 个父进程），约 17 GB。
 - [x] 10x 配置加 `cf_coverage: exploratory`（用户 2026-10-28）：Astra CF 覆盖率低于 0.8 时，L4 照常学有效对，记为探索。
 - [ ] 主线第 9 轮完成后由我启动 10x（用户 2026-10-28）：
   - 第 1 轮跑到 CF 为止（`--until cf`）；
