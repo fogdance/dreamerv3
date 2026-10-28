@@ -1,0 +1,122 @@
+# Thinking Student V1 formal training on the graded teaching material with
+# ten times the steps of formal_v1_graded.yaml (user decision 2026-10-28), a
+# full retrain from F1 in a run of its own. Run it from a training worktree
+# pair (gym-trading-env + dreamerv3) of its own.
+#
+# Besides the step counts it differs from formal_v1_graded.yaml only in the
+# CF and L4 settings of formal_v1_l1_l2_10x_continue.yaml: cf_wait_forks
+# 1000, cf_budget 480 and value_updates 1500 by its round-1 pilot. The run
+# reads no weight of FORMAL_V1_L1_100K_L2_120K_CONTINUE_20261024.
+#
+# Speeds of that run alone on the GPU: 0.24 s per L1 update, 0.13 s per L2
+# and 0.11 s per L3 update, the 18 MarketCarry stores ~15 min. Foundation
+# here: L1 ~6.7 h, L2 ~4.3 h, L3 ~3.7 h, ~15 h in all; slower while another
+# run shares the GPU.
+#
+#   cd gym-trading-env && env PYTHONPATH=.:src:../dreamerv3 \
+#     /home/v/miniconda3/envs/dreamerv3/bin/python -m dreamerv3.thinking_student.formal_train \
+#     pretrain --config ../dreamerv3/configs/thinking_student/formal_v1_graded_10x.yaml
+#   ... formal_train iterate --config ../dreamerv3/configs/thinking_student/formal_v1_graded_10x.yaml --rounds 9
+
+paths:  # relative paths are relative to this file
+  markets: markets/pool.json
+  corpus_root: /data/logdir/fg_single3/thinking_student/corpus
+  run_root: /data/logdir/fg_single3/thinking_student/FORMAL_V1_GRADED_10X_20261028
+  # Market brain of the size50m E-observation formal run on the 18 TRAIN
+  # contracts (S3-V2 E_ONLY, 1M env steps): encoder (+ zero MACD rows), RSSM
+  # and market decoder are inherited; the Thinking Student heads start fresh.
+  init_f1: /data/logdir/fg_single3/s3_v2/E_ONLY_MARKET_MINUTE_FORMAL_1M_v1_20261016/ckpt/step_000001000000
+
+corpora:
+  contracts: discover   # every TRAIN corpus under corpus_root (18)
+  mix: uniform_contract
+
+dev:
+  contracts: [CZCE.FG409]
+
+student:
+  preset: size50m
+  device: cuda
+  seed: 20261024
+  batch_size: 16
+  batch_length: 64
+  log_every: 100
+  window_start: carry     # L2-L5; L1 trains the market brain on zero-carry windows
+  carry_parallel: 6       # market-carry processes, ~1 GB GPU and ~1.7 GB RAM each
+
+foundation:
+  market_updates: 100000  # L1
+  outcome_updates: 120000 # L2
+  policy_updates: 120000  # L3
+  save_every: 10000       # 388 MB per checkpoint
+  holdout: 0
+
+iteration:
+  max_rounds: 9             # one rotation through the 18 contracts, then rounds 7-9 with L6
+  contracts_per_round: 3    # rotates through the 18 contracts round by round
+  parallel_contracts: 3     # x cf_workers GPU processes, ~1.6 GB RAM and 1.1 GB GPU each
+  # Ten times the 100 of formal_v1_graded.yaml. Ten times the L4 updates on
+  # that much CF would only fit it closer; every real ADD of the policy is
+  # forked as before.
+  cf_wait_forks: 1000
+  cf_workers: 4             # 3 x 4 = 12 workers: GPU memory is the bound; RAM may use swap
+  # Every legal fork first gets a Native probe of cf_probe_steps; it ends
+  # validly at an exact (EXACT_STATE) or funds-safe coupling or at the true
+  # terminal. cf_budget of the unfinished probes per contract, a sample
+  # stratified by action, equity quartile and 60-minute volatility, continue
+  # from their saved state up to cf_max_steps; the others are
+  # UNAVAILABLE_BUDGET without a label (Astra CF fix, user decision 2026-10-27).
+  cf_probe_steps: 64
+  # Ten times the 48 of formal_v1_graded.yaml, as the WAIT forks (user
+  # 2026-10-28): with 48, round 1 of the earlier 10x run labelled 248 of the
+  # 1114 forks of FG005 (0.22).
+  cf_budget: 480
+  # L4 needs valid pairs for >= 80% of each contract's forks for a
+  # representative round; exploratory as the mainline: a round below 0.8
+  # learns on its valid exact pairs as S3_Q_TARGETS_EXPLORATORY with
+  # L4_coverage. No label or coverage changes.
+  cf_min_coverage: 0.8
+  cf_coverage: exploratory
+  # Not ten times the 500 of formal_v1_graded.yaml. The L4 pilot of the
+  # earlier 10x run on its round-1 CF (FORMAL_10X_L4_PILOT_20261028, 2005
+  # training and 252 held-out pairs) was best after 1500 updates: held-out
+  # pair loss 1.2475 (constant 1.5115), 1.2826 after 2000 and 1.35-1.46 from
+  # 2500 to 8000.
+  value_updates: 1500
+  prior_refresh_updates: 1000
+  save_every: 2500
+  holdout: 0
+  beta_q: 1.0             # 0 with Q_ANCHOR_NOT_READY when the round's CF holds < 2 valid pairs
+  kappa_q: auto
+  kappa_floor: 0.05       # replaces a zero or smaller std of real pairs, never missing pairs
+  state_check_windows: 0  # by hand on FG005: run.py state-check --window-start carry
+  state_check_seed_offset: 1000003
+  # L6 (S5) from round 7 on, as formal_v1_graded.yaml; ten times its L2
+  # review. OFFLINE_TRAIN only (TIME_ORDERED_NOT_SUPPORTED).
+  l6:
+    from_round: 7
+    order: OFFLINE_TRAIN
+    outcome_review_updates: 2000
+    # Correct set, on (user 2026-10-28): a quarter of every batch of the L2
+    # review and of L5 are windows around correct answers of pi_k, and in L4
+    # a correct decision row weighs 4x.
+    # Risk (E-7): fixed-share windows move the natural distribution, and the
+    # outcome correct answers are mostly TPs, so p_TP may rise. Compare the
+    # outcome metrics of round 7 with round 1 (same contracts) and lower
+    # correct_fraction if they worsen.
+    correct_fraction: 0.25
+    correct_boost: 4.0
+    outcome_correct_prob: 0.5
+    decision_correct_margin: 1.0
+    # Error set, off: remedial_fraction > 0 adds windows around the errors to
+    # the L2 review and L5 (with correct_fraction at most 1 in all), and
+    # remedial_boost other than 1 weighs the decision errors in L4.
+    remedial_fraction: 0
+    remedial_boost: 1.0
+    outcome_error_prob: 0.1       # must not exceed outcome_correct_prob
+    decision_error_margin: 1.0    # x kappa_Q of the round's CF
+
+evaluation:
+  random_seeds: 5
+  smoke_contracts: 2
+  smoke_steps: 6000

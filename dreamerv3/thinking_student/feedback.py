@@ -20,23 +20,29 @@ VERIFIED_CF_NATIVE         the same-state ADD/WAIT pair of a fork (cf/): Delta G
                            the returns q_real / q_cf only at the end;
                            NOT_COMPARABLE and UNAVAILABLE_BUDGET (a fork the
                            CF budget left unsimulated) abstain.
-HINDSIGHT_ORACLE_TEACHING  the strict TRAIN oracle's WAIT/ADD (corpus strict/)
-                           where it is valid and not tied; ready_at = the end,
-                           since it reads the whole TRAIN suffix.
+HINDSIGHT_GRADED_TEACHING  the graded teacher's WAIT/ADD (corpus graded/,
+                           gym ts_v1_grades) where it demonstrates one: ADD
+                           for a trade graded GOOD or better, WAIT for POOR;
+                           ready_at = its exit, or the end of the room window
+                           of a same-day TP.
 
 The end of a contract is its flat_end, the market cursor after its last
-decision. Errors (A6 L6, concept 8) come from valid feedback only:
-- outcome error: the answer gave the realized first ending within H (TP,
-  SL or another exit), or "open after H", a probability below
-  `outcome_error_prob`; a trade censored before H abstains;
-- decision error: the executed action's return falls below the other
-  action's by more than `decision_error_margin` x kappa_Q, the std of Delta G
-  pooled over the round's CF (value.cf_kappa, the statistic of the value
-  anchor). teachers_agree marks a pair whose better action the strict oracle
-  demonstrates; an equal pair (|Delta G| <= TIE) has no better action.
-Chance cannot be told apart item by item; only the bounded remediation
-share limits its weight (S5 B2). No market (F1) error is tagged: L6 never
-trains L1.
+decision. Errors and correct answers (A6 L6, concept 8; the correct set by
+user decision 2026-10-28) come from valid feedback only:
+- outcome error / correct: the answer gave the realized first ending within
+  H (TP, SL or another exit), or "open after H", a probability below
+  `outcome_error_prob` / at least `outcome_correct_prob`; a trade censored
+  before H abstains;
+- decision error / correct: the executed action's return falls below the
+  other action's by more than `decision_error_margin` x kappa_Q / exceeds
+  it by more than `decision_correct_margin` x kappa_Q, kappa_Q the std of
+  Delta G pooled over the round's CF (value.cf_kappa, the statistic of the
+  value anchor). teachers_agree marks a pair whose better action the graded
+  teacher demonstrates; an equal pair (|Delta G| <= TIE) has no better
+  action.
+Chance cannot be told apart item by item; only the bounded shares of the
+remedial and correct windows limit its weight (S5 B2). No market (F1) error
+is tagged: L6 never trains L1.
 
 Release (C3 5.3, 5.6): OFFLINE_TRAIN releases every valid feedback -- TRAIN
 teaching material, whose teachers may read the whole TRAIN suffix. ready_at
@@ -61,7 +67,7 @@ TIME_ORDERED = 'TIME_ORDERED'
 TIME_ORDERED_NOT_SUPPORTED = 'TIME_ORDERED_NOT_SUPPORTED'
 ORDERS = (OFFLINE_TRAIN, TIME_ORDERED)
 SOURCES = dict(fact='TEACHER_ADD_FACT', executed='STUDENT_EXECUTED_NATIVE',
-               cf='VERIFIED_CF_NATIVE', strict='HINDSIGHT_ORACLE_TEACHING')
+               cf='VERIFIED_CF_NATIVE', demo='HINDSIGHT_GRADED_TEACHING')
 # The realized first ending of a filled fact: an event within H, or open after H.
 REALIZED = (*L.EVENTS, 'OPEN_AT_H')
 ANSWER_P = ('p_tp_h', 'p_sl_h', 'p_other_h', 'p_open_h')
@@ -70,7 +76,12 @@ TIE = 1e-9  # |Delta G| of equal branches up to float rounding
 # 0.2 nearly every SL fact is an error (1011 of 1185), a class balance rather
 # than a mistake; below 0.1 398 of 18502 (SL, OPEN_AT_H and FG005 TP). kappa_Q
 # 0.559 over 614 pairs, 101 executed actions worse by more than kappa_Q.
-DEFAULTS = dict(outcome_error_prob=0.1, decision_error_margin=1.0)
+# Correct (user 2026-10-28): the realized ending at least as likely as not,
+# the executed action better by more than kappa_Q (pi_0005/pi_0008 of the
+# mainline: 68-96% of the known facts, 4-88 decisions per contract).
+DEFAULTS = dict(outcome_error_prob=0.1, decision_error_margin=1.0, outcome_correct_prob=0.5,
+                decision_correct_margin=1.0)
+FEEDBACK_SETS = ('remedial', 'correct')
 ITEMS, SUMMARY = 'items.npz', 'summary.json'
 
 
@@ -85,6 +96,20 @@ def check_order(order):
   return order
 
 
+def check_thresholds(outcome_error_prob, decision_error_margin, outcome_correct_prob,
+                     decision_correct_margin):
+  """Errors and correct answers never meet: an outcome error answers below
+  outcome_error_prob <= outcome_correct_prob, and a decision error and a
+  correct decision lie on either side of a tie (both margins >= 0, kappa_Q
+  >= 0)."""
+  if not 0 <= outcome_error_prob <= outcome_correct_prob <= 1:
+    raise ValueError('outcome_error_prob <= outcome_correct_prob in [0, 1] keep outcome errors and '
+                     f'correct answers apart, got {outcome_error_prob} and {outcome_correct_prob}')
+  if decision_error_margin < 0 or decision_correct_margin < 0:
+    raise ValueError('decision_error_margin and decision_correct_margin are at least 0, got '
+                     f'{decision_error_margin} and {decision_correct_margin}')
+
+
 def release(items, order=OFFLINE_TRAIN):
   """{source key: items whose feedback the teaching order releases}; under
   OFFLINE_TRAIN every valid one, whatever its ready_at."""
@@ -94,12 +119,24 @@ def release(items, order=OFFLINE_TRAIN):
 
 def errors(items, order=OFFLINE_TRAIN):
   """Cursors of the released errors: outcome errors (L2 review), decision
-  errors (L4) and the decision errors whose better action the strict
+  errors (L4) and the decision errors whose better action the graded
   teacher demonstrates (L5)."""
+  return _marked(items, order, 'error')
+
+
+def correct(items, order=OFFLINE_TRAIN):
+  """Cursors of the released correct answers, as `errors`: outcome answers
+  that gave the realized ending a probability of at least
+  outcome_correct_prob (L2 review), correct decisions (L4) and the correct
+  decisions whose action the graded teacher demonstrates (L5)."""
+  return _marked(items, order, 'correct')
+
+
+def _marked(items, order, mark):
   on, cursor = release(items, order), np.asarray(items['cursor'])
-  decision = on['cf'] & items['decision_error']
-  return dict(outcome=cursor[on['fact'] & items['outcome_error']], decision=cursor[decision],
-              demo=cursor[decision & on['strict'] & items['teachers_agree']])
+  decision = on['cf'] & items[f'decision_{mark}']
+  return dict(outcome=cursor[on['fact'] & items[f'outcome_{mark}']], decision=cursor[decision],
+              demo=cursor[decision & on['demo'] & items['teachers_agree']])
 
 
 def load(folder):
@@ -123,15 +160,18 @@ def summaries(folders):
   return out
 
 
-def remedial(folders, kind):
-  """{contract: cursors} of one error kind ('outcome', 'decision' or
-  'demo') over feedback folders of one frozen policy, each released by the
-  order it was built for."""
+def feedback_sets(folders, kind):
+  """{'remedial': {contract: error cursors}, 'correct': {contract: correct
+  cursors}} of one kind ('outcome', 'decision' or 'demo') over feedback
+  folders of one frozen policy, each released by the order it was built
+  for."""
   summaries(folders)
-  out = {}
+  out = {name: {} for name in FEEDBACK_SETS}
   for folder in folders:
     items, summary = load(folder)
-    out[summary['contract']] = errors(items, summary['teaching_order'])[kind]
+    order, contract = summary['teaching_order'], summary['contract']
+    out['remedial'][contract] = errors(items, order)[kind]
+    out['correct'][contract] = correct(items, order)[kind]
   return out
 
 
@@ -157,10 +197,12 @@ def _collection(folder):
 
 
 def build(collection, corpus, cf=None, kappa=None, outcome_error_prob=0.1,
-          decision_error_margin=1.0):
+          decision_error_margin=1.0, outcome_correct_prob=0.5, decision_correct_margin=1.0):
   """(items, summary): columns over the decision rows of the collection.
-  `kappa` is (kappa_Q, its source) or None, which tags no decision error
-  (DECISION_ERRORS_NOT_TAGGED)."""
+  `kappa` is (kappa_Q, its source) or None, which tags no decision error or
+  correct decision (DECISION_ERRORS_NOT_TAGGED)."""
+  check_thresholds(outcome_error_prob, decision_error_margin, outcome_correct_prob,
+                   decision_correct_margin)
   from gym_trading_env.research import ts_v1_corpus as C
   from .corpus import corpus_sources
   source = corpus_sources([corpus])[0]
@@ -171,7 +213,7 @@ def build(collection, corpus, cf=None, kappa=None, outcome_error_prob=0.1,
     raise ValueError(f'{collection} is no collection of {source["contract"]} '
                      'from its first market minute')
   facts = C.load_arrays(Path(corpus) / 'facts')
-  strict = C.load_arrays(Path(corpus) / 'strict')
+  graded = C.load_arrays(Path(corpus) / 'graded')
   items = dict(cursor=cursor, step=np.array([r['step'] for r in rows], np.int64),
                executed=np.array([r['executed'] for r in rows], np.int8),
                proposed=np.array([r['proposed'] for r in rows], np.int8),
@@ -187,25 +229,32 @@ def build(collection, corpus, cf=None, kappa=None, outcome_error_prob=0.1,
     raise ValueError(f'{source["contract"]}: ADD legal at {len(bad)} flat funded decisions '
                      f'without an eligible fact, first cursor {cursor[bad[0]]}')
   items['flat_funded_legal'] = ffl
-  items.update(fact_items(facts, C.KINDS, cursor, ffl, items, outcome_error_prob))
+  items.update(fact_items(facts, C.KINDS, cursor, ffl, items, outcome_error_prob,
+                          outcome_correct_prob))
   items.update(executed_items(rows, run['env']))
-  items.update(strict_items(strict, cursor, ffl, end))
+  items.update(demo_items(graded, cursor, ffl))
   cf_meta, pairs = None, []
   if cf is not None:
     cf_meta = json.loads((Path(cf) / 'meta.json').read_text())
     if Path(cf_meta['collection']).resolve() != Path(collection).resolve():
       raise ValueError(f'{cf} holds the CF of {cf_meta["collection"]}, not of {collection}')
     pairs = [json.loads(line) for line in (Path(cf) / 'pairs.jsonl').open()]
-  items.update(pair_items(pairs, items, end, kappa and kappa[0], decision_error_margin))
+  items.update(pair_items(pairs, items, end, kappa and kappa[0], decision_error_margin,
+                          decision_correct_margin))
   complete = bool(run['done'] and run['env']['terminated'] and cursor[-1] + 1 == end)
   summary = _summary(items, source, meta, collection, corpus, cf, cf_meta, kappa, complete,
-                     outcome_error_prob, decision_error_margin)
+                     dict(outcome_error_prob=outcome_error_prob,
+                          decision_error_margin=decision_error_margin,
+                          outcome_correct_prob=outcome_correct_prob,
+                          decision_correct_margin=decision_correct_margin))
   return items, summary
 
 
-def fact_items(facts, kinds, cursor, ffl, answers, threshold):
+def fact_items(facts, kinds, cursor, ffl, answers, threshold, correct_prob):
   """TEACHER_ADD_FACT of the flat funded legal decisions; `kinds` names the
-  facts' kind codes (gym ts_v1_corpus.KINDS)."""
+  facts' kind codes (gym ts_v1_corpus.KINDS). The realized ending's answer
+  probability below `threshold` is an error, at least `correct_prob`
+  correct."""
   filled = ffl & facts['filled'][cursor]
   kind = np.where(filled, facts['kind'][cursor], -1).astype(np.int8)
   held = np.where(filled, facts['held_minutes'][cursor], 0).astype(np.int32)
@@ -221,7 +270,8 @@ def fact_items(facts, kinds, cursor, ffl, answers, threshold):
       fact_exit_cursor=np.where(filled, facts['exit_cursor'][cursor], -1).astype(np.int32),
       fact_ready_at=np.where(filled, facts['observed_until'][cursor], -1).astype(np.int32),
       realized=realized, p_realized=p_realized.astype(np.float32),
-      outcome_error=known & (np.where(known, p_realized, 1.) < threshold))
+      outcome_error=known & (np.where(known, p_realized, 1.) < threshold),
+      outcome_correct=known & (np.where(known, p_realized, 0.) >= correct_prob))
 
 
 def executed_items(rows, env):
@@ -251,23 +301,26 @@ def executed_items(rows, env):
   return out
 
 
-def strict_items(strict, cursor, ffl, end):
-  """HINDSIGHT_ORACLE_TEACHING of the flat funded legal decisions."""
-  valid = ffl & strict['valid'][cursor] & ~strict['tie'][cursor]
-  return dict(strict_valid=valid,
-              strict_action=np.where(valid, strict['action'][cursor], -1).astype(np.int8),
-              strict_ready_at=np.where(valid, end, -1).astype(np.int32))
+def demo_items(graded, cursor, ffl):
+  """HINDSIGHT_GRADED_TEACHING of the flat funded legal decisions."""
+  valid = ffl & graded['valid'][cursor].astype(bool)
+  return dict(demo_valid=valid,
+              demo_action=np.where(valid, graded['action'][cursor], -1).astype(np.int8),
+              demo_grade=np.where(ffl, graded['grade'][cursor], -1).astype(np.int8),
+              demo_ready_at=np.where(valid, graded['ready_at'][cursor], -1).astype(np.int32))
 
 
-def pair_items(pairs, items, end, kappa, margin):
-  """VERIFIED_CF_NATIVE of the fork rows; decision errors need kappa."""
+def pair_items(pairs, items, end, kappa, margin, correct_margin):
+  """VERIFIED_CF_NATIVE of the fork rows; decision errors and correct
+  decisions need kappa."""
   n = len(items['cursor'])
   out = dict(cf_fork=np.zeros(n, bool), cf_valid=np.zeros(n, bool),
              cf_status=np.full(n, '', '<U24'), cf_reason=np.full(n, '', '<U24'),
              cf_g_add=np.full(n, np.nan), cf_g_wait=np.full(n, np.nan),
              cf_delta_g=np.full(n, np.nan), cf_regret=np.full(n, np.nan),
              cf_ready_at=np.full(n, -1, np.int32), cf_return_ready_at=np.full(n, -1, np.int32),
-             teachers_agree=np.zeros(n, bool), decision_error=np.zeros(n, bool))
+             teachers_agree=np.zeros(n, bool), decision_error=np.zeros(n, bool),
+             decision_correct=np.zeros(n, bool))
   for p in pairs:
     i = p['cursor']
     if items['executed'][i] != p['reference_action']:
@@ -284,24 +337,29 @@ def pair_items(pairs, items, end, kappa, margin):
     out['cf_regret'][i] = dg if p['reference_action'] == 0 else -dg
     out['cf_ready_at'][i] = end if p['coupled_at'] is None else p['coupled_at']
     out['cf_return_ready_at'][i] = end
-    out['teachers_agree'][i] = abs(dg) > TIE and bool(items['strict_valid'][i]) and (
-        items['strict_action'][i] == int(dg > 0))
+    out['teachers_agree'][i] = abs(dg) > TIE and bool(items['demo_valid'][i]) and (
+        items['demo_action'][i] == int(dg > 0))
   if kappa is not None:
-    out['decision_error'] = out['cf_valid'] & (np.where(
-        out['cf_valid'], out['cf_regret'], 0.) > margin * kappa)
+    regret = np.where(out['cf_valid'], out['cf_regret'], 0.)
+    out['decision_error'] = out['cf_valid'] & (regret > margin * kappa)
+    out['decision_correct'] = out['cf_valid'] & (regret < -correct_margin * kappa)
   return out
 
 
-def _summary(items, source, meta, collection, corpus, cf, cf_meta, kappa, complete,
-             outcome_error_prob, decision_error_margin):
+def _summary(items, source, meta, collection, corpus, cf, cf_meta, kappa, complete, thresholds):
   def count(name):
     valid = items[f'{name}_valid']
     return dict(source=SOURCES[name], items=int(valid.sum()),
                 cursors=len(np.unique(items['cursor'][valid])))
 
-  e = errors(items)
-  by = {name: int((items['outcome_error'] & (items['realized'] == k)).sum())
-        for k, name in enumerate(REALIZED)}
+  def marked(found, mark):
+    by = {name: int((items[f'outcome_{mark}'] & (items['realized'] == k)).sum())
+          for k, name in enumerate(REALIZED)}
+    executed = {name: int((items[f'decision_{mark}'] & (items['executed'] == a)).sum())
+                for a, name in enumerate(('wait', 'add'))}
+    return dict(outcome=len(found['outcome']), decision=len(found['decision']),
+                demo=len(found['demo']), outcome_by_realized=by, decision_by_executed=executed)
+
   return dict(
       contract=source['contract'], fold=source['fold'], policy=meta['policy'],
       collection=str(Path(collection).resolve()), corpus=str(Path(corpus).resolve()),
@@ -321,14 +379,11 @@ def _summary(items, source, meta, collection, corpus, cf, cf_meta, kappa, comple
                    if items['cf_fork'].any() else None),
       realized={name: int((items['realized'] == k).sum()) for k, name in enumerate(REALIZED)},
       teachers_agree=int(items['teachers_agree'].sum()),
-      thresholds=dict(outcome_error_prob=outcome_error_prob,
-                      decision_error_margin=decision_error_margin,
-                      kappa_q=kappa and kappa[0], kappa_source=kappa and kappa[1],
+      demo_grades={name: int((items['demo_grade'] == k).sum())
+                   for k, name in enumerate(('POOR', 'FAIR', 'GOOD', 'EXCELLENT'))},
+      thresholds=dict(thresholds, kappa_q=kappa and kappa[0], kappa_source=kappa and kappa[1],
                       decision_errors='TAGGED' if kappa else 'DECISION_ERRORS_NOT_TAGGED'),
-      errors=dict(outcome=len(e['outcome']), decision=len(e['decision']), demo=len(e['demo']),
-                  outcome_by_realized=by, decision_by_executed=dict(
-                      wait=int((items['decision_error'] & (items['executed'] == 0)).sum()),
-                      add=int((items['decision_error'] & (items['executed'] == 1)).sum()))),
+      errors=marked(errors(items), 'error'), correct=marked(correct(items), 'correct'),
       created=time.strftime('%Y-%m-%d %H:%M:%S'))
 
 
@@ -363,6 +418,10 @@ def main(argv=None):
   parser.add_argument('--outcome-error-prob', type=float, default=DEFAULTS['outcome_error_prob'])
   parser.add_argument('--decision-error-margin', type=float,
                       default=DEFAULTS['decision_error_margin'])
+  parser.add_argument('--outcome-correct-prob', type=float,
+                      default=DEFAULTS['outcome_correct_prob'])
+  parser.add_argument('--decision-correct-margin', type=float,
+                      default=DEFAULTS['decision_correct_margin'])
   args = parser.parse_args(argv)
   check_order(args.order)
   kappa, folders = None, args.kappa_cf or ([args.cf] if args.cf else [])
@@ -373,9 +432,11 @@ def main(argv=None):
     except ValueError as e:
       print(f'DECISION_ERRORS_NOT_TAGGED: {e}')
   items, summary = build(args.collection, args.corpus, args.cf, kappa,
-                         args.outcome_error_prob, args.decision_error_margin)
+                         args.outcome_error_prob, args.decision_error_margin,
+                         args.outcome_correct_prob, args.decision_correct_margin)
   write(args.out, items, summary)
-  print(json.dumps({k: summary[k] for k in ('contract', 'policy', 'sources', 'errors')}, indent=1))
+  print(json.dumps({k: summary[k] for k in ('contract', 'policy', 'sources', 'errors', 'correct')},
+                   indent=1))
 
 
 if __name__ == '__main__':

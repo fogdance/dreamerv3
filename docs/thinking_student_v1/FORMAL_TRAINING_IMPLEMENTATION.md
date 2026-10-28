@@ -10,6 +10,8 @@
 - 在独立的 DEV 合约上做 Teacher-free 考试；
 - 任一步被打断后，都能从磁盘接着跑。
 
+2026-10-28 起教材和学生是新结构（见下文“分档教学与完全重训”）：L3/L5 的示范来自分档入场老师，Outcome 多了 MFE 头，L6 默认用正确集。旧结构的 run 和 checkpoint 只作记录，不能在新代码上续跑。
+
 S5 的 L6 见下文“L6：离线教学循环”：
 - 只实现 OFFLINE_TRAIN；TIME_ORDERED 明确不支持（`TIME_ORDERED_NOT_SUPPORTED`）。
 - 2026-10-24 S5 之前的轮次在 `run_state.json` 中记 `L6_NOT_IMPLEMENTED`；现在没开 L6 的轮记 `L6_SKIPPED_BY_CONFIG`。
@@ -21,24 +23,29 @@ S5 的 L6 见下文“L6：离线教学循环”：
 | 命令 | 作用 |
 | --- | --- |
 | `python -m dreamerv3.thinking_student.formal_train pretrain --config F` | 用所选 TRAIN 合约的窗口依次训练 L1→L2→L3（`foundation/`），冻结为 `pi_0000`，然后考 DEV，再在两个合约上做 TRAIN 冒烟 |
-| `… formal_train iterate --config F [--rounds N]` | 有上限的改进轮，每轮从最新的冻结 π_k 出发，依次是：<br>• 本轮合约各自正式采集到真终止；<br>• check；<br>• CF；<br>• 从 `iteration.l6.from_round` 起：π_k 的教学题，以及带后果错补课的 L2 复习；<br>• RSSM 短窗诊断（`state_check_windows` > 0 时；正式配置为 0）；<br>• L4（只用 π_k 的 CF；L6 时决策错行加权；CF 没有代表性时跳过）；<br>• L5 先验刷新（L6 时带示范错补课）；<br>• 冻结 π_{k+1}（带 β_Q、合并 κ_Q；有效成对样本少于 2 个时 β_Q = 0，记 `Q_ANCHOR_NOT_READY`）；<br>• 考 DEV |
+| `… formal_train iterate --config F [--rounds N]` | 有上限的改进轮，每轮从最新的冻结 π_k 出发，依次是：<br>• 本轮合约各自正式采集到真终止；<br>• check；<br>• CF；<br>• 从 `iteration.l6.from_round` 起：π_k 的教学题，以及 L2 复习（正确集窗口；错题集可选）；<br>• RSSM 短窗诊断（`state_check_windows` > 0 时；正式配置为 0）；<br>• L4（只用 π_k 的 CF；L6 时决策对的行加权，打开错题集时决策错的行也加权；CF 没有代表性时跳过）；<br>• L5 先验刷新（L6 时带示范对的窗口；错题集可选）；<br>• 冻结 π_{k+1}（带 β_Q、合并 κ_Q；有效成对样本少于 2 个时 β_Q = 0，记 `Q_ANCHOR_NOT_READY`）；<br>• 考 DEV |
 | `… formal_train evaluate --config F --policy pi_000k [--train-smoke]` | 对一个冻结策略做 Teacher-free 考试 |
 | `… formal_train run --config F [--rounds N]` | 先 pretrain，再 iterate |
 | `… formal_train status --config F` | 从磁盘读出进度，不写任何文件 |
 | `python -m dreamerv3.thinking_student.exam …` | 单次考试：DEV 用 `--pool P --contract C`；TRAIN 冒烟用 `--corpus D [--steps N]` |
 | `python -m dreamerv3.thinking_student.run <命令>` | 原有阶段 CLI，本次新增：<br>• `--corpus`、`--cf` 可以重复给出；<br>• `--mix`、`--save-every`；<br>• `state-check` 命令 |
-| gym `python -m gym_trading_env.research.ts_v1_corpus --contract C --pool P --out D` | 生成一个 TRAIN 合约的教材（`--pool` 必须给出） |
+| gym `python -m gym_trading_env.research.ts_v1_corpus --contract C --pool P --grades G --out D` | 生成一个 TRAIN 合约的教材（`--pool`、`--grades` 必须给出），含 `graded/` |
+| gym `python -m gym_trading_env.research.ts_v1_grades --grades G --corpus D \| --corpus-root R [--replace]` | 给已有教材写 `graded/`（分档老师）；换阈值时用 `--replace` 重写 |
 
 ## 配置（只在 `dreamerv3/configs/thinking_student/`）
 
 | 文件 | 内容 |
 | --- | --- |
 | `student.yaml` | 学生设置（各头、burn-in、μ 的 ε、loss 权重），以及 CPU 测试用的 `small` 预设 |
-| `formal_v1.yaml` | 18 合约正式训练：路径、合约、预算、轮次、CF、价值锚点、考试 |
-| `c4_smoke_2c.yaml` | 同一流程，只用 FG005 + FG405，预算很小 |
+| `entry_grades.yaml` | 分档入场老师的阈值：止盈时间、回撤、空间，以及止盈后的空间窗口（2026-10-28） |
+| `formal_v1_graded.yaml` | 新结构的 1x 开发 run：从 F1 重训 L1 10k / L2 12k / L3 12k，L2–L5 carry 开窗，9 轮，第 7–9 轮 L6（正确集开、错题集关），`cf_coverage: exploratory` |
+| `formal_v1_graded_10x.yaml` | 同上，步数 10 倍（L1 100k / L2 120k / L3 120k）；CF 和 L4 设置同旧 10x（WAIT 分叉 1000、续算配额 480、L4 1500） |
+| `formal_v1.yaml` | 18 合约正式训练：路径、合约、预算、轮次、CF、价值锚点、考试（旧结构） |
+| `c4_smoke_2c.yaml` | 同一流程，只用 FG005 + FG405，预算很小（旧结构） |
 | `markets/pool.json` | 18 个 TRAIN 行和 1 个 VALIDATION 行（FG409 = DEV）。TEST 封存，不在表中 |
 | `markets/envs/`、`markets/contracts/`、`markets/strategy_quality_tp_v1.yaml` | 每个合约的 Native env、合约条款，以及带 Quality TP Reward 的 Single3 策略 master |
 
+- **旧结构的配置**（`formal_v1.yaml`、`formal_v1_carry*.yaml`、`formal_v1_l1_l2_10x_continue.yaml`、`c4_smoke_2c.yaml`）：严格示范、40 维 evidence 时期的运行记录，不改。它们的 run 目录里是旧结构的 checkpoint，新代码不能续跑。
 - **网络大小：** 正式配置用 `size50m`。
   - 市场脑从 `paths.init_f1` 继承，即 S3-V2 `E_ONLY_MARKET_MINUTE_FORMAL_1M` 的 step 1M：size50m、E 观测、在这 18 个 TRAIN 合约上训练过。
   - 继承范围：Encoder、RSSM、市场 Decoder。
@@ -345,30 +352,64 @@ S5 的 L6 见下文“L6：离线教学循环”：
 计划：`PLAN_S5_20261024.md`；逐项证据：`TODO.md` 的 S5 节。
 
 - **开关：** 配置块 `iteration.l6`，默认关闭。
-  - 字段：`from_round`、`order`、`outcome_review_updates`、`remedial_fraction`、`remedial_boost`、`outcome_error_prob`、`decision_error_margin`。
+  - 字段：`from_round`、`order`、`outcome_review_updates`；正确集 `correct_fraction`（默认 0.25）、`correct_boost`（4.0）、`outcome_correct_prob`（0.5）、`decision_correct_margin`（1.0）；错题集 `remedial_fraction`（0）、`remedial_boost`（1.0）、`outcome_error_prob`（0.1）、`decision_error_margin`（1.0）。
+  - `load_config` 检查：两个比例在 [0, 1] 且和不超过 1，两个倍数为正，`outcome_error_prob ≤ outcome_correct_prob`，两个 margin 不小于 0（错与对不重叠）。
   - `order` 只接受 `OFFLINE_TRAIN`；写 `TIME_ORDERED` 时 `load_config` 报 `TIME_ORDERED_NOT_SUPPORTED` 并拒绝。
 - **开启 L6 的一轮：**
   1. collect → check → CF；
   2. `feedback`：每个合约在 `experience/π_k/feedback/<合约>/` 写 `items.npz` 和 `summary.json`。每次都按当前 CF 和同轮合并 κ_Q 重写（秒级），已有的 `summary.json` 不作为跳过的依据，所以补算的 CF 会进入教学；
-  3. L2 复习（`train-outcome --feedback`，后果错补课），只动 outcome，`l2_fusion` 为真时含 fusion；
-  4. L4（决策错行 ×`remedial_boost`）；
-  5. L5（示范错补课）；
+  3. L2 复习（`train-outcome --feedback`；每批 `correct_fraction` 的窗口含后果对的行，打开错题集时另有 `remedial_fraction` 含后果错的行），只动 outcome，`l2_fusion` 为真时含 fusion；
+  4. L4（决策对的行 ×`correct_boost`；打开错题集时决策错的行 ×`remedial_boost`）；
+  5. L5（示范对的窗口；错题集可选）；
+  - 关闭的集合不向 run.py 传游标（比例为 0 或倍数为 1）。
   6. freeze：lineage 记 feedback 目录、`teaching_order: OFFLINE_TRAIN`、`time_ordered: TIME_ORDERED_NOT_SUPPORTED`；
   7. 考 DEV。
 - **CF 没有代表性的轮次：**
   - 跳过 L4；
-  - L5 不接这份 CF 产生的补课（`decision_remediation: SKIPPED_CF_NOT_REPRESENTATIVE`）；
+  - L5 不接这份 CF 产生的正确集和错题集（`decision_feedback: SKIPPED_CF_NOT_REPRESENTATIVE`）；
   - L2 复习只用事实，照常进行。
 - **不训练 L1：** L6 不训 L1，所以 MarketCarry 存储仍是部署时的市场记忆。
-- **记录：** `run_state.json` 每轮记 `L6: S5_FEEDBACK_CURRICULUM` 或 `L6_SKIPPED_BY_CONFIG`，以及各合约的反馈摘要、错题数、L2 复习次数和补课曝光（补课窗口、错题行、唯一行与重复曝光）。
+- **记录：** `run_state.json` 每轮记 `L6: S5_FEEDBACK_CURRICULUM` 或 `L6_SKIPPED_BY_CONFIG`，以及各合约的反馈摘要、错题数和正确题数、8 个 `l6` 设置、L2 复习次数和各集合的曝光（`feedback_windows`：窗口、行、见过的行、占比）。
 - **结论的边界：** 这是离线 TRAIN 教学：教师可以使用 TRAIN 的完整后缀。ready_at 逐条保存，但不参与放行，所以结果不是严格时间顺序的在线学习。
 - **开发 run 实跑（2026-10-25，`S5_RECORD_20261024.md`）：**
   - 第 7–9 轮跑通；第 9 轮 FG201 的 CF 覆盖率 0.169，按规则跳过 L4 和决策错补课。
   - DEV 没有看出改进，`best_dev` 仍是 `pi_0001`。
   - 诊断发现固定比例补课有副作用：后果错补课让后果脑在自然分布上校准变差；错题很少时，同几道题会被反复补课。
 - **E-7 方案 A（用户 2026-10-28）：** 三份正式配置都设 `l6.remedial_fraction: 0`，L2 复习和 L5 只用自然窗口。教学题、L2 自然复习和 L4 决策错加权（`remedial_boost: 4.0`）保留。补课代码不变。
+- **正确集（用户 2026-10-28：默认用正确集，错题集可选）：** 新结构的默认值和两份 graded 配置都是正确集开、错题集关。
+  - 风险（E-7）：固定比例的窗口会改变自然分布；后果对的题几乎都是 TP（主线 `pi_0008` FG205：662 道后果对中 661 道是 TP5），p_TP 可能被抬高。看第 7 轮（与第 1 轮同合约）的后果指标，变差时调小 `correct_fraction`。
+
+## 分档教学与完全重训（2026-10-28）
+
+计划：`/home/v/.claude/plans/thinkstudent-s3-next-worktree-temporal-fountain.md`；逐项证据：`TODO.md` 的 G 节；核对数据：`/data/logdir/fg_single3/thinking_student/GRADED_TEACHER_20261028/`。
+
+- **分档入场老师**（gym `ts_v1_grades.py`，教材 `graded/`，阈值 `entry_grades.yaml`）：
+  - 对每个空仓有资金的 cursor，给“现在 ADD、然后持有”的 Native 交易评档，总档取三个维度中最差的一档：
+    - 止盈时间（市场分钟，同一官方交易日内）：EXCELLENT ≤15，GOOD ≤120，FAIR 当日更晚；跨日 TP 为 POOR；
+    - 回撤 `mae_full`（可执行报价，含双边点差，FG 2 点）：≤3 / ≤5 / ≤10 / >10；
+    - 空间：成交后到止盈后 60 个市场分钟（截到交易日结束）之间、TP 可成交报价上的最大有利空间：≥10 / ≥7.5 / ≥6 / <6。
+  - SL30 和其他出场为 POOR。RIGHT_CENSORED、未成交、空间窗口被数据截断的日内 TP 不给档。
+  - GOOD 及以上示范 ADD，POOR 示范 WAIT，FAIR 不标。这是 L3 和 L5 唯一的示范来源；`strict/` 只做 P4 计划。
+  - 同分钟止盈：`env.step` 可在成交分钟按收盘价止盈（该分钟成交量 ≥ 6 手），分档和 MFE 都计入这一报价。没有这一条时，FG001 cursor 7244 的止盈分钟对不上。
+- **真实数据核对（18 个 TRAIN 合约，CPU）：**
+  - 补写 `graded/`：17 个合约 17 个 worker 用 50 s（FG001 单独 24 s）。只写 `graded/`，`source.json` 不动，旧 run 读到的教材不变。
+  - 每笔 TP5 的止盈分钟都与 facts 一致；`mfe_h ≥ 5 + tick` 当且仅当 h 分钟内日内止盈，全部成立；日内 TP 的空间都 ≥ 6；抽样 1,152 个成交与 `CandidateIndex.candidate(t)` 的价格和方向一致。
+  - 成交 484,249 笔：EXCELLENT 30,106、GOOD 74,263、FAIR 99,875、POOR 279,389、不给档 616。示范 ADD 104,369（strict 24,926），WAIT 279,389（strict 423,749），不标 100,491。strict 的 ADD 中 77.7% 仍是 ADD，2.4% 变为 WAIT。
+  - FG001 2019-08-12：strict ADD 11 个，graded ADD 105 个、WAIT 10 个；11:26 的 strict ADD 之后，11:27–11:29 原来是 strict WAIT，现在是 ADD。
+- **Outcome MFE 头：** 目标 `mfe_15/60/120`（点，尺度 30）。成交分钟计入；窗口不因出场截断，只截到交易日结束，窗口不完整的行不计损失。平方误差，`loss_scales.outcome_mfe: 1.0`。evidence 从 40 维变为 43 维，答卷增加 `answer/mfe_15|60|120`。
+- **正确集：** 见上文 L6 一节。主线 `pi_0008` FG205 用新代码重建的教学题：
+  - 示范 655 道（strict 时 713 道）；
+  - 错题：后果 6（全是 SL30）、决策 75（都是执行 ADD）、示范 58；
+  - 正确题：后果 662（TP5 661）、决策 88（ADD 83、WAIT 5）、示范 57。
+- **不兼容旧结构：**
+  - r2r3 迁移、`--migrate` 和对应测试已删除，没有 strict 示范的选项。
+  - 旧 run 不能在新代码上续跑（参数形状变了）。`--init-from` 只复制形状相同的参数，形状变化的（读 evidence 的输入层）和新增的（`outcome/mfe`）保持新初始化并逐项列出。两份 graded 配置都从 F1（`paths.init_f1`）重训。
+- **配置与时间：** `formal_v1_graded.yaml`（1x）与 `formal_v1_graded_10x.yaml`。按旧 10x 独占 GPU 时的速度（L1 0.24 s、L2 0.13 s、L3 0.11 s 每次，18 份 MarketCarry 约 15 min），foundation 1x 约 1.7 h、10x 约 15 h；与别的 run 共用 GPU 时更慢。
+- **在独立的训练 worktree 运行**（用户 2026-10-28）：开发 worktree 继续改代码，训练用一对固定在提交上的 gym + dreamerv3 worktree；旧 10x 不动。
 
 ## 可恢复的 Checkpoint 与策略
+
+下表都是旧结构（2026-10-28 之前）的资产，新代码不能续跑其中的 checkpoint。
 
 | 位置 | 内容 |
 | --- | --- |

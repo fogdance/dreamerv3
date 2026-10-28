@@ -13,8 +13,8 @@ import embodied.jax
 import embodied.jax.nets as nn
 import optax
 
-from .labels import (MAE_HORIZONS, NBINS, OPEN_AT_H, OUTCOME_BINS,
-                     OUTCOME_CLASSES, RISK_FLAGS)
+from .labels import (MAE_HORIZONS, MFE_HORIZONS, NBINS, OPEN_AT_H,
+                     OUTCOME_BINS, OUTCOME_CLASSES, RISK_FLAGS)
 
 sg = jax.lax.stop_gradient
 f32 = jnp.float32
@@ -56,9 +56,10 @@ class SharedFusion(nj.Module):
 
 class OutcomeBrain(nj.Module):
   """First ending of the trade "ADD now, then hold" -- TP, SL or another
-  forced exit in a market-minute bin, or still open at H -- plus path risk
-  and quality. Every answer is conditional on the horizon H; evidence holds
-  only supervised answers (34 classes, 2 risks, 3 MAEs, quality)."""
+  forced exit in a market-minute bin, or still open at H -- plus path risk,
+  favourable room (MFE) and quality. Every answer is conditional on the
+  horizon H; evidence holds only supervised answers (34 classes, 2 risks,
+  3 MAEs, 3 MFEs, quality: 43)."""
 
   units: int = 256
   layers: int = 2
@@ -71,15 +72,16 @@ class OutcomeBrain(nj.Module):
     event_logits = f32(self.sub('event', nn.Linear, OUTCOME_CLASSES)(h))
     risk_logits = f32(self.sub('risk', nn.Linear, len(RISK_FLAGS))(h))
     mae = f32(self.sub('mae', nn.Linear, len(MAE_HORIZONS))(h))
+    mfe = f32(self.sub('mfe', nn.Linear, len(MFE_HORIZONS))(h))
     quality = f32(self.sub('quality', nn.Linear, 1)(h))[..., 0]
     probs = jax.nn.softmax(event_logits, -1)
     valid = f32(legal)
     evidence = jnp.concatenate([
-        probs, jax.nn.sigmoid(risk_logits), mae, quality[..., None]], -1)
+        probs, jax.nn.sigmoid(risk_logits), mae, mfe, quality[..., None]], -1)
     evidence = evidence * valid[..., None]
     event = lambda e: probs[..., e * NBINS:(e + 1) * NBINS].sum(-1) * valid
     return dict(
-        event_logits=event_logits, risk_logits=risk_logits, mae=mae,
+        event_logits=event_logits, risk_logits=risk_logits, mae=mae, mfe=mfe,
         quality=quality, valid=valid, evidence=evidence,
         p_tp_h=event(0), p_sl_h=event(1), p_other_h=event(2),
         p_open_h=probs[..., OPEN_AT_H] * valid,
@@ -107,11 +109,13 @@ def outcome_loss(out, data, weight):
   risk = optax.sigmoid_binary_cross_entropy(
       out['risk_logits'], data['outcome_risk'])
   mae_mask = data['outcome_mae_valid'] * valid[..., None]
+  mfe_mask = data['outcome_mfe_valid'] * valid[..., None]
   quality_mask = data['outcome_quality_valid'] * valid
   losses = {
       'outcome_event': masked_mean(nll, valid),
       'outcome_risk': masked_mean(risk, risk_mask),
       'outcome_mae': masked_mean(jnp.square(out['mae'] - data['outcome_mae']), mae_mask),
+      'outcome_mfe': masked_mean(jnp.square(out['mfe'] - data['outcome_mfe']), mfe_mask),
       'outcome_quality': masked_mean(
           jnp.square(out['quality'] - data['outcome_quality']), quality_mask),
   }
@@ -134,6 +138,7 @@ def outcome_loss(out, data, weight):
       'outcome/p_tp_on_sl': masked_mean(out['p_tp_h'], sl),
       # Denominators of the masked means, so evaluations can pool batches.
       'outcome/n_risk': risk_mask.sum(), 'outcome/n_mae': mae_mask.sum(),
+      'outcome/n_mfe': mfe_mask.sum(),
       'outcome/n_quality': quality_mask.sum(), 'outcome/n_tp': tp.sum(),
       'outcome/n_sl': sl.sum(),
   }
@@ -169,8 +174,9 @@ class DecisionBrain(nj.Module):
   demonstrations (L_policy_demo and L_reason, S4) teach these projections
   to use it; nothing trains them on Q or Delta G itself. Q changes the
   action through the explicit anchor beta_Q * clip(dQ / kappa_Q).
-  reason_pref is the Reasoning path's answer to "the strict oracle prefers
-  ADD" (L_reason), a teaching diagnostic that is never part of z.
+  reason_pref is the Reasoning path's answer to "the graded teacher
+  demonstrates ADD" (L_reason), a teaching diagnostic that is never part of
+  z.
   """
 
   units: int = 256

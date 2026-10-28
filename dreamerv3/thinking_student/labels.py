@@ -6,9 +6,13 @@ TP5, SL30 or another forced exit (OTHER_EXIT: main roll, contract expiry,
 margin call) -- in a market-minute bin, or the trade is still open after the
 last edge H (OPEN_AT_H: "not ended within H", never "will not reach TP").
 A trade the data boundary cut before it ended (RIGHT_CENSORED) only tells us
-that it had not ended by that age. Demonstration labels are the strict L2
-oracle's action where the teacher is valid and not tied (L_policy_demo).
-Labels are TRAIN teaching data only and never enter the policy input.
+that it had not ended by that age. The MFE targets are the largest
+executable favourable move within 15 / 60 / 120 market minutes of the fill,
+whatever the exit, within the official trading day (gym ts_v1_grades).
+Demonstration labels are the graded teacher's: ADD where it grades the trade
+GOOD or better, WAIT where it grades it POOR, nothing for FAIR or no grade
+(L_policy_demo). Labels are TRAIN teaching data only and never enter the
+policy input.
 """
 import numpy as np
 
@@ -26,6 +30,8 @@ MAE_HORIZONS = ('mae_15', 'mae_60', 'mae_full')
 MAE_COMPLETE = {'mae_15': 'mae_15_complete', 'mae_60': 'mae_60_complete',
                 'mae_full': 'path_complete'}
 MAE_SCALE = 30.0  # points, the native SL distance
+MFE_HORIZONS = ('mfe_15', 'mfe_60', 'mfe_120')
+MFE_SCALE = MAE_SCALE
 
 LABEL_SPACE = {
     'outcome_valid': (),
@@ -34,6 +40,8 @@ LABEL_SPACE = {
     'outcome_risk_valid': (len(RISK_FLAGS),),
     'outcome_mae': (len(MAE_HORIZONS),),
     'outcome_mae_valid': (len(MAE_HORIZONS),),
+    'outcome_mfe': (len(MFE_HORIZONS),),
+    'outcome_mfe_valid': (len(MFE_HORIZONS),),
     'outcome_quality': (),
     'outcome_quality_valid': (),
 }
@@ -81,10 +89,11 @@ def empty_labels(batch_shape=()):
   return _zeros({**LABEL_SPACE, **DEMO_SPACE, **Q_SPACE}, batch_shape)
 
 
-def outcome_labels(facts, kinds):
+def outcome_labels(facts, kinds, graded):
   """Outcome labels of every cursor of a corpus facts table whose `kind`
-  codes index `kinds` (gym ts_v1_corpus.KINDS). A cursor has a label exactly
-  when its ADD filled; unknown parts stay zero with valid=0."""
+  codes index `kinds` (gym ts_v1_corpus.KINDS), with the MFE targets of its
+  graded table. A cursor has a label exactly when its ADD filled; unknown
+  parts stay zero with valid=0."""
   n = len(facts['filled'])
   out = _zeros(LABEL_SPACE, (n,))
   for t in np.flatnonzero(facts['filled']):
@@ -99,6 +108,10 @@ def outcome_labels(facts, kinds):
       if facts[MAE_COMPLETE[name]][t]:
         out['outcome_mae'][t, i] = float(facts[name][t]) / MAE_SCALE
         out['outcome_mae_valid'][t, i] = 1.
+    for i, name in enumerate(MFE_HORIZONS):
+      if graded[name + '_complete'][t]:
+        out['outcome_mfe'][t, i] = float(graded[name][t]) / MFE_SCALE
+        out['outcome_mfe_valid'][t, i] = 1.
     # Official Quality TP reward of the whole trade; unknown until it closed.
     if facts['path_complete'][t] and np.isfinite(facts['reward'][t]):
       out['outcome_quality'][t] = float(facts['reward'][t])
@@ -106,11 +119,11 @@ def outcome_labels(facts, kinds):
   return out
 
 
-def demo_labels(strict):
-  """(action, valid) per cursor of a strict table. A tie or an invalid
-  teacher state demonstrates nothing; the formal tie-break is not a label."""
-  valid = strict['valid'] & ~strict['tie']
-  return np.where(valid, strict['action'], 0).astype(np.float32), valid
+def demo_labels(graded):
+  """(action, valid) per cursor of a graded table: ADD for GOOD or better,
+  WAIT for POOR; FAIR and an ungraded cursor demonstrate nothing."""
+  valid = graded['valid'].astype(bool)
+  return np.where(valid, graded['action'], 0).astype(np.float32), valid
 
 
 def class_weights(action, valid, balance=1.0):

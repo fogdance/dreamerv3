@@ -22,9 +22,9 @@
 4. **Teacher Evidence**：
    - ADD 后果：TP/SL 首次事件、时间、右删失、MAE、early10、Quality。
    - 同初态 ADD/WAIT 双分支：后续使用同一冻结完整 π_k，同 Reward，同评价范围。
-   - 独立的严格 L2 Oracle。
+   - 独立的严格 L2 Oracle。实现中（2026-10-28 起）L3/L5 的示范改由分档入场老师给出（`graded/`，见下文“分档教学与完全重训”），严格 Oracle 只做 P4 计划。
 5. **Learning Feedback**：分别进入 `L_outcome`、`L_q_real`、`L_q_cf`、`L_reason`、`L_policy_demo`，不合并成单一 Reward；CF 偏好不再给 Actor 加第二份 Loss。
-6. **Validity & Provenance**：每类反馈各自带 `(valid, ready_at, source)`。来源取值为 `STUDENT_EXECUTED_NATIVE`、`VERIFIED_CF_NATIVE`、`HINDSIGHT_ORACLE_TEACHING`、`NATURAL_CORPUS`、`MODEL_IMAGINED`。
+6. **Validity & Provenance**：每类反馈各自带 `(valid, ready_at, source)`。来源取值为 `STUDENT_EXECUTED_NATIVE`、`VERIFIED_CF_NATIVE`、`HINDSIGHT_ORACLE_TEACHING`、`NATURAL_CORPUS`、`MODEL_IMAGINED`。实现中的示范来源为 `HINDSIGHT_GRADED_TEACHING`（2026-10-28）。
 
 其他规则：
 - CF 状态取 `VALID_COMPLETE`、`VALID_ESTIMATED`、`NOT_COMPARABLE` 之一，允许老师弃权。
@@ -74,7 +74,7 @@
 - Outcome 34 类：TP / SL / OTHER_EXIT 各 11 个时间桶，加 OPEN_AT_H（H=2760 分钟）。
   - RIGHT_CENSORED 按删失处理，不单独成类。
   - 答卷字段为 `p_tp_h` / `p_sl_h` / `p_other_h` / `p_open_h`。
-  - evidence 40 维，未受监督的 latent 不在其中。
+  - evidence 43 维：34 类概率、2 个风险、3 个 MAE、3 个 MFE、1 个 Quality（MFE 为 2026-10-28 新增），未受监督的 latent 不在其中。
 
 **环境**
 - TS env 没有 CHUNK_END（`chunk_steps=0`）。
@@ -82,7 +82,9 @@
 - 正式 run `formal_v1_carry` 中，L2–L5 窗口从 MarketCarry 存储的连续路径 carry 起步，没有 burn-in（见下文 C4 一节）。
 
 **教材**
-- 按“合约 × cursor”分表：`market/`、`facts/`、`strict/` 每个合约一份；`behaviors/<P>/` 只存 P0–P4 的账户侧数据。
+- 按“合约 × cursor”分表：`market/`、`facts/`、`strict/`、`graded/` 每个合约一份；`behaviors/<P>/` 只存 P0–P4 的账户侧数据。
+  - `graded/`（2026-10-28）：分档老师的示范和 MFE 目标，阈值来自 `configs/thinking_student/entry_grades.yaml`。
+  - `strict/` 只做 P4 计划。
 - 标签只取 P0 账户。只在合法空仓、权益不低于资金下限的行上给标签。
 - `source.json` 只记来源、`ready_at` 和计数，没有 Hash 或 manifest。
 
@@ -119,9 +121,9 @@
   - 后加阶段的优化器状态（例如旧快照没有的 `opt_l4`）重新初始化，并逐项列出。
 
 **S4：先验刷新与一轮策略改进**（`PLAN_S4_20261023.md`）
-- L3 = `L_policy_demo` + `L_reason`，两者用同一批严格示范行、同样的类别权重和 burn-in：
+- L3 = `L_policy_demo` + `L_reason`，两者用同一批示范行（2026-10-28 起为分档老师的示范）、同样的类别权重和 burn-in：
   - `L_policy_demo` 在教学视图 `[0, correction]` 上算，anchor 不参与。所以 β_Q 取任何值，先验的梯度都一样，残差不会学去抵消 Q。
-  - `L_reason`：`reason_pref` 回答“严格 TRAIN Oracle 认为 ADD 严格优于 WAIT”，用 BCE。梯度只到 Reasoning 通路（`reason_in`、`reason_q`、`reason_norm`、`reason`、`reason_pref`）。`reason_pref` 不进入 z。
+  - `L_reason`：`reason_pref` 回答“示范老师在这一行示范 ADD”，用 BCE。2026-10-28 前是严格 TRAIN Oracle 的“ADD 严格优于 WAIT”，现在是分档老师：GOOD 及以上示范 ADD，POOR 示范 WAIT。梯度只到 Reasoning 通路（`reason_in`、`reason_q`、`reason_norm`、`reason`、`reason_pref`）。`reason_pref` 不进入 z。
   - L3 评估同时给出两项的常数答案（`constant/policy_demo`、`constant/reason`）：p = 0.5，即同样加权下的 log 2 × 平均权重。
   - 评估还给出先验视图和 run 内正式 z 的 ADD 率（`policy/add_rate`、`policy/formal_add_rate`）。训练 run 的配置中 β_Q = 0，β_Q 和 κ_Q 只在 `freeze` 时写入快照，所以 CLI 流程里两者相等。π_{k+1} 带锚点的行为由冻结后的诊断和正式采集衡量。
 - Q→Reasoning：
@@ -137,8 +139,10 @@
 
 **C4：正式训练能力**（`FORMAL_TRAINING_IMPLEMENTATION.md`、`PLAN_C4_20261023.md`）
 - **配置只在 `dreamerv3/configs/thinking_student/`：**
-  - `student.yaml`；
-  - `formal_v1.yaml`、`c4_smoke_2c.yaml`；
+  - `student.yaml`、`entry_grades.yaml`（分档阈值）；
+  - `formal_v1_graded.yaml`、`formal_v1_graded_10x.yaml`（2026-10-28 的新结构）；
+  - `formal_v1.yaml`、`formal_v1_carry*.yaml`、`formal_v1_l1_l2_10x_continue.yaml`、`c4_smoke_2c.yaml`：旧结构的运行记录；
+
   - `markets/pool.json`：18 个 TRAIN 行 + FG409 VALIDATION 行，TEST 不列入，另有 env、合约、策略文件。
   - 教材 `inputs/` 自包含，源码不写死路径。
 - **正式学生 size50m：** 市场脑继承自 S3-V2 E_ONLY step 1M。fusion 层为 MACD 加宽零行；TS 各头新建。
@@ -174,26 +178,29 @@
     - TEACHER_ADD_FACT；
     - STUDENT_EXECUTED_NATIVE；
     - VERIFIED_CF_NATIVE：NOT_COMPARABLE 和 UNAVAILABLE_BUDGET 弃权；
-    - HINDSIGHT_ORACLE_TEACHING。
-- **错题：**
-  - 后果错：答卷给实际结果的概率低于 `outcome_error_prob`（0.1）。
-  - 决策错：执行的动作比另一个动作差，超过 `decision_error_margin`（1.0）× 同轮 κ_Q。
-  - teachers_agree：strict 示范认同 CF 判断的较优动作。
+    - HINDSIGHT_GRADED_TEACHING（2026-10-28 起，替代 HINDSIGHT_ORACLE_TEACHING）：分档老师的 ADD/WAIT 示范；ready_at 为出场分钟，日内 TP 为止盈后空间窗口的末尾。
+- **错题与正确题**（正确集：用户 2026-10-28）：
+  - 后果错：答卷给实际结果的概率低于 `outcome_error_prob`（0.1）。后果对：这一概率不低于 `outcome_correct_prob`（0.5）。
+  - 决策错：执行的动作比另一个动作差，超过 `decision_error_margin`（1.0）× 同轮 κ_Q。决策对：执行的动作好出 `decision_correct_margin`（1.0）× κ_Q 以上。
+  - 示范错 / 示范对：决策错 / 决策对之中，分档老师示范的正是 CF 判断的较优动作（teachers_agree）。
+  - 错与对互不重叠：`check_thresholds` 要求 `outcome_error_prob ≤ outcome_correct_prob`，两个 margin 都不小于 0。
 - **放行：**
   - 只有 OFFLINE_TRAIN：放行全部有效反馈。ready_at 照样保存，但不参与放行。
   - TIME_ORDERED 在放行函数、CLI 和配置三处都报 `TIME_ORDERED_NOT_SUPPORTED`。
   - 离线结果不是严格时间顺序的在线学习。
-- **B2 补课：**
-  - `MultiCorpusWindows(remedial=…, remedial_fraction=f)`：每批有 round(f × B) 个窗口包含错题行，标签与自然窗口相同。
-  - `MultiQWindows(remedial_boost=…)`：决策错行在起点权重里加权。
-  - 报告分开记唯一行、补课窗口和重复曝光。
+- **B2 正确集与错题集窗口：**
+  - `MultiCorpusWindows(correct=…, correct_fraction=f, remedial=…, remedial_fraction=g)`：每批先放 round(g × B) 个含错题行的窗口，再放 round(f × B) 个含正确行的窗口，其余为自然窗口；f + g ≤ 1，标签与自然窗口相同。
+  - `MultiQWindows(correct_boost=…, remedial_boost=…)`：决策对 / 决策错的行在起点权重里加权；同一行不能同时属于两个集合。
+  - 关闭的集合（比例 0、倍数 1）不传游标。
+  - 报告按集合分开记窗口、行、见过的行和占比。
 - **L6 进入 `iterate`**（从 `iteration.l6.from_round` 开始，默认关）：
   - 顺序：CF → feedback → L2 复习 → L4 → L5 → freeze → exam。
   - 不训练 L1，MarketCarry 存储保持有效。
-  - CF 没有代表性的轮次：跳过 L4，L5 不带补课。
+  - CF 没有代表性的轮次：跳过 L4，L5 不带这份 CF 的正确集和错题集（`decision_feedback: SKIPPED_CF_NOT_REPRESENTATIVE`）。
 - **实跑（开发 run 第 7–9 轮，2026-10-25）：** 见 `S5_RECORD_20261024.md`。
   - 固定比例的后果错补课会让后果脑在自然分布上校准变差。
   - E-7 方案 A（用户 2026-10-28）：`l6.remedial_fraction: 0`，L2 复习和 L5 只用自然窗口；教学题、L2 自然复习和 L4 决策错加权保留。
+  - 同日起 `l6` 默认改为正确集开（`correct_fraction` 0.25、`correct_boost` 4.0）、错题集关（`remedial_fraction` 0、`remedial_boost` 1.0），见下文。
 - **教学题每轮重建：** 开启 L6 的轮次每次都按当前 CF 和同轮合并 κ_Q 重写 feedback，已有的 `summary.json` 不再使跳过生效，所以补算的 CF 会进入教学。
 - **训练窗口的市场状态（R3，用户决定 2026-10-24）：**
   - 问题：零状态 64 行窗口训练出的 `pi_0000`，在 FG005 的训练窗口里 ADD 240 次，连续路径只有 99 次（WAIT→ADD 148，ADD→WAIT 7）。
@@ -206,3 +213,18 @@
 - **size50m 冒烟（FG005 + FG405）：**
   - pretrain → 中断续跑的一轮 → `pi_0001`；
   - DEV FG409：`pi_0000` 16.90、`pi_0001` 18.62，随机基线分别为 13.12、16.86。只是工程贯通，不说明交易能力。
+
+**分档教学与完全重训（2026-10-28，用户决定）**
+- **分档入场老师**（gym `ts_v1_grades`，教材 `graded/`）：
+  - 对每个空仓有资金的 cursor，给“现在 ADD、然后持有”的 Native 交易评档：EXCELLENT / GOOD / FAIR / POOR。
+  - 三个维度，总档取最差的一档：
+    - 止盈时间：同一官方交易日内 ≤15 / ≤120 市场分钟 / 当日更晚；
+    - 回撤 `mae_full`（可执行报价，含双边点差）：≤3 / ≤5 / ≤10 / >10；
+    - 空间：成交后到止盈后 60 个市场分钟（截到交易日结束）之间的最大可执行有利空间，≥10 / ≥7.5 / ≥6 / <6。
+  - SL30、其他出场和跨日 TP 为 POOR。RIGHT_CENSORED、未成交的 ADD、空间窗口被数据截断的日内 TP 不给档。
+  - GOOD 及以上示范 ADD，POOR 示范 WAIT，FAIR 不标。这是 L3 和 L5 唯一的示范来源。
+  - 成交分钟的收盘价也计入止盈判断：`env.step` 可在成交分钟止盈，条件是该分钟成交量 ≥ 6 手（开仓 3 手后仍余 3 手可平）。
+  - 18 个 TRAIN 合约：成交 484,249 笔，EXCELLENT 30,106、GOOD 74,263、FAIR 99,875、POOR 279,389、不给档 616。示范 ADD 104,369（strict 24,926）、WAIT 279,389。止盈分钟、MFE 与止盈时间的等价关系逐笔核对全部一致。
+- **Outcome MFE 头：** 目标 `mfe_15/60/120`（点）。成交分钟计入窗口；窗口不因出场截断，只截到交易日结束。平方误差，尺度 30，`loss_scales.outcome_mfe: 1.0`。答卷增加 `answer/mfe_15|60|120`。
+- **不兼容旧结构：** 参数形状变了（evidence 40 → 43，新增 `outcome/mfe`）。r2r3 迁移和 `--migrate` 已删除，旧 run 和旧 checkpoint 不能在新代码上续跑。新 run 从 F1（`paths.init_f1`）重新训练；`inherit_student`、`inherit_f1` 保留。
+- **正式配置：** `formal_v1_graded.yaml`（1x 开发，L1 10k / L2 12k / L3 12k）和 `formal_v1_graded_10x.yaml`（L1 100k / L2 120k / L3 120k，CF 和 L4 设置同旧 10x）。L2–L5 用 carry 开窗，9 轮，第 7–9 轮带 L6，正确集开、错题集关。

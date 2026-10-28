@@ -615,3 +615,53 @@
     - 符号一致率始终不高于常数基线的 0.8386；
     - `value_updates` 从 5000 改为 1500。
   - [ ] 第 1–9 轮（`formal_10x_iterate.sh rounds_1_9 --rounds 9`）由用户启动（用户 2026-10-28：L4 的正式启动由用户来做）；第 1 轮从磁盘上的 CF 继续，从 L4 开始。
+
+## G：教材调整与完全重训——分档多答案示范、有利空间、正确集（用户 2026-10-28）
+
+起因：用户把 FG001（2019-08-12）的 P4 严格老师画成图，发现每段行情只有一个 ADD 答案，相邻同样好的入场都标成 WAIT。
+
+用户的决定：
+- 分档老师代替严格老师，作为唯一的示范：
+  - 止盈时间：≤15 / ≤120 / 日内 / 跨日；
+  - 回调 `mae_full`：≤3 / ≤5 / ≤10 / >10；
+  - 有利空间：≥10 / ≥7.5 / ≥6 / <6，从成交看到止盈后 60 分钟，不跨日；
+  - 总档取最差的一档；≥良 标 ADD，差 标 WAIT，一般 不标。
+- Outcome 增加 MFE（15 / 60 / 120 分钟）预测，并放进 evidence。
+- 正确集默认开启，错题集可选。
+- 完全重训，不做兼容。
+
+计划：`~/.claude/plans/thinkstudent-s3-next-worktree-temporal-fountain.md`。
+
+- [x] G-1：gym `research/ts_v1_grades.py` 生成 `graded/`（成交价、有利空间、MFE、分档、示范标签），`produce()` 同步写出；配置 `configs/thinking_student/entry_grades.yaml`
+  - 止盈可以发生在成交分钟本身：env 用该分钟收盘价的可成交价判断，并要求开仓后剩余的成交量还够平 3 手（Volume ≥ 6）。有利空间和 MFE 也计入这一价格，此后各分钟用可止盈分钟的最高（最低）价。
+  - `ts_v1_corpus` 的 CLI 必填 `--grades`；`LABELS` 增加 `graded`；`source.json` 记录分档阈值和计数。
+- [x] G-2：gym 测试 `test_ts_v1_grades.py`：成交价和方向与 `candidate(t)` 一致；止盈分钟等于第一次达到 +6 的分钟；MFE 与止盈时间等价；分档映射
+  - 9 项通过（18 秒）。用 400 分钟、跨两个交易日的合成行情；有利空间和 MFE 的窗口与逐分钟走查的结果逐一相等；分档用正式阈值和一组能产生全部四档的阈值各验一遍；`wp02_fixture.ts_corpus` 显式给出阈值 `GRADES`。
+- [x] G-3：18 个 TRAIN 合约补写 `graded/`，做全量核对；FG001 2019-08-12 逐分钟对照 strict
+  - 补写：FG001 单独 24 秒，其余 17 个并行 50 秒，单进程峰值约 290 MB。证据目录：`/data/logdir/fg_single3/thinking_student/GRADED_TEACHER_20261028/`（脚本、日志、`check_graded.json`、`FG001_2019-08-12.txt`）。
+  - 全部通过：391,979 笔 TP5 的止盈分钟一致；MFE 15/60/120 与"日内且 h 分钟内止盈"100% 等价；日内 TP5 的有利空间都 ≥6；18×64 个抽样成交的价格和方向与 `candidate(t)` 一致。
+  - 合计（484,249 个成交 cursor）：优 30,106，良 74,263，一般 99,875，差 279,389，无档 616。示范 ADD 104,369（strict 24,926），WAIT 279,389（strict 423,749），不标 100,491。
+  - strict ADD 中 77.7% 仍是 ADD，2.4% 变 WAIT（跨日或回调 >10），20.0% 不标；strict WAIT 中有 63,482 个变为 ADD。
+  - FG001 2019-08-12：strict ADD 11 个，graded ADD 105 个、WAIT 10 个。11:26 的 strict ADD 之后 11:27–11:29 原为 WAIT，现为良或优，标 ADD。
+- [x] G-4：dreamer 读 `graded/`，作为唯一示范和 MFE 标签；Outcome 加 MFE 头，evidence 43 维；删除 r2r3 和 `--migrate`
+  - `labels.outcome_labels(facts, kinds, graded)` 只在窗口完整的行上给 `outcome_mfe`（点 / 30）；`demo_labels(graded)` 是唯一的示范来源。`TSCorpus` 拒绝没有 `graded/summary.json` 的教材，报错里给出补写命令；多教材必须用同一组阈值。
+  - OutcomeBrain 加 `mfe` 头（3 个输出），evidence = 34 概率 + 2 风险 + 3 MAE + 3 MFE + 1 Quality = 43；`outcome_loss` 加 `outcome_mfe`（掩码平方误差），`student.yaml` 的 `loss_scales.outcome_mfe: 1.0`；答卷加 `answer/mfe_15|60|120`。
+  - `transfer.py` 删除 r2r3、MIGRATIONS 和证据常量，`inherit_student` 只复制形状相同的参数，其余逐项列出；run.py 删除 `--migrate`；对应测试删除。
+  - feedback 的示范来源改为 `HINDSIGHT_GRADED_TEACHING`，列名 `demo_*`；L2、L3 报告记 `grades` 和 `teacher: GRADED_ENTRY_TEACHER`。
+- [x] G-5：正确集：`feedback.correct()`，采样器的 `correct_fraction` 和 `correct_boost`，run.py 和 formal_train 的传参（默认正确集开、错题集关）
+  - 标记：`outcome_correct`（给实际结局的概率 ≥ 0.5）、`decision_correct`（执行动作好出 1.0 × κ_Q 以上）、示范对 = 决策对且分档老师示范的正是较优动作。`check_thresholds` 保证错与对不重叠（`outcome_error_prob ≤ outcome_correct_prob`，两个 margin ≥ 0），`feedback.build` 和 `formal_train.load_config` 都检查。
+  - `MultiCorpusWindows(correct, correct_fraction)`：每批先放错题窗口、再放正确窗口、其余自然；两个比例之和 ≤ 1。`MultiQWindows(correct, correct_boost)`：同一行不能同时属于两个集合，倍数必须为正。
+  - run.py：`--correct-fraction`、`--correct-boost`，与错题参数一样需要 `--feedback`；关闭的集合不传游标。formal_train `l6` 默认 `correct_fraction 0.25`、`correct_boost 4.0`、`remedial_fraction 0`、`remedial_boost 1.0`；轮记录改名 `decision_feedback`、`feedback_windows`，并记 8 个设置。
+  - 主线 `pi_0008` FG205 用新代码重建教学题（证据目录 `feedback_pi_0008/`）：示范 655（strict 713）；错题：后果 6（全 SL30）、决策 75（全 ADD）、示范 58；正确：后果 662（TP5 661）、决策 88（ADD 83、WAIT 5）、示范 57。后果正确集几乎都是 TP，风险写进配置注释。
+- [x] G-6：dreamer 测试（s1、s2、s5、c4）和 TS 全套回归，ruff
+  - 最终代码上每个测试文件各开一个 CPU 进程：gym account 3、cf 6、corpus 9、grades 9；dreamer s0 5、s1 12、s2 8、s3 5、s4 4、s5 8、c4 18，全部通过。日志在证据目录 `logs/tests/final_gym/`、`final_dreamer/`。
+  - 复查改动发现两处问题并已修正：`student.yaml` 缺少 `loss_scales.outcome_mfe`，L2 第一次更新就会 KeyError；错题和正确集的阈值可以设成重叠，同一行同时算错和算对。后者由 `check_thresholds` 拒绝，`QWindows` 也拒绝非正的倍数。
+  - 18 个合约的 graded 表全部满足不变式：止损和其他出场为差，删失无档，跨日止盈为差，三个维度和总档相符，MFE 15 ≤ 60 ≤ 120，h 分钟内止盈的 mfe_h ≥ 5（`graded_invariants.py`，共 484,249 个成交 cursor）。
+  - ruff F,E9：生产代码没有新问题；测试中只有原有的 fixture F811 写法，gym 只有原有的 numpy F401（`lint/final_*.txt`）。
+- [x] G-7：新配置 `formal_v1_graded.yaml`（1x）、`formal_v1_graded_10x.yaml`，用 `status` 核对；GPU 冒烟
+  - 两个配置都通过 `load_config` 和 `status`：18 个教材的分档阈值相同；1x 和 10x 除步数、CF/L4 设置外相同。
+  - 与计划的差异：1x 的 `cf_coverage` 用 `exploratory`（与主线和 10x 一致）。预算 48 时每轮覆盖率约 0.5–0.6，representative 会让每一轮都跳过 L4，L6 的决策正确集也就无从使用。
+  - 10x 的基础阶段按旧 10x 的实测速度估计约 15 小时（计划中写的 21 小时有误）。
+  - GPU 冒烟（size50m，FG005 + FG405，L2 和 L3 各 4 次更新，然后冻结）通过：`gpu_smoke/`。
+- [x] G-8：文档（FORMAL_TRAINING_IMPLEMENTATION、接口说明、configs README），gym 和 dreamer 各一个原子提交
+- [ ] G-9：启动：旧 10x 已按用户要求停止（2026-10-28 17:27:56，SIGTERM，退出码 143，停在第 5 轮 CF；pi_0000–pi_0004 已冻结，best_dev 是 pi_0001）。新训练放在单独的训练 worktree 对里。GPU 空出来后由我启动 1x 开发 run，10x 由用户启动。

@@ -24,16 +24,20 @@ OTHER = 2 * L.NBINS  # first OTHER_EXIT class
 
 
 def label(kind, minutes, filled=True, **kw):
-  """Outcome label of one corpus facts row (gym ts_v1_corpus.FACTS)."""
+  """Outcome label of one corpus facts row (gym ts_v1_corpus.FACTS) and the
+  MFE targets of its graded row (gym ts_v1_grades)."""
   ended = kind != 'RIGHT_CENSORED'
   row = dict(
       filled=filled, kind=C.KINDS.index(kind), held_minutes=minutes,
       early10_5=False, early10_5_valid=True, early10_15=False, early10_15_valid=True,
       mae_15=3.0, mae_15_complete=True, mae_60=6.0, mae_60_complete=ended or minutes >= 60,
       mae_full=9.0, path_complete=ended,
-      reward={'TP5': 0.9, 'SL30': -3.0, 'OTHER_EXIT': -0.93}.get(kind, np.nan))
+      reward={'TP5': 0.9, 'SL30': -3.0, 'OTHER_EXIT': -0.93}.get(kind, np.nan),
+      mfe_15=2.0, mfe_15_complete=True, mfe_60=6.0, mfe_60_complete=True,
+      mfe_120=12.0, mfe_120_complete=True)
   row.update(kw)
-  labels = L.outcome_labels({k: np.array([v]) for k, v in row.items()}, C.KINDS)
+  graded = {k: np.array([row.pop(k)]) for k in list(row) if k.startswith('mfe_')}
+  labels = L.outcome_labels({k: np.array([v]) for k, v in row.items()}, C.KINDS, graded)
   return {k: v[0] for k, v in labels.items()}
 
 
@@ -77,11 +81,22 @@ def test_unfilled_adds_produce_no_outcome_label():
   assert risky['outcome_risk'].tolist() == [1, 0]
   assert risky['outcome_risk_valid'].tolist() == [1, 0]
   assert np.allclose(risky['outcome_mae'], [3 / 30, 6 / 30, 9 / 30])
+  assert np.allclose(risky['outcome_mfe'], [2 / 30, 6 / 30, 12 / 30])
   for kind in L.EVENTS:
     with pytest.raises(ValueError):
       L.allowed_classes(kind, 0)
   with pytest.raises(ValueError):
     L.allowed_classes('REJECTED', 5)
+
+
+def test_mfe_targets_need_a_complete_window_whatever_the_exit():
+  # A window the data cut first is unknown; the exit never cuts it.
+  cut = label('SL30', 40, mfe_120=3.0, mfe_120_complete=False)
+  assert cut['outcome_mfe_valid'].tolist() == [1, 1, 0]
+  assert np.allclose(cut['outcome_mfe'], [2 / 30, 6 / 30, 0.])
+  censored = label('RIGHT_CENSORED', 100)
+  assert censored['outcome_mfe_valid'].tolist() == [1, 1, 1]
+  assert L.MFE_SCALE == L.MAE_SCALE == 30.
 
 
 def batch(*labels):
@@ -92,7 +107,8 @@ def head(logits, valid):
   n = len(logits)
   zeros = jnp.zeros(n)
   return dict(event_logits=jnp.asarray(logits), risk_logits=jnp.zeros((n, 2)),
-              mae=jnp.zeros((n, 3)), quality=zeros, p_tp_h=zeros, p_tp_15=zeros,
+              mae=jnp.zeros((n, 3)), mfe=jnp.zeros((n, 3)), quality=zeros, p_tp_h=zeros,
+              p_tp_15=zeros,
               p_sl_h=zeros, p_other_h=zeros, p_open_h=zeros,
               valid=jnp.asarray(valid, jnp.float32))
 
@@ -112,6 +128,9 @@ def test_outcome_loss_is_the_likelihood_of_what_the_trace_observed():
   mask = data['outcome_mae_valid'][:3]
   mae = (np.square(data['outcome_mae'][:3]) * mask).sum() / mask.sum()
   assert np.isclose(losses['outcome_mae'], mae)
+  mask = data['outcome_mfe_valid'][:3]
+  mfe = (np.square(data['outcome_mfe'][:3]) * mask).sum() / mask.sum()
+  assert np.isclose(losses['outcome_mfe'], mfe) and mets['outcome/n_mfe'] == 9
   assert np.isclose(losses['outcome_risk'], np.log(2.))
 
 
@@ -187,6 +206,34 @@ def test_l2_update_moves_only_outcome_and_declared_fusion(tmp_path, fusion):
   assert mets['outcome/label_not_legal'] == 0
 
 
+def test_evidence_holds_the_mfe_answers_and_reaches_value_and_decision(tmp_path):
+  agent = small(tmp_path, stage='L2')
+  p = snapshot(agent)
+  width = L.OUTCOME_CLASSES + len(L.RISK_FLAGS) + len(L.MAE_HORIZONS) + len(L.MFE_HORIZONS) + 1
+  assert width == 43 and p['outcome/mfe/kernel'].shape[-1] == 3
+  units = p['fusion/mlp/linear0/kernel'].shape[-1]
+  for k in ('value/mlp/linear0/kernel', 'decision/reason_in/kernel', 'decision/gate/kernel'):
+    assert p[k].shape[0] == units + width, k
+  data = labelled_batch(agent)
+  obs = {k: v[:, T - 1] for k, v in data.items() if k in agent.obs_space}
+
+  def answer():
+    agent.n_actions.value = 0  # same policy seeds: same sampled market latent
+    _, _, out = agent.policy(agent.init_policy(1), obs, mode='policy')
+    return {k: float(v[0]) for k, v in out.items() if k.startswith('answer/')}
+
+  before = answer()
+  params = agent.save()
+  params['params']['outcome/mfe/kernel'] = np.random.default_rng(0).normal(
+      size=p['outcome/mfe/kernel'].shape).astype(p['outcome/mfe/kernel'].dtype)
+  agent.load(params)
+  after = answer()
+  for name in L.MFE_HORIZONS:
+    assert after[f'answer/{name}'] != before[f'answer/{name}']
+  assert after['answer/z'] != before['answer/z'], 'the MFE answers reach the decision'
+  assert after['answer/p_tp_h'] == before['answer/p_tp_h']
+
+
 @pytest.fixture(scope='module')
 def corpus(tmp_path_factory):
   from wp02_fixture import ts_corpus
@@ -196,8 +243,8 @@ def corpus(tmp_path_factory):
 
 def test_corpus_windows_put_cursor_labels_on_funded_flat_legal_rows(corpus, tmp_path):
   tc = TC.TSCorpus(corpus)
-  facts = C.load_arrays(corpus / 'facts')
-  expected = L.outcome_labels(facts, C.KINDS)
+  facts, graded = C.load_arrays(corpus / 'facts'), C.load_arrays(corpus / 'graded')
+  expected = L.outcome_labels(facts, C.KINDS, graded)
   floor = tc.source['funds_floor']
   held_rows = 0
   for name, b in tc.behaviors.items():
@@ -207,7 +254,12 @@ def test_corpus_windows_put_cursor_labels_on_funded_flat_legal_rows(corpus, tmp_
           & (b['equity'] >= floor) & ~b['is_last'])
     np.testing.assert_array_equal(d['outcome_valid'] > 0, on & facts['filled'][cursor])
     np.testing.assert_array_equal(d['outcome_allowed'][on], expected['outcome_allowed'][cursor[on]])
-    assert not d['outcome_allowed'][~on].any()
+    np.testing.assert_array_equal(d['outcome_mfe'][on], expected['outcome_mfe'][cursor[on]])
+    assert not d['outcome_allowed'][~on].any() and not d['outcome_mfe_valid'][~on].any()
+    # The graded teacher demonstrates on the same rows: ADD (GOOD+) or WAIT (POOR).
+    np.testing.assert_array_equal(d['demo_valid'], on & graded['valid'][cursor])
+    np.testing.assert_array_equal(d['demo_action'][d['demo_valid']],
+                                  graded['action'][cursor][d['demo_valid']])
     for k in market.MARKET_KEYS:
       np.testing.assert_array_equal(d[k], tc.market[k][cursor])
     # account_native is the account's own Native snapshot on flat and held rows.
@@ -247,6 +299,12 @@ def test_corpus_refuses_facts_that_are_not_the_accounts_own(corpus, tmp_path):
   np.save(short / 'behaviors' / 'P2_mid' / 'account_native.npy', native[:-1])
   with pytest.raises(ValueError, match='rows for'):
     TC.TSCorpus(short)
+  ungraded = tmp_path / 'ungraded'
+  shutil.copytree(corpus, ungraded)
+  shutil.rmtree(ungraded / 'graded')
+  for read in (TC.TSCorpus, lambda f: TC.corpus_sources([f])):
+    with pytest.raises(ValueError, match='ts_v1_grades --grades'):
+      read(ungraded)
 
 
 def test_checkpoint_carries_trained_outcome_and_lists_structure_changes(tmp_path):
@@ -290,59 +348,9 @@ def test_checkpoint_carries_trained_outcome_and_lists_structure_changes(tmp_path
   lists = transfer.inherit_student(third, tmp_path / 'old', log=lambda *_: None)
   assert [s.split(':')[0] for s in lists['reshaped']] == ['outcome/event/bias', 'outcome/event/kernel']
   assert lists['initialized'] == missing and lists['dropped'] == ['retired/kernel']
-  assert lists['remapped'] == [], 'no layout migration was named'
   now = snapshot(third)
   for k in lists['reused']:
     np.testing.assert_array_equal(now[k], params[k], err_msg=k)
   for k in ('outcome/event/kernel', *missing):
     np.testing.assert_array_equal(now[k], init[k], err_msg=k)
   assert int(third.n_updates) == old['counters']['updates']
-
-
-def test_r2r3_migration_places_the_s2_student_in_the_new_layout(tmp_path):
-  agent = small(tmp_path / 'a', stage='L2')
-  update(agent, labelled_batch(agent))
-  new = snapshot(agent)
-  units = new['decision/gate/kernel'].shape[0] - transfer.EVIDENCE
-  # The same student in the S2 layout: 10 account fields, TP | SL | SURVIVE
-  # events and an Outcome evidence with a 4-wide latent.
-  rng = np.random.default_rng(0)
-  old = {k: v for k, v in new.items() if not k.startswith('opt_')}
-  account = new[transfer.ACCOUNT_KERNEL]
-  old[transfer.ACCOUNT_KERNEL] = np.concatenate([account[:19], account[-3:]])
-  for k in ('outcome/event/kernel', 'outcome/event/bias'):
-    old[k] = np.concatenate([new[k][..., :OTHER], new[k][..., L.OPEN_AT_H:]], -1)
-  for k in transfer.EVIDENCE_KERNELS:
-    latent = rng.normal(size=(4, new[k].shape[1])).astype(new[k].dtype)
-    old[k] = np.concatenate([new[k][:units + OTHER], new[k][units + L.OPEN_AT_H:], latent])
-  old['outcome/latent/kernel'] = rng.normal(size=(units, 4)).astype(np.float32)
-  old['outcome/latent/bias'] = np.zeros(4, np.float32)
-  folder = tmp_path / 's2' / 'ckpt' / 'x'
-  folder.mkdir(parents=True)
-  with (folder / 'agent.pkl').open('wb') as f:
-    pickle.dump({**agent.save(), 'params': old}, f)
-  fresh = small(tmp_path / 'b', stage='L2')
-  init = snapshot(fresh)
-  lists = transfer.inherit_student(fresh, folder / 'agent.pkl', 'r2r3', log=lambda *_: None)
-  now = snapshot(fresh)
-  assert sorted(c.split(':')[0] for c in lists['remapped']) == sorted([
-      transfer.ACCOUNT_KERNEL, 'outcome/event/bias', 'outcome/event/kernel',
-      *transfer.EVIDENCE_KERNELS])
-  assert lists['reshaped'] == []
-  assert lists['dropped'] == ['outcome/latent/bias', 'outcome/latent/kernel']
-  # The four new account fields enter through zero rows.
-  expect = new[transfer.ACCOUNT_KERNEL].copy()
-  expect[19:23] = 0
-  np.testing.assert_array_equal(now[transfer.ACCOUNT_KERNEL], expect)
-  # TP, SL and SURVIVE -> OPEN_AT_H carry over; OTHER_EXIT bins start fresh.
-  for k in ('outcome/event/kernel', 'outcome/event/bias'):
-    keep = np.r_[0:OTHER, L.OPEN_AT_H]
-    np.testing.assert_array_equal(now[k][..., keep], new[k][..., keep])
-    np.testing.assert_array_equal(now[k][..., OTHER:L.OPEN_AT_H], init[k][..., OTHER:L.OPEN_AT_H])
-  # Evidence rows: OTHER_EXIT probabilities enter through zero rows.
-  for k in transfer.EVIDENCE_KERNELS:
-    expect = new[k].copy()
-    expect[units + OTHER:units + L.OPEN_AT_H] = 0
-    np.testing.assert_array_equal(now[k], expect)
-  for k in lists['reused']:
-    np.testing.assert_array_equal(now[k], old[k], err_msg=k)

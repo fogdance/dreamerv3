@@ -241,12 +241,12 @@ class StudentModel(embodied.jax.Agent):
     return loss, ({'market': mcarry}, mets)
 
   def l3_loss(self, carry, data, training):
-    """The behavior prior (A6 L3, refreshed in L5) on strict L2
+    """The behavior prior (A6 L3, refreshed in L5) on the graded teacher's
     demonstrations. L_policy_demo trains the decision group on the teaching
     view [0, correction]: the value anchor is neutral there, so the residual
     learns the demonstrations and never the Q signal (A6 2.3). L_reason
-    trains the Reasoning path to answer "the strict oracle prefers ADD"
-    (reason_pref, never part of z). Upstream outputs enter stopped; once Q
+    trains the Reasoning path to answer "the graded teacher demonstrates
+    ADD" (reason_pref, never part of z). Upstream outputs enter stopped; once Q
     is supervised, its stopped context reaches Reasoning and the gate, and
     only these independent demonstrations teach them to use it."""
     reset = data['is_first']
@@ -381,6 +381,9 @@ def answer_sheet(t, dist):
       'answer/p_other_h': o['p_other_h'],
       'answer/p_open_h': o['p_open_h'],
       'answer/quality': o['quality'] * o['valid'],
+      # MFE answers in points, like the graded table's targets.
+      **{f'answer/{name}': o['mfe'][..., i] * labels.MFE_SCALE * o['valid']
+         for i, name in enumerate(labels.MFE_HORIZONS)},
   }
 
 

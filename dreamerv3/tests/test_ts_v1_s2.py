@@ -75,11 +75,12 @@ def test_formal_action_is_masked_argmax_with_wait_on_ties():
 
 
 def test_demonstrations_and_class_weights():
-  action, valid = L.demo_labels(dict(
-      valid=np.array([True, True, False, True]),  # 2: no valid teacher state
-      action=np.array([1, 1, 1, 0], np.int8),
-      tie=np.array([False, True, False, False])))  # 1: a tie teaches nothing
-  assert action.tolist() == [1, 0, 0, 0] and valid.tolist() == [True, False, False, True]
+  # Graded GOOD, FAIR, none, POOR, EXCELLENT: FAIR and an ungraded cursor
+  # demonstrate nothing (gym ts_v1_grades).
+  grade = np.array([2, 1, -1, 0, 3], np.int8)
+  action, valid = L.demo_labels(dict(valid=(grade >= 2) | (grade == 0),
+                                     action=(grade >= 2).astype(np.int8), grade=grade))
+  assert action.tolist() == [1, 0, 0, 0, 1] and valid.tolist() == [True, False, False, True, True]
   action, valid = np.array([0.] * 99 + [1.]), np.ones(100, bool)
   w_wait, w_add = L.class_weights(action, valid)
   assert np.isclose(99 * w_wait, w_add), 'both actions carry the same total weight'

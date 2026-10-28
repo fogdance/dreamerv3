@@ -18,9 +18,11 @@ iterate   rounds (B2-B8) on the newest frozen pi_k: per contract of the round
           value anchor; its Teacher-free exam. --until cf stops the round
           after its CF (and state-check), before L4. From round
           iteration.l6.from_round on, L6 (S5) joins the round: the teaching
-          items of pi_k (experience/pi_k/feedback/), an L2 review with
-          outcome-error remediation before L4, decision-error remediation
-          in L4 and L5.
+          items of pi_k (experience/pi_k/feedback/), an L2 review before L4,
+          and in the review, L4 and L5 more windows around the correct
+          answers of pi_k (correct_fraction, correct_boost; on by default)
+          and, when configured, around its errors (remedial_fraction,
+          remedial_boost; off by default, user 2026-10-28).
 evaluate  the Teacher-free exam of a frozen policy: DEV on the VALIDATION rows
           dev.contracts of paths.markets, else DEV_NOT_CONFIGURED;
           --train-smoke adds the TRAIN smoke.
@@ -71,7 +73,7 @@ from pathlib import Path
 import yaml
 
 from .corpus import corpus_sources, discover
-from .feedback import OFFLINE_TRAIN, TIME_ORDERED_NOT_SUPPORTED, check_order
+from .feedback import OFFLINE_TRAIN, TIME_ORDERED_NOT_SUPPORTED, check_order, check_thresholds
 from .run import latest, progress, reports
 
 DEFAULTS = dict(
@@ -91,9 +93,12 @@ DEFAULTS = dict(
                    prior_refresh_updates=0, cf_boost=16.0, save_every=0, holdout=0,
                    beta_q=1.0, kappa_q='auto', kappa_floor=None, state_check_windows=0,
                    state_check_seed_offset=0,
-                   # L6 (S5) from round `from_round` on (None: off).
+                   # L6 (S5) from round `from_round` on (None: off). The correct
+                   # set is on by default, the error set off (fraction 0, boost 1).
                    l6=dict(from_round=None, order=OFFLINE_TRAIN, outcome_review_updates=0,
-                           remedial_fraction=0.25, remedial_boost=4.0, outcome_error_prob=0.1,
+                           correct_fraction=0.25, correct_boost=4.0, remedial_fraction=0.,
+                           remedial_boost=1.0, outcome_correct_prob=0.5,
+                           decision_correct_margin=1.0, outcome_error_prob=0.1,
                            decision_error_margin=1.0)),
     evaluation=dict(random_seeds=5, smoke_contracts=2, smoke_steps=6000),
 )
@@ -150,6 +155,17 @@ def load_config(path):
     raise ValueError(f'{path}: iteration.l6.order {l6["order"]}: {e}') from None
   if l6['from_round'] is not None and not (type(l6['from_round']) is int and l6['from_round'] >= 1):
     raise ValueError(f'{path}: iteration.l6.from_round is a round number from 1, or null')
+  shares = [l6[f'{k}_fraction'] for k in ('correct', 'remedial')]
+  if not all(0 <= x <= 1 for x in shares) or sum(shares) > 1:
+    raise ValueError(f'{path}: iteration.l6 correct_fraction and remedial_fraction are in [0, 1] '
+                     'and add up to at most 1')
+  if not all(l6[f'{k}_boost'] > 0 for k in ('correct', 'remedial')):
+    raise ValueError(f'{path}: iteration.l6 correct_boost and remedial_boost are positive')
+  try:
+    check_thresholds(*(l6[k] for k in ('outcome_error_prob', 'decision_error_margin',
+                                       'outcome_correct_prob', 'decision_correct_margin')))
+  except ValueError as e:
+    raise ValueError(f'{path}: iteration.l6: {e}') from None
   return config
 
 
@@ -349,20 +365,35 @@ def _teaching_items(cfg, lay, state, r, rec, policy, contracts, collect, cf):
     _call('feedback', ['--collection', collect[c], '--corpus', contracts[c], '--cf', cf[c], *kappa,
                        '--mix', cfg['corpora']['mix'], *floor, '--out', out[c],
                        '--order', l6['order'], '--outcome-error-prob', l6['outcome_error_prob'],
-                       '--decision-error-margin', l6['decision_error_margin']],
+                       '--decision-error-margin', l6['decision_error_margin'],
+                       '--outcome-correct-prob', l6['outcome_correct_prob'],
+                       '--decision-correct-margin', l6['decision_correct_margin']],
           lay.log(f'r{r:03d}_feedback_{c}'))
   rec['feedback'] = {}
   for c, folder in out.items():
     summary = _read(folder / 'summary.json')
-    rec['feedback'][c] = dict({k: summary[k] for k in ('sources', 'abstained', 'errors')},
+    rec['feedback'][c] = dict({k: summary[k] for k in ('sources', 'abstained', 'errors', 'correct')},
                               kappa_q=summary['thresholds']['kappa_q'])
   return [a for folder in out.values() for a in ('--feedback', folder)]
 
 
-def _remediation(learner):
+def _feedback_args(l6):
+  """(train-outcome / train-policy, train-value) arguments of the feedback
+  sets L6 uses: a set whose share is 0 (boost 1) passes nothing."""
+  shares, boosts = [], []
+  for kind in ('correct', 'remedial'):
+    if l6[f'{kind}_fraction'] > 0:
+      shares += [f'--{kind}-fraction', l6[f'{kind}_fraction']]
+    if l6[f'{kind}_boost'] != 1:
+      boosts += [f'--{kind}-boost', l6[f'{kind}_boost']]
+  return shares, boosts
+
+
+def _feedback_windows(learner):
   """What the windows of each L6 training command of the learner showed."""
-  keys = ('windows', 'remedial_windows', 'remedial_share', 'remedial_rows', 'remedial_rows_seen',
-          'unique_label_rows', 'label_rows', 'unique_q_rows', 'unique_pairs')
+  keys = ('windows', 'unique_label_rows', 'label_rows', 'unique_q_rows', 'unique_pairs',
+          *(f'{kind}_{k}' for kind in ('correct', 'remedial')
+            for k in ('windows', 'share', 'rows', 'rows_seen')))
   return {name: {k: v for k, v in data['curriculum'].items() if k in keys}
           for name, data in reports(learner).items() if data.get('feedback')}
 
@@ -524,14 +555,13 @@ def iterate(cfg, lay, state, rounds, until=None):
         else 'L4_SKIPPED_BY_CONFIG')
     if low:
       rec['L4_coverage'] = dict(min_coverage=floor, below=low, cf_coverage=it['cf_coverage'])
-    # L6 (S5): teaching items, the L2 review and remediation in L4 and L5;
-    # without representative pairs the round takes no decision remediation
-    # either (its errors come from the same CF).
+    # L6 (S5): teaching items, the L2 review and the correct (and error)
+    # windows in L4 and L5; without representative pairs the round takes no
+    # decision feedback either (it comes from the same CF).
     l6, feedback, review, boost, demo = it['l6'], [], [], [], []
     if l6['from_round'] is not None and r >= l6['from_round']:
       feedback = _teaching_items(cfg, lay, state, r, rec, policy, contracts, collect, cf)
-      review = ['--remedial-fraction', l6['remedial_fraction']]
-      boost = ['--remedial-boost', l6['remedial_boost']]
+      review, boost = _feedback_args(l6)
       demo = [] if thin else [*feedback, *review]
       done = progress(learner)
       left = l6['outcome_review_updates'] - done['L2']
@@ -545,8 +575,11 @@ def iterate(cfg, lay, state, rounds, until=None):
       rec['L6'] = 'S5_FEEDBACK_CURRICULUM'
       rec['l6'] = dict(order=l6['order'], time_ordered=TIME_ORDERED_NOT_SUPPORTED,
                        from_round=l6['from_round'], feedback=[str(f) for f in feedback[1::2]],
-                       remedial_fraction=l6['remedial_fraction'],
-                       remedial_boost=l6['remedial_boost'], decision_remediation=(
+                       **{k: l6[k] for k in ('correct_fraction', 'correct_boost',
+                                             'remedial_fraction', 'remedial_boost',
+                                             'outcome_correct_prob', 'decision_correct_margin',
+                                             'outcome_error_prob', 'decision_error_margin')},
+                       decision_feedback=(
                            'SKIPPED_CF_NOT_REPRESENTATIVE' if thin else 'L4_L5'))
     else:
       rec['L6'] = 'L6_SKIPPED_BY_CONFIG'
@@ -563,7 +596,7 @@ def iterate(cfg, lay, state, rounds, until=None):
             lay.log(f'r{r:03d}_L5'))
     if feedback:
       rec['l6'].update(L2_review_updates=progress(learner)['L2'],
-                       remediation=_remediation(learner))
+                       feedback_windows=_feedback_windows(learner))
     if latest(learner) is None:
       raise RuntimeError(f'Round {r}: {learner} trained nothing (value and refresh budgets are 0)')
     # B6: pi_{k+1} with the value anchor; pi_k stays as it was.

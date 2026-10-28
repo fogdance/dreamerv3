@@ -1,13 +1,14 @@
 """Thinking Student V1 S5: teaching items with dated feedback (B1), the
-OFFLINE_TRAIN release, remediation windows (B2) and L6 in the formal
-orchestrator -- one small closed loop on the two synthetic TRAIN contracts
-of the C4 tests.
+OFFLINE_TRAIN release, the correct and remedial windows (B2) and L6 in the
+formal orchestrator -- one small closed loop on the two synthetic TRAIN
+contracts of the C4 tests.
 
 Run from gym-trading-env with PYTHONPATH=.:src:../dreamerv3:tests/entry_v1.
 """
 import json
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -40,9 +41,9 @@ def test_teaching_items_join_the_answers_with_dated_feedback(pik, two):
   collection, cf = pik['collect'][name], pik['cf'][name]
   kappa = V.cf_kappa([pik['cf'][c] for c in CONTRACTS], floor=0.05)
   items, summary = F.build(collection, corpus, cf, kappa, outcome_error_prob=0.5,
-                           decision_error_margin=0.)
+                           decision_error_margin=0., outcome_correct_prob=0.5)
   rows, facts = steps(collection), C.load_arrays(corpus / 'facts')
-  strict = C.load_arrays(corpus / 'strict')
+  graded = C.load_arrays(corpus / 'graded')
   source = json.loads((corpus / 'source.json').read_text())
   t, ffl, end = items['cursor'], items['flat_funded_legal'], source['flat_end']
   assert len(t) == len(rows) and t[-1] + 1 == end and summary['complete']
@@ -57,7 +58,7 @@ def test_teaching_items_join_the_answers_with_dated_feedback(pik, two):
   assert (items['fact_ready_at'][on] > t[on]).all() and (items['fact_ready_at'][~on] == -1).all()
   # The realized first ending is the one class the label allows; a trade
   # censored before H abstains.
-  allowed = L.outcome_labels(facts, C.KINDS)['outcome_allowed'][t]
+  allowed = L.outcome_labels(facts, C.KINDS, graded)['outcome_allowed'][t]
   for i in np.flatnonzero(on):
     e = items['realized'][i]
     if e < 0:
@@ -84,9 +85,21 @@ def test_teaching_items_join_the_answers_with_dated_feedback(pik, two):
       kind = ts_run.FACT_KINDS.get(str(items['executed_reason'][i]), 'OTHER_EXIT')
       assert kind == C.KINDS[facts['kind'][t[i]]]
       assert items['executed_ready_at'][i] == facts['exit_cursor'][t[i]]
-  # HINDSIGHT_ORACLE_TEACHING: valid, untied strict choices, known at the end.
-  np.testing.assert_array_equal(items['strict_valid'], ffl & strict['valid'][t] & ~strict['tie'][t])
-  assert (items['strict_ready_at'][items['strict_valid']] == end).all()
+  # HINDSIGHT_GRADED_TEACHING: the graded demonstrations (ADD for GOOD or
+  # better, WAIT for POOR), known at the exit or the end of the room window.
+  demo = items['demo_valid']
+  np.testing.assert_array_equal(demo, ffl & graded['valid'][t])
+  np.testing.assert_array_equal(items['demo_action'][demo], graded['action'][t[demo]])
+  np.testing.assert_array_equal(items['demo_ready_at'][demo], graded['ready_at'][t[demo]])
+  assert demo.any() and (items['demo_ready_at'][demo] > t[demo]).all()
+  assert summary['sources']['demo']['source'] == 'HINDSIGHT_GRADED_TEACHING'
+  # Errors and correct answers never meet; with one probability threshold
+  # they split the known facts.
+  known = items['realized'] >= 0
+  np.testing.assert_array_equal(items['outcome_error'] ^ items['outcome_correct'], known)
+  assert not (items['decision_error'] & items['decision_correct']).any()
+  for name, found in (('errors', F.errors(items)), ('correct', F.correct(items))):
+    assert {k: summary[name][k] for k in found} == {k: len(v) for k, v in found.items()}
   assert summary['sources']['fact'] == dict(source='TEACHER_ADD_FACT', items=int(on.sum()),
                                             cursors=int(on.sum()))
   assert (summary['teaching_order'], summary['time_ordered']) == (
@@ -135,9 +148,13 @@ def test_only_offline_train_releases_feedback(pik, two, tmp_path):
     F.build(pik['collect'][name], dev)
   # Existing summaries are regenerated for current CF and thresholds.
   before = (out / 'summary.json').read_text()
-  F.main([*args, '--out', str(out), '--outcome-error-prob', '0.9'])
+  with pytest.raises(ValueError, match='apart'):  # errors above the correct threshold
+    F.main([*args, '--out', str(out), '--outcome-error-prob', '0.9'])
+  assert (out / 'summary.json').read_text() == before
+  F.main([*args, '--out', str(out), '--outcome-error-prob', '0.9', '--outcome-correct-prob', '0.95'])
   assert (out / 'summary.json').read_text() != before
-  assert F.load(out)[1]['thresholds']['outcome_error_prob'] == 0.9
+  thresholds = F.load(out)[1]['thresholds']
+  assert (thresholds['outcome_error_prob'], thresholds['outcome_correct_prob']) == (0.9, 0.95)
   # Replacing a CF pair with an unfinished result must remove its old error /
   # pair supervision, even though this feedback folder already has a summary.
   changed = tmp_path / 'changed_cf'
@@ -172,15 +189,17 @@ def test_error_tags_follow_the_answers_and_the_pairs():
       p_tp_h=[.05, .3, .3, .3, .3, .3], p_sl_h=[.3, .5, .3, .01, .3, .3],
       p_other_h=[.3, .1, .09, .3, .3, .3], p_open_h=[.35, .1, .31, .39, .2, .1]).items()}
   ffl = np.ones(6, bool)
-  out = F.fact_items(facts, C.KINDS, np.arange(6), ffl, answers, 0.1)
+  out = F.fact_items(facts, C.KINDS, np.arange(6), ffl, answers, 0.1, 0.5)
   assert out['realized'].tolist() == [0, 1, 2, -1, 3, -1]  # OPEN_AT_H after H; censored abstains
   assert out['outcome_error'].tolist() == [True, False, True, False, False, False]
+  assert out['outcome_correct'].tolist() == [False, True, False, False, False, False]
   assert np.isnan(out['p_realized'][[3, 5]]).all() and out['p_realized'][4] == np.float32(.2)
-  assert F.fact_items(facts, C.KINDS, np.arange(6), ffl, answers, 0.3)['outcome_error'][4]
+  low = F.fact_items(facts, C.KINDS, np.arange(6), ffl, answers, 0.3, 0.2)
+  assert low['outcome_error'][4] and low['outcome_correct'][[1, 4]].all()
 
-  items = dict(cursor=np.arange(5), executed=np.array([1, 0, 1, 0, 0], np.int8),
-               strict_valid=np.array([1, 1, 1, 1, 0], bool),
-               strict_action=np.array([0, 1, 0, 0, -1], np.int8))
+  items = dict(cursor=np.arange(6), executed=np.array([1, 0, 1, 0, 0, 1], np.int8),
+               demo_valid=np.array([1, 1, 1, 1, 0, 1], bool),
+               demo_action=np.array([0, 1, 0, 0, -1, 1], np.int8))
   pairs = [
       dict(cursor=0, reference_action=1, status='VALID_COMPLETE', reason='COUPLED',
            coupled_at=7, g_add=-1., g_wait=0., delta_g=-1.),     # ADD worse by 1
@@ -191,47 +210,56 @@ def test_error_tags_follow_the_answers_and_the_pairs():
       dict(cursor=3, reference_action=0, status='VALID_COMPLETE', reason='COUPLED',
            coupled_at=6, g_add=.2, g_wait=.2, delta_g=1e-17),    # equal branches
       dict(cursor=4, reference_action=0, status='VALID_COMPLETE', reason='TERMINAL',
-           coupled_at=None, g_add=2., g_wait=0., delta_g=2.)]    # WAIT worse by 2
-  out = F.pair_items(pairs, items, end=10, kappa=0.5, margin=1.0)
-  assert out['cf_valid'].tolist() == [True, True, False, True, True]
-  assert out['cf_ready_at'].tolist() == [7, 5, -1, 6, 10]
-  assert out['cf_return_ready_at'].tolist() == [10, 10, -1, 10, 10]
-  np.testing.assert_allclose(out['cf_regret'][[0, 1, 3, 4]], [1., .3, 1e-17, 2.])
-  assert out['decision_error'].tolist() == [True, False, False, False, True]
-  # Strict agrees with the better action at 0 (WAIT) and 1 (ADD); an equal
-  # pair has no better action; 4 has no valid strict choice.
-  assert out['teachers_agree'].tolist() == [True, True, False, False, False]
-  assert not F.pair_items(pairs, items, 10, None, 1.0)['decision_error'].any()
+           coupled_at=None, g_add=2., g_wait=0., delta_g=2.),    # WAIT worse by 2
+      dict(cursor=5, reference_action=1, status='VALID_COMPLETE', reason='COUPLED',
+           coupled_at=8, g_add=1.5, g_wait=0., delta_g=1.5)]     # ADD better by 1.5
+  out = F.pair_items(pairs, items, end=10, kappa=0.5, margin=1.0, correct_margin=1.0)
+  assert out['cf_valid'].tolist() == [True, True, False, True, True, True]
+  assert out['cf_ready_at'].tolist() == [7, 5, -1, 6, 10, 8]
+  assert out['cf_return_ready_at'].tolist() == [10, 10, -1, 10, 10, 10]
+  np.testing.assert_allclose(out['cf_regret'][[0, 1, 3, 4, 5]], [1., .3, 1e-17, 2., -1.5])
+  assert out['decision_error'].tolist() == [True, False, False, False, True, False]
+  assert out['decision_correct'].tolist() == [False, False, False, False, False, True]
+  # The graded teacher demonstrates the better action at 0 (WAIT), 1 and 5
+  # (ADD); an equal pair has no better action; 4 has no demonstration.
+  assert out['teachers_agree'].tolist() == [True, True, False, False, False, True]
+  untagged = F.pair_items(pairs, items, 10, None, 1.0, 1.0)
+  assert not untagged['decision_error'].any() and not untagged['decision_correct'].any()
+  assert F.pair_items(pairs, items, 10, .5, 1., 4.)['decision_correct'].sum() == 0
   invalid = dict(pairs[2], g_add=2., g_wait=0., delta_g=2.)
-  assert not F.pair_items([invalid], items, 10, .5, 1.)['cf_valid'].any()
+  assert not F.pair_items([invalid], items, 10, .5, 1., 1.)['cf_valid'].any()
   with pytest.raises(ValueError, match='forks from action'):
-    F.pair_items([dict(pairs[0], reference_action=0)], items, 10, .5, 1.)
-  full = dict(items, **out, fact_valid=np.zeros(5, bool), outcome_error=np.zeros(5, bool),
-              executed_valid=np.zeros(5, bool))
-  e = F.errors(full)
+    F.pair_items([dict(pairs[0], reference_action=0)], items, 10, .5, 1., 1.)
+  full = dict(items, **out, fact_valid=np.zeros(6, bool), outcome_error=np.zeros(6, bool),
+              outcome_correct=np.zeros(6, bool), executed_valid=np.zeros(6, bool))
+  e, c = F.errors(full), F.correct(full)
   assert e['decision'].tolist() == [0, 4] and e['demo'].tolist() == [0]
+  assert c['decision'].tolist() == [5] and c['demo'].tolist() == [5]
 
 
-def test_remedial_windows_hold_their_error_rows(two):
+def test_correct_and_remedial_windows_hold_their_rows(two):
   corpora = [TC.TSCorpus(c, behaviors=[TC.LABEL_ACCOUNT]) for c in two]
   kw = dict(weight='outcome', burnin=2, accounts=[TC.LABEL_ACCOUNT])
-  errors = {}
+  errors, correct = {}, {}
   for name, corpus in zip(CONTRACTS, corpora):
     b = corpus.behaviors[TC.LABEL_ACCOUNT]
     on = np.flatnonzero(corpus.labelled[TC.LABEL_ACCOUNT]
                         & (corpus.outcome['outcome_valid'][b['cursor']] > 0))
     on = on[on >= 2]  # after the burn-in of the first window
     errors[name] = b['cursor'][on[[0, len(on) // 2, -1]]]
+    correct[name] = b['cursor'][on[[1, len(on) // 3]]]
   windows = TC.MultiCorpusWindows(corpora, holdout=0, seed=0, remedial=errors,
-                                  remedial_fraction=0.25, **kw)
+                                  remedial_fraction=0.25, correct=correct, correct_fraction=0.25,
+                                  **kw)
   for _ in range(5):
     data = windows.sample(8, T)
     for i, (contract, name, start) in enumerate(windows.last):
       part = windows.parts[windows.contracts.index(contract)]
       shown = part.corpus.behaviors[name]['cursor'][start + 2:start + T]
-      if i < 2:  # round(0.25 x 8) remedial windows lead the batch
-        assert np.isin(shown, errors[contract]).any()
-      # A remedial window is the natural window of its rows.
+      # round(0.25 x 8) remedial, then round(0.25 x 8) correct windows lead the batch.
+      if i < 4:
+        assert np.isin(shown, (errors if i < 2 else correct)[contract]).any()
+      # A remedial or correct window is the natural window of its rows.
       natural = part.corpus.window(name, start, start + T)
       for k, v in natural.items():
         if k not in ('demo_valid', 'is_first'):
@@ -239,19 +267,26 @@ def test_remedial_windows_hold_their_error_rows(two):
       assert data['is_first'][i, 0] and not data['is_first'][i, 1:].any()
   report = windows.curriculum()
   assert (report['windows'], report['remedial_windows'], report['remedial_share']) == (40, 10, .25)
+  assert (report['correct_windows'], report['correct_share']) == (10, .25)
   assert report['remedial_rows'] == 6 and 0 < report['remedial_rows_seen'] <= 6
+  assert report['correct_rows'] == 4 and 0 < report['correct_rows_seen'] <= 4
   assert report['unique_label_rows'] <= report['label_rows']
-  # An error cursor must carry a label of the sampling weight.
+  # A cursor of either set must carry a label of the sampling weight.
   b = corpora[0].behaviors[TC.LABEL_ACCOUNT]
   bare = b['cursor'][np.flatnonzero(~(corpora[0].labelled[TC.LABEL_ACCOUNT]
                                       & (corpora[0].outcome['outcome_valid'][b['cursor']] > 0)))[0]]
-  with pytest.raises(ValueError, match='carry no outcome label'):
-    TC.MultiCorpusWindows(corpora, holdout=0, remedial={CONTRACTS[0]: [bare]},
-                          remedial_fraction=.25, **kw)
-  # Without error rows the batches are the natural ones.
+  for kind in ('remedial', 'correct'):
+    with pytest.raises(ValueError, match=f'{kind} cursors carry no outcome label'):
+      TC.MultiCorpusWindows(corpora, holdout=0, **{kind: {CONTRACTS[0]: [bare]}},
+                            **{f'{kind}_fraction': .25}, **kw)
+  with pytest.raises(ValueError, match='exceed the batch'):
+    TC.MultiCorpusWindows(corpora, holdout=0, remedial=errors, remedial_fraction=.6,
+                          correct=correct, correct_fraction=.5, **kw)
+  # Without rows of either set the batches are the natural ones.
   plain = TC.MultiCorpusWindows(corpora, holdout=0, seed=3, **kw)
   empty = TC.MultiCorpusWindows(corpora, holdout=0, seed=3, remedial={c: [] for c in CONTRACTS},
-                                remedial_fraction=.5, **kw)
+                                remedial_fraction=.5, correct={c: [] for c in CONTRACTS},
+                                correct_fraction=.5, **kw)
   for _ in range(3):
     a, b = plain.sample(8, T), empty.sample(8, T)
     assert plain.last == empty.last
@@ -259,7 +294,7 @@ def test_remedial_windows_hold_their_error_rows(two):
       np.testing.assert_array_equal(a[k], b[k], err_msg=k)
 
 
-def test_q_remediation_boosts_decision_error_rows(pik):
+def test_q_windows_boost_correct_and_wrong_decision_rows(pik):
   cf = [pik['cf'][c] for c in CONTRACTS]
   plain = V.MultiQWindows(cf, 'train', holdout=0, burnin=2)
   kappa, source = V.cf_kappa(cf)
@@ -268,26 +303,33 @@ def test_q_remediation_boosts_decision_error_rows(pik):
   part = plain.parts[0]
   fork = np.flatnonzero(part.data['q_cf_valid'] > 0)
   boosted = V.MultiQWindows(cf, 'train', holdout=0, burnin=2,
-                            remedial={CONTRACTS[0]: part.cursor[fork[:1]]}, remedial_boost=4.)
+                            remedial={CONTRACTS[0]: part.cursor[fork[:1]]}, remedial_boost=4.,
+                            correct={CONTRACTS[0]: part.cursor[fork[1:2]]}, correct_boost=2.)
   w0, w1 = (np.diff(np.concatenate([[0.], q.parts[0]._starts(T)])) for q in (plain, boosted))
-  start, row = np.arange(len(w0)), fork[0]
-  covers = (start + 2 <= row) & (row < start + T)
-  np.testing.assert_allclose(w1 - w0, np.where(covers, 3 * (1 + 16), 0), rtol=1e-6)
+  start = np.arange(len(w0))
+  covers = lambda row: (start + 2 <= row) & (row < start + T)
+  np.testing.assert_allclose(w1 - w0, np.where(covers(fork[0]), 3 * (1 + 16), 0)
+                             + np.where(covers(fork[1]), 1 * (1 + 16), 0), rtol=1e-6)
   np.testing.assert_array_equal(boosted.parts[1]._starts(T), plain.parts[1]._starts(T))
   idle = np.flatnonzero(part.data['q_cf_valid'] == 0)[0]
-  with pytest.raises(ValueError, match='valid ADD/WAIT pair'):
-    V.MultiQWindows(cf, 'train', holdout=0, remedial={CONTRACTS[0]: part.cursor[[idle]]})
+  for kind in ('remedial', 'correct'):
+    with pytest.raises(ValueError, match='valid ADD/WAIT pair'):
+      V.MultiQWindows(cf, 'train', holdout=0, **{kind: {CONTRACTS[0]: part.cursor[[idle]]}})
+  with pytest.raises(ValueError, match='both an error and correct'):
+    V.MultiQWindows(cf, 'train', holdout=0, remedial={CONTRACTS[0]: part.cursor[fork[:1]]},
+                    correct={CONTRACTS[0]: part.cursor[fork[:1]]})
   boosted.sample(8, T)
   report = boosted.curriculum()
-  assert report['windows'] == 8 and report['remedial_rows'] == 1
+  assert report['windows'] == 8 and report['remedial_rows'] == report['correct_rows'] == 1
+  assert (report['remedial_boost'], report['correct_boost']) == (4., 2.)
   assert report['contracts'][CONTRACTS[1]]['remedial_rows'] == 0
 
 
 def test_l6_rounds_teach_offline_train_feedback(pik, two, tmp_path, monkeypatch):
   """Round 1 without L6, round 2 with it: teaching items of pi_1, the L2
-  review before L4, remediation in L4 and L5, OFFLINE_TRAIN in the round
-  record and the lineage; a rerun keeps the items; the exam reads no
-  teacher material."""
+  review before L4, correct and remedial windows in L4 and L5,
+  OFFLINE_TRAIN in the round record and the lineage; a rerun keeps the
+  items; the exam reads no teacher material."""
   from gym_trading_env.research import ts_v1_corpus as C
   root = tmp_path / 'corpora'
   root.mkdir()
@@ -301,8 +343,9 @@ def test_l6_rounds_teach_offline_train_feedback(pik, two, tmp_path, monkeypatch)
       foundation=dict(policy_updates=1, save_every=1),
       iteration=dict(max_rounds=2, cf_wait_forks=1, value_updates=1, prior_refresh_updates=1,
                      save_every=1, kappa_floor=0.05,
-                     l6=dict(from_round=2, outcome_review_updates=2, remedial_fraction=.5,
-                             remedial_boost=4., outcome_error_prob=.5, decision_error_margin=0.)),
+                     l6=dict(from_round=2, outcome_review_updates=2, correct_fraction=.5,
+                             remedial_fraction=.5, remedial_boost=4., outcome_error_prob=.5,
+                             decision_error_margin=0.)),
       evaluation=dict(random_seeds=1, smoke_steps=20))))
   lay = FT.Layout(tmp_path / 'run')
   calls, argvs = [], []
@@ -349,7 +392,9 @@ def test_l6_rounds_teach_offline_train_feedback(pik, two, tmp_path, monkeypatch)
   for argv in (review, value, policy, freeze):
     assert flags(argv, '--feedback') == [str(items[c]) for c in CONTRACTS]
   assert flags(review, '--remedial-fraction') == flags(policy, '--remedial-fraction') == ['0.5']
-  assert flags(value, '--remedial-boost') == ['4.0'] and flags(review, '--updates') == ['2']
+  assert flags(review, '--correct-fraction') == flags(policy, '--correct-fraction') == ['0.5']
+  assert flags(value, '--remedial-boost') == flags(value, '--correct-boost') == ['4.0']
+  assert flags(review, '--updates') == ['2']
 
   state = json.loads(lay.state.read_text())
   record = state['rounds']['2']
@@ -371,7 +416,12 @@ def test_l6_rounds_teach_offline_train_feedback(pik, two, tmp_path, monkeypatch)
   report = json.loads((reviewed / 'train_outcome.json').read_text())
   assert report['feedback']['kind'] == 'outcome'
   assert report['feedback']['teaching_order'] == 'OFFLINE_TRAIN'
-  assert report['curriculum']['remedial_windows'] == 2  # round(0.5 x 2) per update
+  # round(0.5 x 2) windows per update around each set that has rows.
+  rows = report['feedback']['cursors']
+  for kind in ('remedial', 'correct'):
+    has = sum(rows[kind].values()) > 0
+    assert report['curriculum'][f'{kind}_windows'] == (2 if has else 0), kind
+  assert sum(rows['remedial'].values()) > 0
   assert (report['window_start'], report['carry_root']) == ('carry', str(lay.carry))
   frozen = json.loads((lay.policy(2) / 'policy.json').read_text())
   assert frozen['lineage']['feedback'] == [str(items[c]) for c in CONTRACTS]
@@ -402,8 +452,8 @@ def test_l6_rounds_teach_offline_train_feedback(pik, two, tmp_path, monkeypatch)
   record = json.loads(lay.state.read_text())['rounds']['3']
   assert (record['L4'], record['L6']) == (
       'L4_SKIPPED_CF_NOT_REPRESENTATIVE', 'S5_FEEDBACK_CURRICULUM')
-  assert record['l6']['decision_remediation'] == 'SKIPPED_CF_NOT_REPRESENTATIVE'
-  assert set(record['l6']['remediation']) == {'train_outcome'}
+  assert record['l6']['decision_feedback'] == 'SKIPPED_CF_NOT_REPRESENTATIVE'
+  assert set(record['l6']['feedback_windows']) == {'train_outcome'}
   pi2 = lay.policy(2)
   items = {c: lay.experience(pi2, 'feedback', c) for c in CONTRACTS}
   for c in CONTRACTS:
@@ -419,12 +469,57 @@ def test_l6_rounds_teach_offline_train_feedback(pik, two, tmp_path, monkeypatch)
   assert flags(review, '--feedback') == flags(freeze, '--feedback') == [
       str(items[c]) for c in CONTRACTS]
   assert '--feedback' not in policy and '--remedial-fraction' not in policy
+  assert '--correct-fraction' not in policy
   assert freeze[freeze.index('--value-anchor-of') + 1] == str(pi2) and '--cf' not in freeze
   pi3 = json.loads((lay.policy(3) / 'policy.json').read_text())
   assert pi3['teaching']['value_anchor']['status'] == 'L4_SKIPPED_ANCHOR_KEPT'
   assert (pi3['lineage']['value_kept_from'], pi3['lineage']['teaching_order']) == (
       str(pi2), 'OFFLINE_TRAIN')
   assert 'value' not in changed_groups(params(pi2), params(lay.policy(3)))
+
+
+def test_l6_uses_the_correct_set_by_default_and_errors_on_request(tmp_path, two, pik):
+  l6 = FT.DEFAULTS['iteration']['l6']
+  assert FT._feedback_args(l6) == (['--correct-fraction', .25], ['--correct-boost', 4.])
+  both = dict(l6, remedial_fraction=.25, remedial_boost=2.)
+  assert FT._feedback_args(both) == (['--correct-fraction', .25, '--remedial-fraction', .25],
+                                     ['--correct-boost', 4., '--remedial-boost', 2.])
+  assert FT._feedback_args(dict(l6, correct_fraction=0., correct_boost=1.)) == ([], [])
+  config = tmp_path / 'l6.yaml'
+  for bad in (dict(correct_fraction=.6, remedial_fraction=.5), dict(correct_boost=0.),
+              dict(outcome_error_prob=.6, outcome_correct_prob=.5),
+              dict(decision_correct_margin=-1.)):
+    config.write_text(yaml.safe_dump(dict(paths=dict(corpus_root='c', run_root='r'),
+                                          iteration=dict(l6=bad))))
+    with pytest.raises(ValueError, match='iteration.l6'):
+      FT.load_config(config)
+  # Errors and correct answers never meet.
+  F.check_thresholds(.5, 0., .5, 0.)
+  for bad in ((.6, 1., .5, 1.), (.1, -1., .5, 1.), (.1, 1., 1.5, 1.)):
+    with pytest.raises(ValueError, match='apart|at least 0'):
+      F.check_thresholds(*bad)
+  # run.py: either set needs --feedback, and the two shares fit one batch.
+  base = ['train-outcome', '--run', str(tmp_path / 'run'), '--corpus', str(two[0])]
+  for extra in (['--correct-fraction', '.25'], ['--correct-boost', '2'],
+                ['--feedback', str(tmp_path), '--correct-fraction', '.6',
+                 '--remedial-fraction', '.5']):
+    with pytest.raises(SystemExit):
+      ts_run.main([*base, *extra])
+  # A set that is off passes no cursors.
+  folders = []
+  for name in CONTRACTS:
+    out = tmp_path / 'feedback' / name
+    F.main(['--collection', str(pik['collect'][name]), '--corpus',
+            str(two[CONTRACTS.index(name)]), '--cf', str(pik['cf'][name]), '--out', str(out)])
+    folders.append(out)
+  args = SimpleNamespace(feedback=folders, correct_fraction=.25, remedial_fraction=0.,
+                         correct_boost=1., remedial_boost=1.)
+  sets, report = ts_run._feedback(args, 'outcome')
+  assert sets['remedial'] is None and set(sets['correct']) == set(CONTRACTS)
+  assert report['on'] == dict(remedial=False, correct=True)
+  assert set(report['cursors']['remedial']) == set(CONTRACTS)
+  sets, report = ts_run._feedback(args, 'decision')
+  assert sets == dict(remedial=None, correct=None)
 
 
 def test_round_learners_draw_their_own_windows(pik, two, stores, tmp_path, monkeypatch):

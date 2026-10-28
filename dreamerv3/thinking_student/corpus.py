@@ -1,15 +1,16 @@
 """Thinking Student teaching material (gym ts_v1_corpus) as training windows.
 
 A TS corpus holds, per TRAIN contract and market cursor, the causal market
-observation (market/), the Native "ADD now, then hold" facts (facts/) and the
-strict TRAIN oracle's WAIT/ADD (strict/) of a flat funded account, plus the
-account side of the behavior accounts P0-P4 (behaviors/<P>/, one row per
-cursor from the first market minute to the true terminal).
+observation (market/), the Native "ADD now, then hold" facts (facts/) and
+the graded teacher's WAIT/ADD and MFE targets of that trade (graded/) of a
+flat funded account, plus the account side of the behavior accounts P0-P4
+(behaviors/<P>/, one row per cursor from the first market minute to the
+true terminal). The strict oracle (strict/) only plans P4.
 
 A window is T consecutive rows of one behavior account joined by cursor with
 the market rows. Outcome labels and demonstrations sit exactly on the rows
 where that account is flat, may ADD, keeps the funds floor and is not at its
-terminal: there the cursor's facts and strict choice are this account's own,
+terminal: there the cursor's facts and graded choice are this account's own,
 because the market alone decides them. Labels are teaching data only and
 never enter the policy input.
 
@@ -41,6 +42,11 @@ ACCOUNT_KEYS = ('position_state', 'action_mask', 'account_native', 'is_last',
                 'is_terminal')
 LABEL_ACCOUNT = 'P0'
 CARRY_KEYS = ('deter', 'stoch')
+# Windows drawn around S5 feedback rows (B2): errors and correct answers.
+FOCUS = ('remedial', 'correct')
+GRADED_COMMAND = ('python -m gym_trading_env.research.ts_v1_grades --grades '
+                  '../dreamerv3/configs/thinking_student/entry_grades.yaml --corpus {folder} '
+                  '(from the gym checkout)')
 
 
 class MarketCarry:
@@ -92,7 +98,7 @@ class TSCorpus:
 
   def __init__(self, folder, behaviors=None, carry_root=None):
     self.folder = Path(folder)
-    self.source = json.loads((self.folder / 'source.json').read_text())
+    self.source = corpus_sources([self.folder])[0]
     self.market = C.load_arrays(self.folder / 'market', mmap='r')
     rows = self.source['rows']
     for k in C.MARKET_KEYS:
@@ -103,9 +109,9 @@ class TSCorpus:
       for k, v in self.carry.arrays.items():
         _table_check(f'carry/{k}', v, rows)
     facts = C.load_arrays(self.folder / 'facts')
-    self.outcome = L.outcome_labels(facts, C.KINDS)
-    self.demo_action, self.demo_valid = L.demo_labels(
-        C.load_arrays(self.folder / 'strict'))
+    graded = C.load_arrays(self.folder / 'graded')
+    self.outcome = L.outcome_labels(facts, C.KINDS, graded)
+    self.demo_action, self.demo_valid = L.demo_labels(graded)
     floor = self.source['funds_floor']
     self.behaviors, self.labelled = {}, {}
     for name in behaviors or self.source['behaviors']:
@@ -161,24 +167,29 @@ def _table_check(name, array, rows):
     raise ValueError(f'{name}: values are not finite')
 
 
-REQUIRED = ('source.json', 'market', 'facts', 'strict', 'behaviors', 'inputs/env.yaml')
+REQUIRED = ('source.json', 'market', 'facts', 'behaviors', 'inputs/env.yaml')
 
 
 def corpus_sources(folders):
-  """source.json of each TRAIN corpus folder. All must be TRAIN material of
-  distinct contracts with one Native reward, clock and discount; a folder
-  that differs is named and refused (C4 2.1)."""
+  """source.json of each TRAIN corpus folder, with the thresholds of its
+  graded teacher (`grades`). All must be TRAIN material of distinct
+  contracts with one Native reward, clock, discount and graded teacher; a
+  folder that differs is named and refused (C4 2.1)."""
   sources, shared, seen = [], None, {}
   for folder in map(Path, folders):
     missing = [k for k in REQUIRED if not (folder / k).exists()]
     if missing:
       raise ValueError(f'{folder}: not a TS corpus, missing {missing}')
+    if not (folder / 'graded' / 'summary.json').exists():
+      raise ValueError(f'{folder}: no graded teacher (graded/); write it with '
+                       + GRADED_COMMAND.format(folder=folder))
     source = json.loads((folder / 'source.json').read_text())
+    source['grades'] = json.loads((folder / 'graded' / 'summary.json').read_text())['grades']
     name = source['contract']
     if source['fold'] != 'TRAIN':
       raise ValueError(f'{name}: fold {source["fold"]} is not TRAIN material')
     key = dict(reward_schema=source['inputs']['reward_schema'], clock=source['clock'],
-               gamma=source['gamma'])
+               gamma=source['gamma'], grades=source['grades'])
     if shared is not None and key != shared[1]:
       raise ValueError(f'{name}: {key} differs from {shared[0]} {shared[1]}')
     if name in seen:
@@ -221,19 +232,20 @@ class CorpusWindows:
   (`L.class_weights` over the split's demonstrations unless `demo_weights`
   is given, e.g. the train split's for an eval split).
 
-  `remedial` lists error cursors of S5 feedback (B2 remediation): a share
-  `remedial_fraction` of every batch (rounded) are windows drawn uniformly
-  around a uniformly drawn error row of an account, so that the row is in the
-  window after the burn-in; the rest of the batch is drawn by the natural
-  weight. An error row must carry a label of the sampling weight; its window
-  and labels are exactly the natural ones. `curriculum()` counts the
-  labelled rows the windows showed (distinct and repeated) and the
-  remediation exposure.
+  `remedial` and `correct` list the error and the correct cursors of S5
+  feedback (B2): a share `remedial_fraction` and a share `correct_fraction`
+  of every batch (rounded, together at most the batch) are windows drawn
+  uniformly around a uniformly drawn row of that set, so that the row is in
+  the window after the burn-in; the rest of the batch is drawn by the
+  natural weight. A row of either set must carry a label of the sampling
+  weight; its window and labels are exactly the natural ones.
+  `curriculum()` counts the labelled rows the windows showed (distinct and
+  repeated) and the exposure of each set.
   """
 
   def __init__(self, corpus, split='all', weight=None, burnin=0, holdout=2048,
                seed=0, demo_balance=1.0, demo_weights=None, accounts=None, remedial=None,
-               remedial_fraction=0.):
+               remedial_fraction=0., correct=None, correct_fraction=0.):
     if split not in ('all', 'train', 'eval'):
       raise ValueError(f'Unknown corpus split {split}')
     if weight not in (None, 'outcome', 'demo'):
@@ -252,17 +264,24 @@ class CorpusWindows:
                             add=int((valid & (action == 1)).sum()))
     self.demo_weights = tuple(demo_weights) if demo_weights else (
         L.class_weights(action, valid, demo_balance) if weight == 'demo' else (1., 1.))
-    if not 0 <= remedial_fraction <= 1:
-      raise ValueError(f'Remedial fraction {remedial_fraction} is not in [0, 1]')
-    self.remedial_fraction = float(remedial_fraction)
-    self.remedial, self.remedial_dropped = self._remedial_rows(remedial)
+    self.fractions = dict(remedial=float(remedial_fraction), correct=float(correct_fraction))
+    for kind, fraction in self.fractions.items():
+      if not 0 <= fraction <= 1:
+        raise ValueError(f'{kind.capitalize()} fraction {fraction} is not in [0, 1]')
+    if sum(self.fractions.values()) > 1:
+      raise ValueError(f'Remedial and correct fractions {self.fractions} exceed the batch')
+    self.focus, self.focus_dropped = {}, {}
+    for kind, cursors in (('remedial', remedial), ('correct', correct)):
+      self.focus[kind], self.focus_dropped[kind] = self._focus_rows(kind, cursors)
     self.seen = {name: np.zeros(n, bool) for name in self.names}
-    self.windows = self.remedial_windows = self.label_rows = 0
-    self.remedial_seen = set()
+    self.windows = self.label_rows = 0
+    self.focus_windows = dict.fromkeys(FOCUS, 0)
+    self.focus_seen = {kind: set() for kind in FOCUS}
 
-  def _remedial_rows(self, cursors):
-    """(account, row) of every error cursor of each account inside the split,
-    and how many cursors fall outside it (holdout, or before the burn-in)."""
+  def _focus_rows(self, kind, cursors):
+    """(account, row) of every cursor of one feedback set of each account
+    inside the split, and how many cursors fall outside it (holdout, or
+    before the burn-in)."""
     if cursors is None:
       return [], 0
     cursors, out = np.unique(np.asarray(cursors, np.int64)), []
@@ -270,55 +289,59 @@ class CorpusWindows:
       cursor = self.corpus.behaviors[name]['cursor']
       rows = np.flatnonzero(np.isin(cursor, cursors))
       if len(rows) != len(cursors):
-        raise ValueError(f'{name}: remedial cursors outside the corpus rows')
+        raise ValueError(f'{name}: {kind} cursors outside the corpus rows')
       marks = self._marks(name)
       if not (marks[rows] > 0).all():
         bad = cursor[rows[marks[rows] <= 0]]
-        raise ValueError(f'{name}: remedial cursors carry no {self.weight} label, first {bad[0]}')
+        raise ValueError(f'{name}: {kind} cursors carry no {self.weight} label, first {bad[0]}')
       inside = (rows >= self.lo + self.burnin) & (rows < self.hi)
       out += [(name, int(r)) for r in rows[inside]]
     return out, int(len(cursors) * len(self.names) - len(out))
 
-  def remedial_count(self, batch):
-    """Remedial windows of a batch: round(fraction x batch), none without
-    error rows."""
-    return int(round(self.remedial_fraction * batch)) if self.remedial else 0
+  def focus_count(self, kind, batch):
+    """Windows of a batch around one feedback set: round(fraction x batch),
+    none without its rows."""
+    return int(round(self.fractions[kind] * batch)) if self.focus[kind] else 0
 
-  def _pick_remedial(self, n, length):
-    """`n` windows, each around an error row drawn uniformly: its start is
-    drawn uniformly among the windows that hold the row after the burn-in."""
+  def _pick_focus(self, kind, n, length):
+    """`n` windows, each around a row of one feedback set drawn uniformly: its
+    start is drawn uniformly among the windows that hold the row after the
+    burn-in."""
     if not n:
       return []
     if self.hi - self.lo < length:
       raise ValueError(f'Window of {length} rows exceeds the split')
     out = []
-    for i in self.rng.integers(len(self.remedial), size=n):
-      name, row = self.remedial[i]
+    for i in self.rng.integers(len(self.focus[kind]), size=n):
+      name, row = self.focus[kind][i]
       lo, hi = max(self.lo, row - length + 1), min(row - self.burnin, self.hi - length)
       out.append((name, int(self.rng.integers(lo, hi + 1)), row))
     return out
 
-  def _count(self, windows, length, remedial=()):
-    """Record sampled (account, start) windows; `remedial` holds the error
-    rows of the remedial ones."""
+  def _count(self, windows, length, kind=None, rows=()):
+    """Record sampled (account, start) windows; `rows` holds the rows of the
+    feedback set `kind` they were drawn around."""
     for name, start in windows:
       shown = slice(start + self.burnin, start + length)
       self.seen[name][shown] = True
       self.label_rows += int((self._marks(name)[shown] > 0).sum())
     self.windows += len(windows)
-    self.remedial_windows += len(remedial)
-    self.remedial_seen.update(remedial)
+    if kind:
+      self.focus_windows[kind] += len(rows)
+      self.focus_seen[kind].update(rows)
 
   def curriculum(self):
     """Labelled rows the sampled windows showed after the burn-in: distinct
     market cursors (one per row of every account), repeats (label_rows) and
-    the remediation exposure."""
+    the exposure of each feedback set."""
     unique = sum(int((self.seen[name] & (self._marks(name) > 0)).sum()) for name in self.names)
-    return dict(windows=self.windows, remedial_windows=self.remedial_windows,
-                remedial_fraction=self.remedial_fraction, remedial_rows=len(self.remedial),
-                remedial_rows_dropped=self.remedial_dropped,
-                remedial_rows_seen=len(self.remedial_seen), unique_label_rows=unique,
-                label_rows=self.label_rows)
+    out = dict(windows=self.windows, unique_label_rows=unique, label_rows=self.label_rows)
+    for kind in FOCUS:
+      out.update({f'{kind}_windows': self.focus_windows[kind],
+                  f'{kind}_fraction': self.fractions[kind], f'{kind}_rows': len(self.focus[kind]),
+                  f'{kind}_rows_dropped': self.focus_dropped[kind],
+                  f'{kind}_rows_seen': len(self.focus_seen[kind])})
+    return out
 
   def demos(self):
     """(action, valid) of every demonstration row of the split's accounts."""
@@ -377,11 +400,16 @@ class CorpusWindows:
     return [(self.names[i // per], self.lo + int(i % per)) for i in picks]
 
   def sample(self, batch, length):
-    k = self.remedial_count(batch)
-    remedial = self._pick_remedial(k, length)
-    windows = [(name, start) for name, start, _ in remedial] + self._pick(batch - k, length)
-    self._count(windows, length, [(name, row) for name, _, row in remedial])
-    return self._stack(windows, length)
+    windows = []
+    for kind in FOCUS:
+      picked = self._pick_focus(kind, min(self.focus_count(kind, batch), batch - len(windows)),
+                                length)
+      self._count([(name, start) for name, start, _ in picked], length, kind,
+                  [(name, row) for name, _, row in picked])
+      windows += [(name, start) for name, start, _ in picked]
+    natural = self._pick(batch - len(windows), length)
+    self._count(natural, length)
+    return self._stack(windows + natural, length)
 
   def batches(self, batch, length):
     """Every non-overlapping window of every account, in full batches."""
@@ -418,9 +446,9 @@ class CorpusWindows:
 
 
 MIXES = ('uniform_contract', 'proportional_rows')
-EXPOSURE_NOTE = ('remediation repeats TRAIN cursors of LABEL_ACCOUNT rows: windows and '
-                 'label_rows are optimizer exposure, unique_label_rows distinct market cursors '
-                 'of each account (C3 EDU-R10)')
+EXPOSURE_NOTE = ('remedial and correct windows repeat TRAIN cursors of LABEL_ACCOUNT rows: '
+                 'windows and label_rows are optimizer exposure, unique_label_rows distinct '
+                 'market cursors of each account (C3 EDU-R10)')
 
 
 class MultiCorpusWindows:
@@ -438,26 +466,30 @@ class MultiCorpusWindows:
   per contract and `last` lists the (contract, account, start) of the last
   batch.
 
-  `remedial` ({contract: error cursors}, S5 feedback) makes a share
-  `remedial_fraction` of every batch remedial windows (CorpusWindows): each
-  draws an error row uniformly over the error rows of every contract, so a
-  contract with more errors gets more of them, and the rest of the batch
-  follows the contract mix.
+  `remedial` and `correct` ({contract: cursors}, S5 feedback) make a share
+  `remedial_fraction` and `correct_fraction` of every batch windows around
+  their rows (CorpusWindows): each draws a row uniformly over the rows of
+  that set of every contract, so a contract with more of them gets more
+  windows, and the rest of the batch follows the contract mix.
   """
 
   def __init__(self, corpora, mix='uniform_contract', contract_weights=None, seed=0,
                demo_balance=1.0, demo_weights=None, remedial=None, remedial_fraction=0.,
-               **kwargs):
+               correct=None, correct_fraction=0., **kwargs):
     if mix not in MIXES:
       raise ValueError(f'Unknown contract mix {mix}')
     self.contracts = [c.source['contract'] for c in corpora]
-    unknown = set(remedial or ()) - set(self.contracts)
-    if unknown:
-      raise ValueError(f'Remedial cursors of contracts outside the selection: {sorted(unknown)}')
+    for kind, cursors in (('remedial', remedial), ('correct', correct)):
+      unknown = set(cursors or ()) - set(self.contracts)
+      if unknown:
+        raise ValueError(f'{kind.capitalize()} cursors of contracts outside the selection: '
+                         f'{sorted(unknown)}')
     self.parts = [CorpusWindows(c, demo_weights=(1., 1.), remedial=(remedial or {}).get(name),
-                                remedial_fraction=remedial_fraction, **kwargs)
+                                remedial_fraction=remedial_fraction,
+                                correct=(correct or {}).get(name),
+                                correct_fraction=correct_fraction, **kwargs)
                   for c, name in zip(corpora, self.contracts)]
-    self.remedial_fraction = float(remedial_fraction)
+    self.fractions = dict(remedial=float(remedial_fraction), correct=float(correct_fraction))
     self.rng = np.random.default_rng(seed)
     for part in self.parts:
       part.rng = self.rng
@@ -481,14 +513,15 @@ class MultiCorpusWindows:
     self.last = []
 
   def sample(self, batch, length):
-    errors = np.array([len(p.remedial) for p in self.parts], np.float64)
-    k = int(round(self.remedial_fraction * batch)) if errors.sum() else 0
     windows = []
-    for i in (self.rng.choice(len(self.parts), k, p=errors / errors.sum()) if k else ()):
-      name, start, row = self.parts[i]._pick_remedial(1, length)[0]
-      self.parts[i]._count([(name, start)], length, [(name, row)])
-      windows.append((i, name, start))
-    for i in self.rng.choice(len(self.parts), batch - k, p=self.p):
+    for kind in FOCUS:
+      rows = np.array([len(p.focus[kind]) for p in self.parts], np.float64)
+      k = min(int(round(self.fractions[kind] * batch)), batch - len(windows)) if rows.sum() else 0
+      for i in (self.rng.choice(len(self.parts), k, p=rows / rows.sum()) if k else ()):
+        name, start, row = self.parts[i]._pick_focus(kind, 1, length)[0]
+        self.parts[i]._count([(name, start)], length, kind, [(name, row)])
+        windows.append((i, name, start))
+    for i in self.rng.choice(len(self.parts), batch - len(windows), p=self.p):
       name, start = self.parts[i]._pick(1, length)[0]
       self.parts[i]._count([(name, start)], length)
       windows.append((i, name, start))
@@ -502,10 +535,11 @@ class MultiCorpusWindows:
     """What the sampled windows showed, per contract and in total (S5 B2)."""
     parts = {c: p.curriculum() for c, p in zip(self.contracts, self.parts)}
     total = {k: sum(v[k] for v in parts.values()) for k in next(iter(parts.values()))
-             if k != 'remedial_fraction'}
-    return dict(total, remedial_fraction=self.remedial_fraction,
-                remedial_share=total['remedial_windows'] / max(total['windows'], 1),
-                contracts=parts, exposure_note=EXPOSURE_NOTE)
+             if not k.endswith('_fraction')}
+    for kind in FOCUS:
+      total[f'{kind}_fraction'] = self.fractions[kind]
+      total[f'{kind}_share'] = total[f'{kind}_windows'] / max(total['windows'], 1)
+    return dict(total, contracts=parts, exposure_note=EXPOSURE_NOTE)
 
   def batches(self, batch, length):
     """Every non-overlapping window of every contract, in full batches of
