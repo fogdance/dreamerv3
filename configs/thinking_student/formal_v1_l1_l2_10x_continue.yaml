@@ -1,7 +1,8 @@
 # Thinking Student V1 formal training with ten times the steps of
 # formal_v1_carry.yaml (user decision 2026-10-24). The development run of
 # formal_v1_carry.yaml trains fast to check the code; this run trains every
-# stage ten times longer, for a comparison later. Besides the step counts it
+# stage ten times longer, for a comparison later. The L4 (value_updates) is
+# the exception: its round-1 pilot set it to 1500. Besides the step counts it
 # differs from formal_v1_carry.yaml only in cf_wait_forks, cf_budget and
 # cf_coverage.
 #
@@ -91,12 +92,13 @@ iteration:
   # 0.8 L4 still learns on the valid pairs, recorded as
   # S3_Q_TARGETS_EXPLORATORY with L4_coverage; no label or coverage changes.
   cf_coverage: exploratory
-  # Ten times the L4 of formal_v1_carry.yaml. Its pilot on held-out pairs
+  # Not ten times the 500 of formal_v1_carry.yaml. Its pilot on held-out pairs
   # (C4_STATE_CHECK_20261024/carry_pilot_l4, 614 pairs) was best after 500
-  # updates and worse from 1000 on. With about five times the pairs, 5000 is
-  # still past that point: check the held-out curve of round 1 before its L4
-  # (iterate --until cf, then a pilot as in formal_v1_carry.yaml).
-  value_updates: 5000
+  # updates and worse from 1000 on. The pilot of this run on its round-1 CF
+  # (FORMAL_10X_L4_PILOT_20261028, 2005 training and 252 held-out pairs) was
+  # best after 1500: held-out pair loss 1.2475 (constant 1.5115), 1.2826
+  # after 2000 and 1.35-1.46 from 2500 to 8000; 5000 fits past that point.
+  value_updates: 1500
   prior_refresh_updates: 1000
   save_every: 2500
   holdout: 0
