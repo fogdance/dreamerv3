@@ -673,3 +673,8 @@
     - 日志在 `logs/`，结束时写 `logs/graded_1x.exit`。
   - 10x run `FORMAL_V1_GRADED_10X_20261028`：启动脚本 `graded_10x.sh TAG [--after-1x]` 已放在 run 目录，由用户启动。`--after-1x` 会等 1x 结束、GPU 空出后再开始。
 - [x] G-10：按代码画出学生大脑，并与 A1–A6 设计对比：`FG_S3_Thinking_Student_V1_Brain_From_Code_vs_A1_A6_20261028.md`（本目录和 `~/Documents/work/research/thinkstudent/` 各一份，内容相同）。同时补拷 thinkstudent 中缺少的 `FG_S3_TS_FG201_Astra_and_S5_gy35_d335_Review_20261025.md`。
+- [x] G-11：1x 分档重训 `FORMAL_V1_GRADED_20261028` 第 1–9 轮的结果报告：`S5_GRADED_1X_ROUNDS_1_9_20261029.md`
+  - 2026-10-28 23:55:14 结束，退出码 0；每轮 `verify_round.py` 都是 11/11（run 目录 `verify/`）。对比表 `rounds_report.md` 由 `rounds_report.py 1 9` 生成。
+  - 诊断用教学题（本 run 第 1–6 轮、开发 run π₀–π₈，用同一版代码和分档阈值重建）：`GRADED_1X_ITEMS_20261029/`。
+  - DEV：10 个策略的平均 0.000946/分钟（开发 run 0.000403），8/10 个高于同 ADD 率随机基线；best_dev 是 π₆（0.001449）。Q 仍未学到；执行的 ADD 中约一半仍是“差”档。E-7：π₇、π₈ 的新采集上没有看到 p_TP 被推高。
+  - 10x `FORMAL_V1_GRADED_10X_20261028` 由用户于 2026-10-29 启动（`graded_10x.sh` 已按用户要求去掉 GPU 检查）。
