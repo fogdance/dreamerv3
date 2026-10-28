@@ -664,4 +664,12 @@
   - 10x 的基础阶段按旧 10x 的实测速度估计约 15 小时（计划中写的 21 小时有误）。
   - GPU 冒烟（size50m，FG005 + FG405，L2 和 L3 各 4 次更新，然后冻结）通过：`gpu_smoke/`。
 - [x] G-8：文档（FORMAL_TRAINING_IMPLEMENTATION、接口说明、configs README），gym 和 dreamer 各一个原子提交
-- [ ] G-9：启动：旧 10x 已按用户要求停止（2026-10-28 17:27:56，SIGTERM，退出码 143，停在第 5 轮 CF；pi_0000–pi_0004 已冻结，best_dev 是 pi_0001）。新训练放在单独的训练 worktree 对里。GPU 空出来后由我启动 1x 开发 run，10x 由用户启动。
+- [x] G-9：启动：旧 10x 已按用户要求停止（2026-10-28 17:27:56，SIGTERM，退出码 143，停在第 5 轮 CF；pi_0000–pi_0004 已冻结，best_dev 是 pi_0001）。新训练放在单独的训练 worktree 对里。GPU 空出来后由我启动 1x 开发 run，10x 由用户启动。
+  - 提交（未 push）：gym `7d5e6af`，dreamer `4221bfa`。
+  - 训练 worktree 对：`/data/research/fg-s3-thinking-student-graded-20261028/{gym-trading-env,dreamerv3}`，分支 `run/thinking-student-graded-20261028`，两仓都是 clean。
+  - 1x 开发 run `FORMAL_V1_GRADED_20261028`：2026-10-28 17:50:50 由 `graded_1x.sh graded_1x` 启动，即 `formal_train run --rounds 9`。
+    - F1 继承：reused 49、sliced 1、widened 1、initialized 62。
+    - L1 约 0.24 秒/次更新，占 GPU 2.2 GB。
+    - 日志在 `logs/`，结束时写 `logs/graded_1x.exit`。
+  - 10x run `FORMAL_V1_GRADED_10X_20261028`：启动脚本 `graded_10x.sh TAG [--after-1x]` 已放在 run 目录，由用户启动。`--after-1x` 会等 1x 结束、GPU 空出后再开始。
+- [x] G-10：按代码画出学生大脑，并与 A1–A6 设计对比：`FG_S3_Thinking_Student_V1_Brain_From_Code_vs_A1_A6_20261028.md`（本目录和 `~/Documents/work/research/thinkstudent/` 各一份，内容相同）。同时补拷 thinkstudent 中缺少的 `FG_S3_TS_FG201_Astra_and_S5_gy35_d335_Review_20261025.md`。
