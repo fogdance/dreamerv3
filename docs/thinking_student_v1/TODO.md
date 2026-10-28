@@ -593,7 +593,9 @@
   - 2026-10-28 06:34–10:10，`explore_rounds.sh 6 explore_r4_r9`，退出码 0。
   - 每轮 `verify_round.py` 都是 11/11 通过（`verify/round_4.json` … `round_9.json`）。π₉ 的 learner 是 `learners/pi_0009/ckpt/000000040800`。
   - 各轮 L4 都是 `S3_Q_TARGETS_EXPLORATORY`，补课窗口都是 0/0。
-- [ ] 各轮结果与对比，写入记录文档。
+- [x] 各轮结果与对比，写入记录文档：`S5_FORMAL_ROUNDS_3_9_20261028.md`。
+  - Outcome 和 DEV 都好于开发 run；Q 在两条线上都没有学到；DEV 都在随机基线附近。
+  - 发现：L2 复习和 L5 每轮采样同一批窗口（种子只看本 learner 的更新数）。不阻断运行，未修改。
 - [x] 用满主机（用户 2026-10-28）：
   - 实测（10x π₀，FG205）：每个 CF worker 约 1.6 GB 内存、1.1 GB 显存；1、3、6 个并发分别为每秒 131、348、545 个决策。
   - 瓶颈是空闲内存（约 18 GB），不是 CPU 或 GPU。
