@@ -971,7 +971,11 @@ def main(argv=None):
                 updates=updates)
   ts = agent.config.ts
   # The sampler continues on a fresh stream after each save it resumes from.
-  seed = np.random.SeedSequence([args.seed, STAGES.index(stage), progress(args.run)[stage]])
+  # The agent's update count, inherited from pi_k, separates the learners of
+  # iteration rounds: each is a new run whose stage progress starts at 0, and
+  # every round's L2 review and L5 would otherwise draw the same windows.
+  seed = np.random.SeedSequence([args.seed, STAGES.index(stage), progress(args.run)[stage],
+                                 int(agent.n_updates)])
   diagnostic = 'TRAIN_INTERNAL_DIAGNOSTIC' if args.holdout else None
   if args.command in ('train-market', 'train-outcome', 'train-policy'):
     sources = corpus_sources(args.corpus or ())

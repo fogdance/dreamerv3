@@ -14,7 +14,7 @@ import pytest
 import yaml
 
 from dreamerv3.tests.test_ts_v1_c4 import (CONTRACTS, changed_groups, in_process, params,
-                                           pik, two)  # noqa: F401 (fixtures)
+                                           pik, stores, two)  # noqa: F401 (fixtures)
 from dreamerv3.tests.test_ts_v1_s2 import T
 from dreamerv3.thinking_student import corpus as TC
 from dreamerv3.thinking_student import feedback as F
@@ -425,3 +425,38 @@ def test_l6_rounds_teach_offline_train_feedback(pik, two, tmp_path, monkeypatch)
   assert (pi3['lineage']['value_kept_from'], pi3['lineage']['teaching_order']) == (
       str(pi2), 'OFFLINE_TRAIN')
   assert 'value' not in changed_groups(params(pi2), params(lay.policy(3)))
+
+
+def test_round_learners_draw_their_own_windows(pik, two, stores, tmp_path, monkeypatch):
+  """Every iteration round trains a new learner that inherits pi_k, so its
+  stage progress starts at 0 again. Learners of different rounds must still
+  draw their own L2 review and L5 windows; the same inheritance draws the
+  same windows."""
+  drawn = []
+
+  class Recording(TC.MultiCorpusWindows):
+    def __init__(self, *args, **kwargs):
+      super().__init__(*args, **kwargs)
+      drawn.append([])
+
+    def sample(self, batch, length):
+      data = super().sample(batch, length)
+      drawn[-1].append(list(self.last))
+      return data
+
+  monkeypatch.setattr(ts_run, 'MultiCorpusWindows', Recording)
+  args = ['--preset', 'small', '--device', 'cpu', '--batch-size', '2', '--batch-length', str(T),
+          '--holdout', '0', '--window-start', 'carry', '--carry-root', str(stores),
+          '--corpus', str(two[0]), '--corpus', str(two[1]), '--updates', '2']
+  for command in ('train-outcome', 'train-policy'):
+    drawn.clear()
+    runs = {k: tmp_path / command / k for k in ('a', 'b', 'c')}
+    ts_run.main([command, '--run', str(runs['a']), '--init-from', str(pik['policy']), *args])
+    ts_run.main([command, '--run', str(runs['b']), '--init-from', str(pik['policy']), *args])
+    # pi_1: the learner of round a, frozen; round c inherits it.
+    agent = ts_run.build(runs['a'], 'small', 'cpu')
+    pi1 = ts_run.freeze(agent, runs['a'], 'pi1', 'small', list(two), out=tmp_path / command / 'pi1')
+    ts_run.main([command, '--run', str(runs['c']), '--init-from', str(pi1), *args])
+    first, again, next_round = drawn
+    assert len(first) == 2 and first == again
+    assert next_round != first
