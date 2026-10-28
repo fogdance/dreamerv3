@@ -2,7 +2,8 @@
 # formal_v1_carry.yaml (user decision 2026-10-24). The development run of
 # formal_v1_carry.yaml trains fast to check the code; this run trains every
 # stage ten times longer, for a comparison later. Besides the step counts it
-# differs from formal_v1_carry.yaml only in cf_wait_forks and cf_coverage.
+# differs from formal_v1_carry.yaml only in cf_wait_forks, cf_budget and
+# cf_coverage.
 #
 # The budgets below are cumulative targets, not additional update counts. The
 # foundation continues the L1/L2 checkpoint of formal_v1.yaml (ckpt 22000,
@@ -67,18 +68,21 @@ iteration:
   parallel_contracts: 3     # x cf_workers GPU processes, ~1.6 GB RAM and 1.1 GB GPU each
   # 100 in formal_v1_carry.yaml. Round 1 there: 314 real ADDs and 300 WAIT
   # forks on FG001/FG005/FG009 (legal flat decisions 7261/2041/9201), CF
-  # 9-12 min per contract, about 4 s of a worker per fork. Here about 3300
-  # pairs on the same contracts, about 30 min per contract.
+  # 9-12 min per contract, about 4 s of a worker per fork. Here round 1 has
+  # 1114 forks on FG005; cf_budget sets how many of them get a label.
   cf_wait_forks: 1000
   cf_workers: 4             # 3 x 4 = 12 workers: GPU memory is the bound; RAM may use swap
   # Every legal fork first gets a Native probe of cf_probe_steps; it ends
   # validly at an exact (EXACT_STATE) or funds-safe coupling or at the true
-  # terminal. 48 of the unfinished probes per contract, a sample stratified by
+  # terminal. cf_budget of the unfinished probes per contract, a sample stratified by
   # action, equity quartile and 60-minute volatility, continue from their saved
   # state up to cf_max_steps; the others are UNAVAILABLE_BUDGET without a label
   # (Astra CF fix, user decision 2026-10-27; FG201 of pi_0002: 914 of 1596).
   cf_probe_steps: 64
-  cf_budget: 48
+  # Ten times the 48 of formal_v1_carry.yaml, as the WAIT forks (user
+  # 2026-10-28): with 48, round 1 labelled 248 of the 1114 forks of FG005
+  # (0.22), about the pairs of the development config.
+  cf_budget: 480
   # L4 needs valid pairs for >= 80% of each contract's forks; else the round
   # keeps pi_k's value brain and anchor (no Q learning from a selective set).
   cf_min_coverage: 0.8
