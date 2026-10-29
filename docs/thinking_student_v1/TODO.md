@@ -683,8 +683,15 @@
   - 核对：用 paper 路径重跑 1x π₆ 的 FG409，学生和随机账户的结果与原 DEV 考试完全相同；c4 测试 19 项通过；ruff 无问题。
   - 运行目录 `/data/logdir/fg_single3/thinking_student/PAPER_FG501_FG605_20261029/`：1x π₆ 于 18:30 开始；10x 的 best_dev 和 π₉ 由 `after_10x.sh` 在 10x 结束后自动运行（tmux `d3:paper_10x`）。
   - 结果（2026-10-30 04:02 全部完成）：净盈亏 1x π₆ −72,420（随机 −83,170，胜 4/5 个种子），10x π₄ −84,774（随机 −106,435，5/5），10x π₉ −88,332（随机 −101,441，4/5）；三者都亏钱，但都少于随机进场。
-- [ ] G-13：模拟盘的 TP/SL 可配置（用户 2026-10-30：1x 模拟盘止损 30 改为 5 再跑）
+- [x] G-13：模拟盘的 TP/SL 可配置（用户 2026-10-30：1x 模拟盘止损 30 改为 5 再跑）
   - [x] gym：`entry.take_profit_points / stop_loss_points`（默认 5 / 30，仅 Single3）进入 SL/TP 价、TP 成交检查、Quality TP 打分器（TP 检查与势函数尺度）、其他退出的亏损尺度；学生的持仓输入保持训练尺度（/5、/30）。
   - [x] `exam --take-profit-points / --stop-loss-points` 只用于 PAPER，写入考试的 `inputs/env.yaml`，学生和随机账户同规则；`paper.py` 报告每个策略的 TP/SL，同一策略各合约规则不同则拒绝。
   - [x] 核对：默认规则重跑 1x π₆ FG605，学生与随机结果与原模拟盘完全相同；gym env/reward/account/CF 测试与 c4 paper 测试通过；FG501 SL5 实测止损恰为 5 点。
-  - [ ] 1x π₆ SL5 模拟盘（tag `1x_best_pi_0006_sl5`）。注意：模型按 TP5/SL30 训练，SL5 下它的胜率预测与 Q 不再对应真实规则。
+  - [x] 1x π₆ SL5 / SL16、10x π₄ / π₉ SL5 模拟盘已跑完（对比表 `PAPER_FG501_FG605_20261029/comparison_tp_sl.md`）。注意：模型按 TP5/SL30 训练，SL5 下它的胜率预测与 Q 不再对应真实规则。
+
+- [x] G-14：E0 诊断（`TS_V1_Integrated_Review_20261030.md` §6，用户 2026-10-30：不改交易规则、不改训练参数、不重训）
+  - [x] E0.1 Reward 对 PnL：单笔同号 99%，但盈亏平衡胜率 Reward 约 80%、Q 折扣约 74%、PnL 86.6%；所有运行 Reward 为正、PnL 为负。
+  - [x] E0.2 入场前可预测性：DEV FG409 和 PAPER 事实（`dev_facts.py`，Native 核对通过，不进语料目录）；学生 Outcome 样本外 AUC 0.39–0.54；独立探针按合约留出 0.50。
+  - [x] E0.3 Q 对自己 CF：1x 秩相关约 0、翻转 41% 有利；10x 只在样本内 ADD 分叉上有相关；ΔG 与 ΔPnL 同号 91–99.8%。
+  - [x] E0.4 口径：SL5 的 −6,060 元差额为滑点；入场 bar 即 SL 占 26%；1x 对随机的优势几乎全部来自 FG501。
+  - 结论与建议见 `docs/thinking_student_v1/E0_DIAGNOSTICS_20261030.md`：下一轮先改 Reward（对齐净 PnL），Outcome / Q / Actor 不动；先做 E1 β_Q = 0 冻结消融。
