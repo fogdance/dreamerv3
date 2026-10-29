@@ -427,13 +427,14 @@ def collect(agent, env, out, steps, mode='policy', chunk=1024, policy=None,
 FACT_KINDS = {'TAKE_PROFIT': 'TP5', 'STOP_LOSS': 'SL30'}
 
 
-def check_collection(out, corpus=None):
+def check_collection(out, corpus=None, tp_points=5, sl_points=30):
   """Minimal verification of an autonomous collection (C3 S2): each recorded
   proposal follows the formal rule, the formal pi executed its own proposal
   (forced counterfactual actions excepted), no executed ADD was masked, and
-  each closed Native trade reached TP by >= 5 points or lost >= 30 points at
-  SL. With the corpus of the collection's contract, each student ADD from a
-  funded flat account is compared with the Native fact of the same cursor."""
+  each closed Native trade reached TP by >= tp_points or lost >= sl_points at
+  SL (TP5 / SL30, the env defaults). With the corpus of the collection's
+  contract, each student ADD from a funded flat account is compared with the
+  Native fact of the same cursor."""
   out = Path(out)
   rows = [json.loads(line) for file in sorted((out / 'steps').glob('*.jsonl'))
           for line in file.open()]
@@ -454,8 +455,8 @@ def check_collection(out, corpus=None):
     exits[t['reason']] = exits.get(t['reason'], 0) + 1
     move = (1 if t['side'] == 'LONG' else -1) * (
         Decimal(t['exit_price']) - Decimal(t['entry_price']))
-    if (t['reason'] == 'TAKE_PROFIT' and move < 5) or (
-        t['reason'] == 'STOP_LOSS' and move > -30):
+    if (t['reason'] == 'TAKE_PROFIT' and move < tp_points) or (
+        t['reason'] == 'STOP_LOSS' and move > -sl_points):
       points.append(dict(entry_cursor=t['entry_cursor'], reason=t['reason'], move=str(move)))
   report.update(closed=len(trades), exits=exits, open=len(env['entries']),
                 point_violations=points, reward=sum(r['reward'] for r in rows),

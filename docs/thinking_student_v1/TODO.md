@@ -678,3 +678,13 @@
   - 诊断用教学题（本 run 第 1–6 轮、开发 run π₀–π₈，用同一版代码和分档阈值重建）：`GRADED_1X_ITEMS_20261029/`。
   - DEV：10 个策略的平均 0.000946/分钟（开发 run 0.000403），8/10 个高于同 ADD 率随机基线；best_dev 是 π₆（0.001449）。Q 仍未学到；执行的 ADD 中约一半仍是“差”档。E-7：π₇、π₈ 的新采集上没有看到 p_TP 被推高。
   - 10x `FORMAL_V1_GRADED_10X_20261028` 由用户于 2026-10-29 启动（`graded_10x.sh` 已按用户要求去掉 GPU 检查）。
+- [ ] G-12：模拟盘（用户 2026-10-29）：冻结策略在 FG501、FG505、FG509、FG601、FG605（2024-08-19 → 2025-12-31）上 Teacher-free 交易，只看盈利，不用于训练或选策略
+  - 代码（dreamer `0922fa2`）：`markets/paper_pool.json`（role `paper`，不可训练）与 5 个合约的 env/合约文件（合约条款取自 gym `dataset_v3_345_audited`，FG409 的条款与它逐字节相同）；`exam --paper-pool`（标签 PAPER）；`paper.py` 把各合约串成一个账户（合计净盈亏、整体回撤、月度盈亏、对随机进场）。
+  - 核对：用 paper 路径重跑 1x π₆ 的 FG409，学生和随机账户的结果与原 DEV 考试完全相同；c4 测试 19 项通过；ruff 无问题。
+  - 运行目录 `/data/logdir/fg_single3/thinking_student/PAPER_FG501_FG605_20261029/`：1x π₆ 于 18:30 开始；10x 的 best_dev 和 π₉ 由 `after_10x.sh` 在 10x 结束后自动运行（tmux `d3:paper_10x`）。
+  - 结果（2026-10-30 04:02 全部完成）：净盈亏 1x π₆ −72,420（随机 −83,170，胜 4/5 个种子），10x π₄ −84,774（随机 −106,435，5/5），10x π₉ −88,332（随机 −101,441，4/5）；三者都亏钱，但都少于随机进场。
+- [ ] G-13：模拟盘的 TP/SL 可配置（用户 2026-10-30：1x 模拟盘止损 30 改为 5 再跑）
+  - [x] gym：`entry.take_profit_points / stop_loss_points`（默认 5 / 30，仅 Single3）进入 SL/TP 价、TP 成交检查、Quality TP 打分器（TP 检查与势函数尺度）、其他退出的亏损尺度；学生的持仓输入保持训练尺度（/5、/30）。
+  - [x] `exam --take-profit-points / --stop-loss-points` 只用于 PAPER，写入考试的 `inputs/env.yaml`，学生和随机账户同规则；`paper.py` 报告每个策略的 TP/SL，同一策略各合约规则不同则拒绝。
+  - [x] 核对：默认规则重跑 1x π₆ FG605，学生与随机结果与原模拟盘完全相同；gym env/reward/account/CF 测试与 c4 paper 测试通过；FG501 SL5 实测止损恰为 5 点。
+  - [ ] 1x π₆ SL5 模拟盘（tag `1x_best_pi_0006_sl5`）。注意：模型按 TP5/SL30 训练，SL5 下它的胜率预测与 Q 不再对应真实规则。

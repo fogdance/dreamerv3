@@ -867,15 +867,48 @@ def test_paper_trading_runs_paper_rows_only_and_chains_them(pik, tmp_path):
   with pytest.raises(SystemExit):  # one market source per exam
     E.main(['--policy', policy, '--out', str(tmp_path / 'x' / 'both'), '--paper-pool', str(pool),
             '--pool', str(pool), '--contract', 'P1'])
+  with pytest.raises(SystemExit):  # other TP / SL distances are for PAPER only
+    E.main(['--policy', policy, '--out', str(tmp_path / 'x' / 'dev'), '--pool', str(pool),
+            '--contract', 'DEV', '--stop-loss-points', '5'])
   for name in ('P1', 'P2'):
     E.main(['--policy', policy, '--out', str(tmp_path / 'run' / 'pi' / name), '--paper-pool', str(pool),
             '--contract', name, '--random-seeds', '2'])
   exams = [json.loads((tmp_path / 'run' / 'pi' / n / 'exam.json').read_text()) for n in ('P1', 'P2')]
   assert all(e['label'] == 'PAPER' and e['complete'] and e['teacher_free'] for e in exams)
+  assert 'stop_loss_points' not in yaml.safe_load(
+      (tmp_path / 'run' / 'pi' / 'P1' / 'inputs' / 'env.yaml').read_text())['entry']
+  # Paper rules TP 6 / SL 5 (user 2026-10-30): the env, the student and the random accounts.
+  rules = ['--take-profit-points', '6', '--stop-loss-points', '5']
+  for name in ('P1', 'P2'):
+    E.main(['--policy', policy, '--out', str(tmp_path / 'run' / 'sl5' / name), '--paper-pool', str(pool),
+            '--contract', name, '--random-seeds', '2', *rules])
+  out = tmp_path / 'run' / 'sl5' / 'P2'
+  entry = yaml.safe_load((out / 'inputs' / 'env.yaml').read_text())['entry']
+  assert (entry['take_profit_points'], entry['stop_loss_points']) == (6, 5)
+  assert json.loads((out / 'exam.json').read_text())['source']['rules'] == dict(
+      take_profit_points=6, stop_loss_points=5)
+  from gym_trading_env.research import ts_v1_corpus as GC
+  native = GC.native_env(out / 'inputs' / 'env.yaml', market=False)
+  assert (native.take_profit_points, native.stop_loss_points) == (6, 5)
+  assert native.reward_function.scorer.config.take_profit_points == 6.
+  assert native._compute_stop_loss_price(100, 'long') == 95
+  assert native._compute_take_profit_price(100, None, 'short') == 94
+  for name in ('P1', 'P2'):
+    collect = tmp_path / 'run' / 'sl5' / name / 'collect'
+    assert not ts_run.check_collection(collect, tp_points=6, sl_points=5)['point_violations']
+    with (collect / 'state.pkl').open('rb') as f:
+      for t in pickle.load(f)['run']['env']['attributions']:
+        move = (1 if t['side'] == 'LONG' else -1) * (float(t['exit_price']) - float(t['entry_price']))
+        assert t['reason'] != 'TAKE_PROFIT' or move >= 6
+        assert t['reason'] != 'STOP_LOSS' or move <= -5
+  shutil.copytree(tmp_path / 'run' / 'pi' / 'P1', tmp_path / 'mixed' / 'pi' / 'P1')
+  shutil.copytree(out, tmp_path / 'mixed' / 'pi' / 'P2')
   # Only the paper rows are chained, in time order.
   paper_only = tmp_path / 'paper_only.json'
   paper_only.write_text(json.dumps(dict(files=rows[1::-1])))
-  P.main(['--run', str(tmp_path / 'run'), '--pool', str(paper_only), 'pi'])
+  with pytest.raises(ValueError, match='different TP / SL rules'):
+    P.main(['--run', str(tmp_path / 'mixed'), '--pool', str(paper_only), 'pi'])
+  P.main(['--run', str(tmp_path / 'run'), '--pool', str(paper_only), 'pi', 'sl5'])
   report = json.loads((tmp_path / 'run' / 'paper_report.json').read_text())
   assert report['contracts'] == ['P1', 'P2']
   whole, parts = report['policies']['pi']['whole'], report['policies']['pi']['contracts']
@@ -886,6 +919,8 @@ def test_paper_trading_runs_paper_rows_only_and_chains_them(pik, tmp_path):
   seeds = [sum(e['random']['per_seed'][s]['net_pnl'] for e in exams) for s in (0, 1)]
   assert whole['random_net_pnl']['mean'] == pytest.approx(np.mean(seeds))
   assert [p['contract'] for p in parts] == ['P1', 'P2'] and 'equity' not in parts[0]
+  assert report['policies']['pi']['rules'] == dict(take_profit_points=5, stop_loss_points=30)
+  assert report['policies']['sl5']['rules'] == dict(take_profit_points=6, stop_loss_points=5)
   assert (tmp_path / 'run' / 'paper_report.md').read_text().startswith('# Paper trading')
 
 

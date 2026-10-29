@@ -6,7 +6,8 @@ market minutes under the same Native rules.
       --pool configs/thinking_student/markets/pool.json --contract CZCE.FG409
   python -m dreamerv3.thinking_student.exam --policy DIR --out DIR --corpus DIR --steps N
   python -m dreamerv3.thinking_student.exam --policy DIR --out DIR \\
-      --paper-pool configs/thinking_student/markets/paper_pool.json --contract CZCE.FG501
+      --paper-pool configs/thinking_student/markets/paper_pool.json --contract CZCE.FG501 \\
+      [--take-profit-points 5] [--stop-loss-points 30]
 
 DEV          a VALIDATION row of the TS market pool (gym ts_v1_corpus.dev_row),
              its env inputs only (write_inputs, as for the TRAIN corpora): an
@@ -14,7 +15,9 @@ DEV          a VALIDATION row of the TS market pool (gym ts_v1_corpus.dev_row),
 PAPER        a row of the paper-trading pool (role 'paper', never eligible for
              training; user 2026-10-29): paper trading on later markets to see
              the policy's profit. Like DEV it only reads env inputs; it is not
-             used to choose or tune a policy.
+             used to choose or tune a policy. Paper trading may set other
+             TP / SL distances than the trained TP5 / SL30 (user 2026-10-30);
+             the student and the random accounts then trade under them.
 TRAIN_SMOKE  the env of a TRAIN corpus, usually cut short: an engineering
              run, never an out-of-sample result.
 DEV_NOT_CONFIGURED  written by the orchestrator when no DEV market is set.
@@ -170,6 +173,19 @@ def paper_row(contract, pool):
   return row
 
 
+def paper_inputs(row, folder, rules):
+  """write_inputs of a PAPER row with the TP / SL distances of `rules`
+  (entry.take_profit_points / stop_loss_points; none: TP5 / SL30)."""
+  import yaml
+  from gym_trading_env.research import ts_v1_corpus as C
+  config = C.write_inputs(row, folder)
+  if rules:
+    env = yaml.safe_load(config.read_text())
+    env['entry'].update(rules)
+    config.write_text(yaml.safe_dump(env, sort_keys=False))
+  return config
+
+
 def main(argv=None):
   parser = argparse.ArgumentParser()
   parser.add_argument('--policy', required=True, help='frozen policy folder')
@@ -178,6 +194,8 @@ def main(argv=None):
   parser.add_argument('--contract', default=None, help='DEV contract of --pool, PAPER contract of --paper-pool')
   parser.add_argument('--paper-pool', default=None,
                       help='paper-trading pool (markets/paper_pool.json) with the row of --contract (PAPER)')
+  parser.add_argument('--take-profit-points', type=int, default=None, help='PAPER only: TP distance (env default 5)')
+  parser.add_argument('--stop-loss-points', type=int, default=None, help='PAPER only: SL distance (env default 30)')
   parser.add_argument('--corpus', default=None, help='TRAIN corpus folder (TRAIN_SMOKE)')
   parser.add_argument('--steps', type=int, default=None, help='first minutes only (default: all)')
   parser.add_argument('--random-seeds', type=int, default=5)
@@ -186,6 +204,10 @@ def main(argv=None):
   if sum(map(bool, (args.pool, args.paper_pool, args.corpus))) != 1:
     parser.error('give --pool and --contract (DEV), --paper-pool and --contract (PAPER) '
                  'or --corpus (TRAIN_SMOKE)')
+  rules = {k: v for k, v in (('take_profit_points', args.take_profit_points),
+                              ('stop_loss_points', args.stop_loss_points)) if v is not None}
+  if rules and not args.paper_pool:
+    parser.error('--take-profit-points / --stop-loss-points are for PAPER only')
   from gym_trading_env.research import ts_v1_corpus as C
   if args.pool:
     row = C.dev_row(args.contract, args.pool)
@@ -193,8 +215,8 @@ def main(argv=None):
     label, source = 'DEV', dict(pool=str(Path(args.pool).resolve()), row=row)
   elif args.paper_pool:
     row = paper_row(args.contract, args.paper_pool)
-    config = C.write_inputs(row, Path(args.out) / 'inputs')
-    label, source = 'PAPER', dict(pool=str(Path(args.paper_pool).resolve()), row=row)
+    config = paper_inputs(row, Path(args.out) / 'inputs', rules)
+    label, source = 'PAPER', dict(pool=str(Path(args.paper_pool).resolve()), row=row, rules=rules)
   else:
     config = Path(args.corpus) / 'inputs' / 'env.yaml'
     meta = json.loads((Path(args.corpus) / 'source.json').read_text())
