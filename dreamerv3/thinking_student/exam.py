@@ -5,10 +5,16 @@ market minutes under the same Native rules.
   python -m dreamerv3.thinking_student.exam --policy DIR --out DIR \\
       --pool configs/thinking_student/markets/pool.json --contract CZCE.FG409
   python -m dreamerv3.thinking_student.exam --policy DIR --out DIR --corpus DIR --steps N
+  python -m dreamerv3.thinking_student.exam --policy DIR --out DIR \\
+      --paper-pool configs/thinking_student/markets/paper_pool.json --contract CZCE.FG501
 
 DEV          a VALIDATION row of the TS market pool (gym ts_v1_corpus.dev_row),
              its env inputs only (write_inputs, as for the TRAIN corpora): an
              independent market under the same Native rules.
+PAPER        a row of the paper-trading pool (role 'paper', never eligible for
+             training; user 2026-10-29): paper trading on later markets to see
+             the policy's profit. Like DEV it only reads env inputs; it is not
+             used to choose or tune a policy.
 TRAIN_SMOKE  the env of a TRAIN corpus, usually cut short: an engineering
              run, never an out-of-sample result.
 DEV_NOT_CONFIGURED  written by the orchestrator when no DEV market is set.
@@ -153,24 +159,42 @@ def exam(policy, out, label, config, source, steps=None, seeds=5, device=None, l
   return report
 
 
+def paper_row(contract, pool):
+  """The contract's row of the paper-trading pool: role 'paper' and never
+  eligible for training, so neither a TRAIN nor a VALIDATION row can be
+  paper-traded through it."""
+  from gym_trading_env.research import ts_v1_corpus as C
+  row = C.pool_row(contract, pool)
+  if row.get('role') != 'paper' or row.get('eligible_for_training'):
+    raise ValueError(f'{contract} is not a PAPER row of {pool} (role {row.get("role")})')
+  return row
+
+
 def main(argv=None):
   parser = argparse.ArgumentParser()
   parser.add_argument('--policy', required=True, help='frozen policy folder')
   parser.add_argument('--out', required=True, help='exam folder')
   parser.add_argument('--pool', default=None, help='TS market pool with the VALIDATION row (DEV)')
-  parser.add_argument('--contract', default=None, help='DEV contract of --pool')
+  parser.add_argument('--contract', default=None, help='DEV contract of --pool, PAPER contract of --paper-pool')
+  parser.add_argument('--paper-pool', default=None,
+                      help='paper-trading pool (markets/paper_pool.json) with the row of --contract (PAPER)')
   parser.add_argument('--corpus', default=None, help='TRAIN corpus folder (TRAIN_SMOKE)')
   parser.add_argument('--steps', type=int, default=None, help='first minutes only (default: all)')
   parser.add_argument('--random-seeds', type=int, default=5)
   parser.add_argument('--device', default=None, help="default: the snapshot's device")
   args = parser.parse_args(argv)
-  if bool(args.pool) == bool(args.corpus):
-    parser.error('give --pool and --contract (DEV) or --corpus (TRAIN_SMOKE)')
+  if sum(map(bool, (args.pool, args.paper_pool, args.corpus))) != 1:
+    parser.error('give --pool and --contract (DEV), --paper-pool and --contract (PAPER) '
+                 'or --corpus (TRAIN_SMOKE)')
   from gym_trading_env.research import ts_v1_corpus as C
   if args.pool:
     row = C.dev_row(args.contract, args.pool)
     config = C.write_inputs(row, Path(args.out) / 'inputs')
     label, source = 'DEV', dict(pool=str(Path(args.pool).resolve()), row=row)
+  elif args.paper_pool:
+    row = paper_row(args.contract, args.paper_pool)
+    config = C.write_inputs(row, Path(args.out) / 'inputs')
+    label, source = 'PAPER', dict(pool=str(Path(args.paper_pool).resolve()), row=row)
   else:
     config = Path(args.corpus) / 'inputs' / 'env.yaml'
     meta = json.loads((Path(args.corpus) / 'source.json').read_text())

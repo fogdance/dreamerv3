@@ -1,0 +1,71 @@
+{
+ "product": "CZCE.FG",
+ "note": "Paper-trading markets (user 2026-10-29): FG501-FG605 after the DEV contract FG409. A frozen policy trades them Teacher-free to see its profit; never training material, never used to choose or tune a policy. env_config is relative to this file.",
+ "files": [
+  {
+   "contract": "CZCE.FG501",
+   "role": "paper",
+   "eligible_for_training": false,
+   "path": "/home/v/Documents/work/gym-trading-env/artifacts/fg_entry_v1/main_export_345_audited/0020_CZCE_FG501_main_1m.csv",
+   "sha256": "9872c49b509a2b666882bf79154f8de0ef57fcdcf7841e36d8843b96e442d880",
+   "rows": 25740,
+   "first_timestamp": "2024-08-19 21:01:00+08:00",
+   "last_timestamp": "2024-12-12 15:00:00+08:00",
+   "trading_days": 76,
+   "calendar_basis": "user_confirmed_observed_clock",
+   "env_config": "envs/CZCE_FG501_env.yaml"
+  },
+  {
+   "contract": "CZCE.FG505",
+   "role": "paper",
+   "eligible_for_training": false,
+   "path": "/home/v/Documents/work/gym-trading-env/artifacts/fg_entry_v1/main_export_345_audited/0021_CZCE_FG505_main_1m.csv",
+   "sha256": "381ed97694cc7e56cafa33e669050ad769ab70af5f76fb37452e2e021b3bf148",
+   "rows": 27240,
+   "first_timestamp": "2024-12-12 21:01:00+08:00",
+   "last_timestamp": "2025-04-15 15:00:00+08:00",
+   "trading_days": 80,
+   "calendar_basis": "user_confirmed_observed_clock",
+   "env_config": "envs/CZCE_FG505_env.yaml"
+  },
+  {
+   "contract": "CZCE.FG509",
+   "role": "paper",
+   "eligible_for_training": false,
+   "path": "/home/v/Documents/work/gym-trading-env/artifacts/fg_entry_v1/main_export_345_audited/0022_CZCE_FG509_main_1m.csv",
+   "sha256": "41e5a412fc51c0984492810668183065db03e9f12e99fc4e3cd77d980b18e204",
+   "rows": 27705,
+   "first_timestamp": "2025-04-15 21:01:00+08:00",
+   "last_timestamp": "2025-08-12 15:00:00+08:00",
+   "trading_days": 81,
+   "calendar_basis": "user_confirmed_observed_clock",
+   "env_config": "envs/CZCE_FG509_env.yaml"
+  },
+  {
+   "contract": "CZCE.FG601",
+   "role": "paper",
+   "eligible_for_training": false,
+   "path": "/home/v/Documents/work/gym-trading-env/artifacts/fg_entry_v1/main_export_345_audited/0023_CZCE_FG601_main_1m.csv",
+   "sha256": "962dbce77dd7f361ea8c1f709cecc5661fbd35a42d3f842927396cfb7e4ce97c",
+   "rows": 28275,
+   "first_timestamp": "2025-08-12 21:01:00+08:00",
+   "last_timestamp": "2025-12-15 15:00:00+08:00",
+   "trading_days": 83,
+   "calendar_basis": "user_confirmed_observed_clock",
+   "env_config": "envs/CZCE_FG601_env.yaml"
+  },
+  {
+   "contract": "CZCE.FG605",
+   "role": "paper",
+   "eligible_for_training": false,
+   "path": "/home/v/Documents/work/gym-trading-env/artifacts/fg_entry_v1/main_export_345_audited/0024_CZCE_FG605_main_1m.csv",
+   "sha256": "6165d3c70fa1f1fdbcb2a196af18206cd94255d52ddeb60260088e01bf6d4f0f",
+   "rows": 4020,
+   "first_timestamp": "2025-12-15 21:01:00+08:00",
+   "last_timestamp": "2025-12-31 15:00:00+08:00",
+   "trading_days": 12,
+   "calendar_basis": "user_confirmed_observed_clock",
+   "env_config": "envs/CZCE_FG605_env.yaml"
+  }
+ ]
+}

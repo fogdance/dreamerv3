@@ -846,6 +846,49 @@ def test_exam_is_teacher_free_and_names_its_market(pik, two, tmp_path):
   assert set(report['advantage']) == set(E.SCORES)
 
 
+def test_paper_trading_runs_paper_rows_only_and_chains_them(pik, tmp_path):
+  from wp02_fixture import native_factory
+  from dreamerv3.thinking_student import paper as P
+  policy = str(pik['policy'])
+  rows = []
+  for shift, name, role, eligible in ((3, 'P1', 'paper', False), (4, 'P2', 'paper', False),
+                                      (5, 'TRN', 'train', True), (6, 'DEV', 'validation', False),
+                                      (7, 'PTR', 'paper', True)):
+    _, env, _ = native_factory(tmp_path / name, shift=shift)
+    rows.append(dict(contract=name, role=role, eligible_for_training=eligible,
+                     path=str(env.parent / 'market.csv'), env_config=str(env),
+                     first_timestamp=f'2030-0{shift}-01'))
+  pool = tmp_path / 'paper_pool.json'
+  pool.write_text(json.dumps(dict(files=rows)))
+  for name in ('TRN', 'DEV', 'PTR'):
+    with pytest.raises(ValueError, match='not a PAPER row'):
+      E.main(['--policy', policy, '--out', str(tmp_path / 'x' / name), '--paper-pool', str(pool),
+              '--contract', name])
+  with pytest.raises(SystemExit):  # one market source per exam
+    E.main(['--policy', policy, '--out', str(tmp_path / 'x' / 'both'), '--paper-pool', str(pool),
+            '--pool', str(pool), '--contract', 'P1'])
+  for name in ('P1', 'P2'):
+    E.main(['--policy', policy, '--out', str(tmp_path / 'run' / 'pi' / name), '--paper-pool', str(pool),
+            '--contract', name, '--random-seeds', '2'])
+  exams = [json.loads((tmp_path / 'run' / 'pi' / n / 'exam.json').read_text()) for n in ('P1', 'P2')]
+  assert all(e['label'] == 'PAPER' and e['complete'] and e['teacher_free'] for e in exams)
+  # Only the paper rows are chained, in time order.
+  paper_only = tmp_path / 'paper_only.json'
+  paper_only.write_text(json.dumps(dict(files=rows[1::-1])))
+  P.main(['--run', str(tmp_path / 'run'), '--pool', str(paper_only), 'pi'])
+  report = json.loads((tmp_path / 'run' / 'paper_report.json').read_text())
+  assert report['contracts'] == ['P1', 'P2']
+  whole, parts = report['policies']['pi']['whole'], report['policies']['pi']['contracts']
+  pnl = [e['student']['net_pnl'] for e in exams]
+  assert whole['net_pnl'] == pytest.approx(sum(pnl))
+  assert sum(whole['monthly'].values()) == pytest.approx(sum(pnl))
+  assert whole['minutes'] == sum(e['student']['minutes'] for e in exams)
+  seeds = [sum(e['random']['per_seed'][s]['net_pnl'] for e in exams) for s in (0, 1)]
+  assert whole['random_net_pnl']['mean'] == pytest.approx(np.mean(seeds))
+  assert [p['contract'] for p in parts] == ['P1', 'P2'] and 'equity' not in parts[0]
+  assert (tmp_path / 'run' / 'paper_report.md').read_text().startswith('# Paper trading')
+
+
 def test_exam_numbers_have_defined_denominators():
   rows = [dict(cursor=c, legal=legal, executed=a, reward=r, equity=e) for c, legal, a, r, e in (
       (0, True, 1, 0., 100.), (1, False, 0, 0., 90.), (2, False, 0, 2., 120.), (3, True, 0, -1., 110.))]
@@ -869,8 +912,13 @@ def test_thinking_student_configs_live_in_one_place(tmp_path):
   pool = json.loads((root / 'markets' / 'pool.json').read_text())['files']
   roles = [(r['role'], r['eligible_for_training']) for r in pool]
   assert (roles.count(('train', True)), roles.count(('validation', False)), len(roles)) == (18, 1, 19)
-  for row in pool:
+  paper = json.loads((root / 'markets' / 'paper_pool.json').read_text())['files']
+  assert [(r['role'], r['eligible_for_training']) for r in paper] == [('paper', False)] * 5
+  assert not {r['contract'] for r in paper} & {r['contract'] for r in pool}
+  for row in pool + paper:
     env = yaml.safe_load((root / 'markets' / row['env_config']).read_text())
+    assert env['entry']['contract'] == row['contract']
+    assert Path(env['trading']['data_path']) == Path(row['path'])
     for key in ('contract_config', 'strategy_config'):
       assert not Path(env['entry'][key]).is_absolute(), (row['contract'], key)
       assert (root / 'markets' / 'envs' / env['entry'][key]).exists()
