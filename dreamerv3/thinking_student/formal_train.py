@@ -49,8 +49,10 @@ Every step runs an existing command in its own process (logs/). A rerun
 continues from the disk: a stage trains its budget minus its recorded
 progress, a finished collection or CF of the same frozen policy is kept, a
 frozen policy is never rewritten, and the missing exams of the newest frozen
-policy come before the round limit or a new round (a round ends with its
-candidate's exam). run_state.json mirrors the progress for
+policy come before the round limit or a new round of a later call. Within
+a call, the DEV exam of a new candidate runs alongside the next round's
+collection and CF and is finished before the next exam starts and before
+the call ends. run_state.json mirrors the progress for
 reading and is never consulted to admit anything. Budgets and rounds come
 from the config; nothing loops without a bound.
 
@@ -467,9 +469,51 @@ def _round_contracts(it, names, r):
   return [names[((r - 1) * m + i) % len(names)] for i in range(m)]
 
 
+class _Exams:
+  """The DEV exams of a new candidate run in the background while the next
+  round collects and runs its CF, which do not depend on them; join()
+  finishes them before the next exam starts or iterate returns, and records
+  best_dev in the calling thread (the only writer of run_state.json)."""
+
+  def __init__(self, cfg, lay, state):
+    self.cfg, self.lay, self.state = cfg, lay, state
+    self.pool, self.pending = ThreadPoolExecutor(1), None
+
+  def start(self, policy, train_smoke):
+    self.join()
+    cfg, lay = self.cfg, self.lay
+    if train_smoke or not cfg['dev']['contracts']:
+      evaluate(cfg, lay, self.state, policy, train_smoke)
+      return
+    e = cfg['evaluation']
+    jobs = [('exam', ['--policy', policy, '--out', lay.exam(policy, 'DEV', c), '--pool',
+                      cfg['paths']['markets'], '--contract', c, '--random-seeds', e['random_seeds']],
+             lay.log(f'exam_{Path(policy).name}_DEV_{c}'))
+            for c in cfg['dev']['contracts'] if not (lay.exam(policy, 'DEV', c) / 'exam.json').exists()]
+    self.pending = (Path(policy), self.pool.submit(_call_many, jobs, len(jobs)))
+
+  def running(self, policy):
+    return self.pending is not None and self.pending[0] == Path(policy)
+
+  def join(self):
+    if self.pending is None:
+      return
+    (policy, future), self.pending = self.pending, None
+    future.result()
+    evaluate(self.cfg, self.lay, self.state, policy)  # the exams exist: best_dev only
+
+
 def iterate(cfg, lay, state, rounds, until=None):
   """until='cf': the round stops after its CF and state-check, before L4; a
   later iterate goes on from there."""
+  exams = _Exams(cfg, lay, state)
+  try:
+    _iterate(cfg, lay, state, rounds, until, exams)
+  finally:
+    exams.join()
+
+
+def _iterate(cfg, lay, state, rounds, until, exams):
   contracts, it, s = _contracts(cfg), cfg['iteration'], cfg['student']
   corpora = _corpus_args(contracts.values())
   for _ in range(rounds):
@@ -477,7 +521,7 @@ def iterate(cfg, lay, state, rounds, until=None):
     if k is None:
       raise RuntimeError('No frozen policy: run pretrain first')
     policy = lay.policy(k)
-    if _exam_missing(cfg, lay, policy, _takes_smoke(cfg, k)):
+    if not exams.running(policy) and _exam_missing(cfg, lay, policy, _takes_smoke(cfg, k)):
       # B7 of pi_k stopped after its freeze or part way: only its missing
       # exams, before the round limit or a new round. For k > 0 this
       # finishes round k, a round of this call.
@@ -615,9 +659,9 @@ def iterate(cfg, lay, state, rounds, until=None):
         pairs=anchor.get('pairs', {}).get('total'), status=anchor.get('status')))
     _step(lay, state, step='exam', frozen_policy=str(new), latest_candidate=str(new),
           updates_by_stage=p, latest_checkpoint=str(latest(learner)))
-    # B7: the Teacher-free exam of the new candidate.
-    evaluate(cfg, lay, state, new, train_smoke=_takes_smoke(cfg, r))
-    _step(lay, state, step='done')
+    # B7: the Teacher-free exam of the new candidate, alongside the next round.
+    exams.start(new, _takes_smoke(cfg, r))
+    _step(lay, state, step='exam_running' if exams.pending else 'done')
 
 
 def evaluate(cfg, lay, state, policy, train_smoke=False):

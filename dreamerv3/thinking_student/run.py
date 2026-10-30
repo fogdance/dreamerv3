@@ -52,6 +52,7 @@ never written again.
 import argparse
 import hashlib
 import json
+import os
 import pickle
 import subprocess
 import time
@@ -374,9 +375,11 @@ def collect(agent, env, out, steps, mode='policy', chunk=1024, policy=None,
             log=print):
   """Autonomous experience until `steps` decisions in total (or the data end):
   steps/<n>.jsonl answer and account records, replay/<n>.npz decision arrays,
-  then state.pkl, so a stopped collection resumes at its last full chunk."""
+  then state.pkl, so a stopped collection resumes at its last full chunk.
+  snapshots/<n>.pkl keeps the state after each chunk (a hard link of that
+  state.pkl): the CF replays the reference path from them in parallel."""
   out = Path(out)
-  for sub in ('steps', 'replay'):
+  for sub in ('steps', 'replay', 'snapshots'):
     (out / sub).mkdir(parents=True, exist_ok=True)
   file = out / 'state.pkl'
   if file.exists():
@@ -412,6 +415,9 @@ def collect(agent, env, out, steps, mode='policy', chunk=1024, policy=None,
     with tmp.open('wb') as f:
       pickle.dump(dict(run=run.state(), chunks=index, totals=totals), f)
     tmp.rename(file)
+    snapshot = out / 'snapshots' / f'{index:06d}.pkl'
+    if not snapshot.exists():
+      os.link(file, snapshot)
     last = rows[-1]
     summary = dict(
         **meta, **totals, chunks=index, done=run.done, last_time=last['time'],

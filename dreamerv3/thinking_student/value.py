@@ -210,7 +210,66 @@ def _cf_init(policy, corpus, work):
   from .run import corpus_env, load_policy
   global _CF_WORKER
   agent, meta = load_policy(policy, logdir=Path(work) / f'policy_{os.getpid()}')
-  _CF_WORKER = dict(agent=agent, env=corpus_env(corpus), meta=meta, prepared=None)
+  _CF_WORKER = dict(agent=agent, env=corpus_env(corpus), meta=meta, prepared=None,
+                    n_actions=int(agent.n_actions), inputs=None)
+
+
+def _replay(main, reference, recorded, forks, work, end=None):
+  """The frozen reference from main's cursor to `end` (or the terminal):
+  checked against the collection; flat continuations, the policy's own
+  answers at flat rows and a checkpoint at each fork."""
+  stepper, continuations, own = Stepper(main), {}, {}
+  z_differs, save_seconds, save_bytes, steps = 0, 0., 0, 0
+  while not main.done and (end is None or int(main.env.current_step) < end):
+    t = int(main.env.current_step)
+    if reference.flat[reference.row(t)]:
+      continuations[t] = stepper.continuation()
+    if t in forks:
+      started = time.monotonic()
+      file = work / f'{t}.pkl'
+      _pickle_write(file, dict(run=main.state(), progress=CF.BranchProgress(
+          t, 1 - int(reference.action[reference.row(t)])),
+          first_trade=len(main.env.attributions), first_joint=None, probe_steps=0,
+          phase='fork', cost=dict(native_steps=0, policy_calls=0, seconds=0.,
+                                  save_seconds=0., restore_seconds=0.)))
+      save_seconds += time.monotonic() - started
+      save_bytes += file.stat().st_size
+    row, arrays = main.step()
+    steps += 1
+    rec = recorded[reference.row(t)]
+    if (row['cursor'], row['executed'], row['reward']) != (rec['cursor'], rec['executed'], rec['reward']):
+      raise RuntimeError(f'The frozen reference replay differs from the collection at cursor {t}')
+    if row['equity'] != rec['equity'] or not reference.same_inputs(t, arrays):
+      raise RuntimeError(f'The replayed Native account differs from the collection at cursor {t}')
+    z_differs += row['z'] != rec['z']
+    if reference.flat[reference.row(t)]:
+      own[t] = (row['z'], row['executed'])
+  return dict(continuations=continuations, own=own, z_differs=z_differs, steps=steps,
+              save_seconds=save_seconds, save_bytes=save_bytes,
+              terminated=bool(main.env.terminated))
+
+
+def _cf_segment(job):
+  """One segment of the reference replay, from a collection snapshot (or the
+  start) to the next snapshot's cursor."""
+  from .run import Autonomous
+  w, work = _CF_WORKER, Path(job['work'])
+  if w['inputs'] is None:
+    with (work / 'prepare_inputs.pkl').open('rb') as f:
+      w['inputs'] = pickle.load(f)
+  reference, recorded, forks = w['inputs']
+  began = time.monotonic()
+  if job['snapshot'] is None:
+    w['agent'].n_actions.value = w['n_actions']
+    main = Autonomous(w['agent'], w['env'], 'policy')
+  else:
+    with open(job['snapshot'], 'rb') as f:
+      main = Autonomous.restore(w['agent'], w['env'], pickle.load(f)['run'])
+  if int(main.env.current_step) != job['start']:
+    raise RuntimeError(f'Snapshot {job["snapshot"]} starts at {main.env.current_step}, not {job["start"]}')
+  out = _replay(main, reference, recorded, set(forks), work, job['end'])
+  return dict(out, seconds=time.monotonic() - began, platform=w['agent'].config.jax.platform,
+              compute_dtype=w['agent'].config.jax.compute_dtype)
 
 
 def _cf_prepare(job):
@@ -225,40 +284,57 @@ def _cf_prepare(job):
   began = time.monotonic()
   reference, recorded = job['reference'], job['recorded']
   main = Autonomous(w['agent'], w['env'], 'policy')
-  stepper, forks, own = Stepper(main), set(job['forks']), {}
-  z_differs, save_seconds, save_bytes = 0, 0., 0
-  while not main.done:
-    t = int(main.env.current_step)
-    if reference.flat[reference.row(t)]:
-      reference.continuations[t] = stepper.continuation()
-    if t in forks:
-      started = time.monotonic()
-      file = work / f'{t}.pkl'
-      _pickle_write(file, dict(run=main.state(), progress=CF.BranchProgress(
-          t, 1 - int(reference.action[reference.row(t)])),
-          first_trade=len(main.env.attributions), first_joint=None, probe_steps=0,
-          phase='fork', cost=dict(native_steps=0, policy_calls=0, seconds=0.,
-                                  save_seconds=0., restore_seconds=0.)))
-      save_seconds += time.monotonic() - started
-      save_bytes += file.stat().st_size
-    row, arrays = main.step()
-    rec = recorded[reference.row(t)]
-    if (row['cursor'], row['executed'], row['reward']) != (rec['cursor'], rec['executed'], rec['reward']):
-      raise RuntimeError(f'The frozen reference replay differs from the collection at cursor {t}')
-    if row['equity'] != rec['equity'] or not reference.same_inputs(t, arrays):
-      raise RuntimeError(f'The replayed Native account differs from the collection at cursor {t}')
-    z_differs += row['z'] != rec['z']
-    if reference.flat[reference.row(t)]:
-      own[t] = (row['z'], row['executed'])
-  if not main.env.terminated:
+  out = _replay(main, reference, recorded, set(job['forks']), work)
+  if not out['terminated']:
     raise RuntimeError('Reference replay did not reach the Native terminal')
-  metrics = dict(native_steps=main.steps, policy_calls=main.steps, z_differs=z_differs,
-                 seconds=time.monotonic() - began, snapshot_save_seconds=save_seconds,
-                 snapshot_bytes=save_bytes, flat_states=len(reference.continuations),
+  reference.continuations.update(out['continuations'])
+  metrics = dict(native_steps=main.steps, policy_calls=main.steps, z_differs=out['z_differs'],
+                 seconds=time.monotonic() - began, snapshot_save_seconds=out['save_seconds'],
+                 snapshot_bytes=out['save_bytes'], flat_states=len(reference.continuations),
                  platform=w['agent'].config.jax.platform,
                  compute_dtype=w['agent'].config.jax.compute_dtype)
-  w['prepared'] = dict(reference=reference, own=own, metrics=metrics)
+  w['prepared'] = dict(reference=reference, own=out['own'], metrics=metrics)
   _pickle_write(path, w['prepared'])
+  return dict(metrics, reused=False)
+
+
+def _cf_prepare_parallel(pool, work, reference, recorded, forks, snapshots):
+  """The reference replay in segments between the collection's chunk
+  snapshots, on every worker; the same reference.pkl as _cf_prepare."""
+  path = work / 'reference.pkl'
+  if path.exists():
+    with path.open('rb') as f:
+      return dict(pickle.load(f)['metrics'], reused=True)
+  began = time.monotonic()
+  starts = []
+  for file in snapshots:
+    with file.open('rb') as f:
+      run = pickle.load(f)['run']
+    if not run['done']:
+      starts.append((reference.start + int(run['steps']), str(file)))
+  bounds = [(reference.start, None), *starts]
+  jobs = [dict(work=str(work), start=a, snapshot=snap, end=b[0] if b else None)
+          for (a, snap), b in zip(bounds, [*bounds[1:], None])]
+  _pickle_write(work / 'prepare_inputs.pkl', (reference, recorded, list(forks)))
+  parts = list(pool.map(_cf_segment, jobs))
+  if not parts[-1]['terminated']:
+    raise RuntimeError('Reference replay did not reach the Native terminal')
+  own = {}
+  for part in parts:
+    reference.continuations.update(part['continuations'])
+    own.update(part['own'])
+  steps = sum(p['steps'] for p in parts)
+  if steps != reference.n:
+    raise RuntimeError(f'The replay segments cover {steps} of {reference.n} reference rows')
+  metrics = dict(native_steps=steps, policy_calls=steps, z_differs=sum(p['z_differs'] for p in parts),
+                 seconds=time.monotonic() - began,
+                 snapshot_save_seconds=sum(p['save_seconds'] for p in parts),
+                 snapshot_bytes=sum(p['save_bytes'] for p in parts),
+                 flat_states=len(reference.continuations), platform=parts[0]['platform'],
+                 compute_dtype=parts[0]['compute_dtype'], segments=len(parts),
+                 segment_seconds=sum(p['seconds'] for p in parts))
+  _pickle_write(path, dict(reference=reference, own=own, metrics=metrics))
+  (work / 'prepare_inputs.pkl').unlink()
   return dict(metrics, reused=False)
 
 
@@ -449,9 +525,9 @@ def _run_cf(policy, corpus, collection, out, forks=None, seed=0, workers=4,
   _json_write(manifest, plan)
   close = env._raw.Close.to_numpy()
   del env
-  jobs = lambda phase, ts: [dict(work=str(work), phase=phase, forks=ts[i::workers],
-                                 probe_steps=probe_steps, max_steps=max_steps, log_every=log_every)
-                            for i in range(workers) if ts[i::workers]]
+  # One fork per job: the pool hands the next fork to whichever worker is free.
+  jobs = lambda phase, ts: [dict(work=str(work), phase=phase, forks=[t], probe_steps=probe_steps,
+                                 max_steps=max_steps, log_every=log_every) for t in ts]
   log(f'CF: {len(chosen)} legal candidates, probe <= {min(probe_steps, max_steps)} steps each; '
       f'continuation quota {budget}; one shared reference replay')
   reference_metrics, results, sample, survivors, strata = {}, [], [], [], dict(strata={})
@@ -459,8 +535,11 @@ def _run_cf(policy, corpus, collection, out, forks=None, seed=0, workers=4,
   if chosen:
     with ProcessPoolExecutor(min(workers, len(chosen)), mp_context=multiprocessing.get_context('spawn'),
                              initializer=_cf_init, initargs=(str(policy), str(corpus), str(work))) as pool:
-      reference_metrics = pool.submit(_cf_prepare, dict(work=str(work), reference=reference,
-                                        recorded=recorded, forks=chosen)).result()
+      snapshots = sorted((Path(collection) / 'snapshots').glob('*.pkl'))
+      reference_metrics = (
+          _cf_prepare_parallel(pool, work, reference, recorded, chosen, snapshots) if snapshots else
+          pool.submit(_cf_prepare, dict(work=str(work), reference=reference,
+                                        recorded=recorded, forks=chosen)).result())
       parts = list(pool.map(_cf_job, jobs('probe', chosen)))
       results = [r for part in parts for r in part['results']]
       # Recovered final continuations have already used quota slots. Sample
