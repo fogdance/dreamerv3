@@ -1,4 +1,4 @@
-# Live FG701 env (user 2026-10-30): bars from the market DB from history_start,
+# Live FG701 env (user 2026-10-30): the last history_days of market DB bars,
 # step blocks until the next bar, fills go to the order RPC (gym envs/entry_live.py).
 debug:
   log_level: ERROR
@@ -9,7 +9,7 @@ entry:
   strategy_config: strategy_live_fg701.yaml
   protocol: fg_single3_v1
   live:
-    history_start: '2026-10-19'
+    history_days: 10
     poll_seconds: 2
     max_signal_age_seconds: 90
     rpc_enabled: true

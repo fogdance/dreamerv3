@@ -1,4 +1,5 @@
-# Live FG701: sessions of actual DB bars from history_start, then the regular
+# Live FG701: sessions of actual DB bars from 2026-10-19 (the earliest live
+# history), then the regular
 # weekday schedule up to the assumed main roll 2026-12-15 15:00 (FG501 2024-12-12,
 # FG601 2025-12-15); ADD closes and positions are force-closed there.
 calendar_basis: db_sessions_then_regular_weekday_schedule
