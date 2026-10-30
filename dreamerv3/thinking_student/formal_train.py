@@ -40,6 +40,13 @@ config sets iteration.cf_coverage: exploratory; such a round then runs L4 on
 its valid exact pairs as S3_Q_TARGETS_EXPLORATORY, with the contracts below
 the threshold in L4_coverage. No label or coverage changes.
 
+iteration.q_return: native (default) keeps the CF labels of the Native
+Quality reward. net_pnl_h2760 (E2 R2, user 2026-10-30) writes the CF of
+each contract to experience/pi_k/cf_native/ and relabels it into cf/ with
+q_return.py (net trade PnL undiscounted within 2760 market minutes, with its
+exactness checks); the S5 feedback, L4 and the freeze read cf/ as before.
+The round record keeps the label statistics by coupling kind (q_return).
+
 student.window_start 'carry' starts the L2-L5 windows from the causal
 market carry of the continuous path (market_carry/<contract>/, computed
 once before L2 or L3 from the market brain after L1, which no later stage
@@ -74,6 +81,7 @@ import yaml
 
 from .corpus import corpus_sources, discover
 from .feedback import OFFLINE_TRAIN, TIME_ORDERED_NOT_SUPPORTED, check_order, check_thresholds
+from .q_return import NATIVE as Q_NATIVE, NET_PNL as Q_NET_PNL
 from .run import latest, progress, reports
 
 DEFAULTS = dict(
@@ -92,7 +100,7 @@ DEFAULTS = dict(
                    cf_min_coverage=None, cf_coverage='representative', value_updates=0,
                    prior_refresh_updates=0, cf_boost=16.0, save_every=0, holdout=0,
                    beta_q=1.0, kappa_q='auto', kappa_floor=None, state_check_windows=0,
-                   state_check_seed_offset=0,
+                   state_check_seed_offset=0, q_return=Q_NATIVE,
                    # L6 (S5) from round `from_round` on (None: off). The correct
                    # set is on by default, the error set off (fraction 0, boost 1).
                    l6=dict(from_round=None, order=OFFLINE_TRAIN, outcome_review_updates=0,
@@ -148,6 +156,8 @@ def load_config(path):
     raise ValueError(f'{path}: iteration.cf_min_coverage is in (0, 1] or null')
   if it['cf_coverage'] not in ('representative', 'exploratory'):
     raise ValueError(f'{path}: iteration.cf_coverage is representative or exploratory')
+  if it['q_return'] not in (Q_NATIVE, Q_NET_PNL):
+    raise ValueError(f'{path}: iteration.q_return is {Q_NATIVE} or {Q_NET_PNL}')
   l6 = it['l6']
   try:
     check_order(l6['order'])
@@ -513,13 +523,23 @@ def iterate(cfg, lay, state, rounds, until=None):
     # B3: same-policy ADD/WAIT counterfactuals of each usable contract.
     _step(lay, state, step='cf')
     cf = {c: lay.experience(policy, 'cf', c) for c in usable}
+    relabel = it['q_return'] != Q_NATIVE
+    native = {c: lay.experience(policy, 'cf_native', c) for c in usable} if relabel else cf
     forks = [] if it['cf_wait_forks'] is None else ['--forks', it['cf_wait_forks']]
     budget = [] if it['cf_budget'] is None else ['--budget', it['cf_budget']]
     _call_many([('run', ['cf', '--policy', policy, '--corpus', contracts[c], '--collection', collect[c],
                          '--out', out, '--workers', it['cf_workers'], '--max-steps', it['cf_max_steps'],
                          '--probe-steps', it['cf_probe_steps'],
                          '--seed', s['seed'], *forks, *budget], lay.log(f'r{r:03d}_cf_{c}'))
-                for c, out in cf.items() if not _cf_done(out, policy)], it['parallel_contracts'])
+                for c, out in native.items() if not _cf_done(out, policy)], it['parallel_contracts'])
+    if relabel:
+      _step(lay, state, step='q_return')
+      for c, out in cf.items():
+        if not _cf_done(out, policy):
+          _call('q_return', ['--collection', collect[c], '--cf', native[c], '--out', out],
+                lay.log(f'r{r:03d}_q_return_{c}'))
+      rec['q_return'] = dict(name=it['q_return'], stats={
+          c: _read(out / 'meta.json')['q_return']['stats'] for c, out in cf.items()})
     rec['cf'] = {c: _cf_record(_read(out / 'meta.json')) for c, out in cf.items()}
     # Missing stores only (pretrain made them; pi_k keeps the foundation's
     # market brain): the state-check, L4 and the L5 refresh read them.
