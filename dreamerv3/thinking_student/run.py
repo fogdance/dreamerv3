@@ -247,16 +247,17 @@ def freeze(agent, run, name, preset, corpora=(), teaching=None, lineage=None, ou
   return folder
 
 
-def load_policy(folder, device=None, logdir=None, log=print):
+def load_policy(folder, device=None, logdir=None, log=print, ts=None):
   """Build the student exactly as the snapshot recorded it (by default on
   its recorded inference device and dtype) and load it. The snapshot's
   non-optimizer parameters fix its actions and must all match; optimizer
   state of a training stage added after the freeze never acts and starts
-  fresh (listed)."""
+  fresh (listed). `ts` overrides decision settings of the snapshot for a
+  frozen-weight diagnostic (E1: decision.beta_q); the weights are unchanged."""
   folder = Path(folder)
   meta = json.loads((folder / 'policy.json').read_text())
   updates = {f'agent.ts.{k}': tuple(v) if isinstance(v, list) else v
-             for k, v in meta['ts'].items()}
+             for k, v in {**meta['ts'], **(ts or {})}.items()}
   agent = make_agent(logdir or folder / 'logdir', preset=meta['preset'],
                      device=device or meta['inference']['platform'],
                      batch_size=1, batch_length=1, updates=updates)

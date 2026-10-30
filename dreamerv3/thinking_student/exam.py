@@ -113,7 +113,7 @@ def _random_job(job):
   return dict(seed=job['seed'], complete=bool(done and env.terminated), **out)
 
 
-def exam(policy, out, label, config, source, steps=None, seeds=5, device=None, log=print):
+def exam(policy, out, label, config, source, steps=None, seeds=5, device=None, log=print, ts=None):
   """The student's Teacher-free run on the Native env of `config` (all of it,
   or its first `steps` minutes) and `seeds` random-entry accounts on the
   same minutes; writes and returns out/exam.json."""
@@ -121,7 +121,7 @@ def exam(policy, out, label, config, source, steps=None, seeds=5, device=None, l
   from gym_trading_env.research import ts_v1_corpus as C
   from gym_trading_env.research.ts_v1_account import StudentEnv
   began, out = time.time(), Path(out)
-  agent, meta = load_policy(policy, device)
+  agent, meta = load_policy(policy, device, ts=ts)
   collect(agent, StudentEnv(C.native_env(config)), out / 'collect', steps or 10 ** 9, 'policy',
           1024, meta['policy'], log=log)
   rows = [json.loads(line) for f in sorted((out / 'collect' / 'steps').glob('*.jsonl'))
@@ -196,6 +196,8 @@ def main(argv=None):
                       help='paper-trading pool (markets/paper_pool.json) with the row of --contract (PAPER)')
   parser.add_argument('--take-profit-points', type=int, default=None, help='PAPER only: TP distance (env default 5)')
   parser.add_argument('--stop-loss-points', type=int, default=None, help='PAPER only: SL distance (env default 30)')
+  parser.add_argument('--beta-q', type=float, default=None,
+                      help='DEV only: decision beta_Q of the frozen policy (E1 diagnostic, user 2026-10-30)')
   parser.add_argument('--corpus', default=None, help='TRAIN corpus folder (TRAIN_SMOKE)')
   parser.add_argument('--steps', type=int, default=None, help='first minutes only (default: all)')
   parser.add_argument('--random-seeds', type=int, default=5)
@@ -208,11 +210,14 @@ def main(argv=None):
                               ('stop_loss_points', args.stop_loss_points)) if v is not None}
   if rules and not args.paper_pool:
     parser.error('--take-profit-points / --stop-loss-points are for PAPER only')
+  if args.beta_q is not None and not args.pool:
+    parser.error('--beta-q is for DEV only')
+  ts = None if args.beta_q is None else {'decision.beta_q': args.beta_q}
   from gym_trading_env.research import ts_v1_corpus as C
   if args.pool:
     row = C.dev_row(args.contract, args.pool)
     config = C.write_inputs(row, Path(args.out) / 'inputs')
-    label, source = 'DEV', dict(pool=str(Path(args.pool).resolve()), row=row)
+    label, source = 'DEV', dict(pool=str(Path(args.pool).resolve()), row=row, ts_override=ts)
   elif args.paper_pool:
     row = paper_row(args.contract, args.paper_pool)
     config = paper_inputs(row, Path(args.out) / 'inputs', rules)
@@ -222,7 +227,7 @@ def main(argv=None):
     meta = json.loads((Path(args.corpus) / 'source.json').read_text())
     label, source = 'TRAIN_SMOKE', dict(corpus=args.corpus, contract=meta['contract'],
                                         fold=meta['fold'])
-  exam(args.policy, args.out, label, config, source, args.steps, args.random_seeds, args.device)
+  exam(args.policy, args.out, label, config, source, args.steps, args.random_seeds, args.device, ts=ts)
 
 
 if __name__ == '__main__':
