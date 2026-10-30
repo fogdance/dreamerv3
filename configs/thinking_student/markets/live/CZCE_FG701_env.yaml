@@ -1,0 +1,39 @@
+# Live FG701 env (user 2026-10-30): bars from the market DB from history_start,
+# step blocks until the next bar, fills go to the order RPC (gym envs/entry_live.py).
+debug:
+  log_level: ERROR
+entry:
+  chunk_steps: 0
+  contract: CZCE.FG701
+  contract_config: CZCE_FG701_contract.yaml
+  strategy_config: strategy_live_fg701.yaml
+  protocol: fg_single3_v1
+  live:
+    history_start: '2026-10-19'
+    poll_seconds: 2
+    max_signal_age_seconds: 90
+    rpc_enabled: true
+    action_log: /data/logdir/fg_single3/thinking_student/LIVE_FG701_1X_20261030/live_actions.jsonl
+strategy_mode: entry_only
+trading:
+  currency_pair: FG701
+  data_interval: 1m
+  data_tz: Asia/Shanghai
+  future_symbol: CZCE.FG701
+  initial_balance: 300000
+  is_future: true
+  live_mode: true
+  max_long_position: 3
+  max_short_position: 3
+  obs_feature_mode: obs
+  session_policy:
+    force_flatten_eod: false
+    block_open_near_eod: false
+  stop_loss_enabled: true
+  trade_lot: 3
+training:
+  bar_source: csv
+  episode_policy:
+    truncate_on_session_end: false
+  randomize_start: false
+  window_size: 60
