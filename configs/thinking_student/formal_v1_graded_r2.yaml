@@ -56,7 +56,7 @@ iteration:
   contracts_per_round: 3    # rotates through the 18 contracts round by round
   parallel_contracts: 3     # x cf_workers GPU processes, ~1.6 GB RAM and 1.1 GB GPU each
   cf_wait_forks: 100
-  cf_workers: 4             # 3 x 4 = 12 workers: GPU memory is the bound; RAM may use swap
+  cf_workers: 3             # 3 x 3 = 9 (1x-R2, 2026-10-30): FG701 live holds ~1.2 GB of the GPU now and 3 x 4 ran out of memory in round 1; the CF result does not depend on the worker count
   # Every legal fork first gets a Native probe of cf_probe_steps; it ends
   # validly at an exact (EXACT_STATE) or funds-safe coupling or at the true
   # terminal. 48 of the unfinished probes per contract, a sample stratified by
