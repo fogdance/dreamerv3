@@ -722,11 +722,12 @@
   - [x] E4-A：模型 1–7（常数、价格/回答探针、记录的 ΔQ、L4 同策略重训 500/3000 次）全部无 SIGNAL → `NO_SIGNAL`；L4 同策略 ρ +0.05（跨策略 −0.085），"永远 ADD" 符号一致 62.7% 高于所有模型；不持平 ΔG 80% 为 ±282 元（一笔止盈）
   - [x] E4-B（按预注册不解读）：信号迁移到 π_B 后再降 25–50%
   - 报告 `E4_VALUE_LEARNABILITY_20261030.md`；按 E4-C 指向"新的因果输入 / 标签分解"，下一步待用户决定
-- [ ] G-20：V2 高质量反弹做空正向教材（Spec V0.3，用户 2026-10-31；只生成教材并人工 Review，不训练、不接入）
-  - [ ] 第 0 步：TP5 / SL30 可配置（用户 2026-10-31“在这次直接改掉”）：Oracle、Grades、Outcome 标签、语料 CLI 读取 env 的距离；种类改名 TP / SL；默认 5/30 时 FG809 教材逐数组相同。学生的持仓输入（账户观测 /5、/30，env 持仓 /5）保留训练时的固定尺度（beab62f 纸面考试依赖它），只是改成具名常量
+- [x] G-20：V2 高质量反弹做空正向教材（Spec V0.3，用户 2026-10-31；只生成教材并人工 Review，不训练、不接入）
+  - [x] 第 0 步：TP5 / SL30 可配置（用户 2026-10-31“在这次直接改掉”）：Oracle、Grades、Outcome 标签、语料 CLI 读取 env 的距离；种类改名 TP / SL；默认 5/30 时 FG809 教材逐数组相同。学生的持仓输入（账户观测 /5、/30，env 持仓 /5）保留训练时的固定尺度（beab62f 纸面考试依赖它），只是改成具名常量
   - [x] ENTRYPOINT_AUDIT.md
   - [x] DESIGN.md + `configs/thinking_student/v2_positive_entry.yaml`（规则先于生成冻结）
   - [x] FG809 切片：事件、正例、至少一张真实图
-  - [ ] 9 个 SHORT TRAIN 合约全部生成 + figures（≤ 12 个事件）
-  - [ ] 测试与自 Review（因果截断、合成事件、风险/费用、Native 逐分钟核对、Reader、范围）
-  - [ ] REPORT.md、复现命令、参数 / Git 身份；停止等待用户 Review
+  - [x] 9 个 SHORT TRAIN 合约全部生成 + figures（≤ 12 个事件）
+  - [x] 测试与自 Review（因果截断、合成事件、风险/费用、Native 逐分钟核对、Reader、范围）
+  - [x] REPORT.md、复现命令、参数 / Git 身份；停止等待用户 Review
+  - 结果（2026-10-31）：`/data/logdir/fg_single3/thinking_student/V2_POSITIVE_ENTRY_20261031`，192 个事件、1,548 个正例（EXCELLENT 538）；全部候选 2R TP 率 24.1%、平均净 −157 元，低于盈亏平衡点 34.8%，没有显示出优势；正例高度重复（382 个不同出场）；GOOD 的 MAE 条件不起作用。见 `docs/thinking_student_v2/REPORT.md`；是否使用、用哪部分由用户决定
