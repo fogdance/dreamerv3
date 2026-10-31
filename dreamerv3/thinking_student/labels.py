@@ -2,8 +2,9 @@
 
 One Outcome label describes the Native trade "ADD now, then hold" from a flat
 account. Its first ending is one of the three Native ways a trade closes --
-TP5, SL30 or another forced exit (OTHER_EXIT: main roll, contract expiry,
-margin call) -- in a market-minute bin, or the trade is still open after the
+TP, SL (at the env's distances, TP5 / SL30 by default) or another forced
+exit (OTHER_EXIT: main roll, contract expiry, margin call) -- in a
+market-minute bin, or the trade is still open after the
 last edge H (OPEN_AT_H: "not ended within H", never "will not reach TP").
 A trade the data boundary cut before it ended (RIGHT_CENSORED) only tells us
 that it had not ended by that age. The MFE targets are the largest
@@ -22,14 +23,16 @@ OUTCOME_BINS = (5, 10, 15, 30, 60, 120, 240, 345, 690, 1380, 2760)
 NBINS = len(OUTCOME_BINS)
 HORIZON = OUTCOME_BINS[-1]
 # Event e ending in bin k -> e * NBINS + k; still open after H -> OPEN_AT_H.
-EVENTS = ('TP5', 'SL30', 'OTHER_EXIT')
+EVENTS = ('TP', 'SL', 'OTHER_EXIT')
 OPEN_AT_H = len(EVENTS) * NBINS
 OUTCOME_CLASSES = OPEN_AT_H + 1
 RISK_FLAGS = ('early10_5', 'early10_15')
 MAE_HORIZONS = ('mae_15', 'mae_60', 'mae_full')
 MAE_COMPLETE = {'mae_15': 'mae_15_complete', 'mae_60': 'mae_60_complete',
                 'mae_full': 'path_complete'}
-MAE_SCALE = 30.0  # points, the native SL distance
+# Points; a fixed scale of the MAE / MFE heads (the default SL distance),
+# not the env's rule, so one model reads corpora of any TP / SL.
+MAE_SCALE = 30.0
 MFE_HORIZONS = ('mfe_15', 'mfe_60', 'mfe_120')
 MFE_SCALE = MAE_SCALE
 

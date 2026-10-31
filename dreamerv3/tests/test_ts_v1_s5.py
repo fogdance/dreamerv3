@@ -180,8 +180,8 @@ def test_error_tags_follow_the_answers_and_the_pairs():
   from gym_trading_env.research import ts_v1_corpus as C
   kind = {k: i for i, k in enumerate(C.KINDS)}
   facts = dict(filled=np.array([1, 1, 1, 1, 1, 0], bool),
-               kind=np.array([kind['TP5'], kind['SL30'], kind['OTHER_EXIT'],
-                              kind['RIGHT_CENSORED'], kind['TP5'], -1], np.int8),
+               kind=np.array([kind['TP'], kind['SL'], kind['OTHER_EXIT'],
+                              kind['RIGHT_CENSORED'], kind['TP'], -1], np.int8),
                held_minutes=np.array([10, 20, 30, 100, L.HORIZON + 1, 0], np.int32),
                exit_cursor=np.array([11, 22, 33, -1, 3000, -1], np.int32),
                observed_until=np.array([11, 22, 33, 104, 3000, -1], np.int32))

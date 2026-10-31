@@ -32,7 +32,7 @@ def label(kind, minutes, filled=True, **kw):
       early10_5=False, early10_5_valid=True, early10_15=False, early10_15_valid=True,
       mae_15=3.0, mae_15_complete=True, mae_60=6.0, mae_60_complete=ended or minutes >= 60,
       mae_full=9.0, path_complete=ended,
-      reward={'TP5': 0.9, 'SL30': -3.0, 'OTHER_EXIT': -0.93}.get(kind, np.nan),
+      reward={'TP': 0.9, 'SL': -3.0, 'OTHER_EXIT': -0.93}.get(kind, np.nan),
       mfe_15=2.0, mfe_15_complete=True, mfe_60=6.0, mfe_60_complete=True,
       mfe_120=12.0, mfe_120_complete=True)
   row.update(kw)
@@ -49,13 +49,13 @@ def test_tp_sl_and_forced_exits_are_competing_first_endings_on_the_minute_grid()
   assert L.time_bin(1) == 0 and L.time_bin(5) == 0 and L.time_bin(6) == 1
   assert L.time_bin(2760) == L.NBINS - 1 and L.time_bin(2761) == L.NBINS
   assert L.OUTCOME_CLASSES == 34 and L.OPEN_AT_H == 3 * L.NBINS
-  tp = label('TP5', 12)
+  tp = label('TP', 12)
   assert allowed(tp) == {2}  # (10, 15]
-  sl = label('SL30', 400)
+  sl = label('SL', 400)
   assert allowed(sl) == {L.NBINS + 8}  # (345, 690]
   forced = label('OTHER_EXIT', 1034)
   assert allowed(forced) == {OTHER + 9}, 'a main-roll exit ends the trade in (690, 1380]'
-  late = label('TP5', 3000)
+  late = label('TP', 3000)
   assert allowed(late) == {L.OPEN_AT_H}, 'still open at H, whatever came later'
   for lab in (tp, sl, forced, late):
     assert lab['outcome_valid'] == 1 and lab['outcome_quality_valid'] == 1
@@ -76,8 +76,8 @@ def test_censoring_only_removes_bins_known_to_be_ending_free():
 
 
 def test_unfilled_adds_produce_no_outcome_label():
-  assert all(not v.any() for v in label('TP5', 12, filled=False).values())
-  risky = label('SL30', 50, early10_5=True, early10_15_valid=False)
+  assert all(not v.any() for v in label('TP', 12, filled=False).values())
+  risky = label('SL', 50, early10_5=True, early10_15_valid=False)
   assert risky['outcome_risk'].tolist() == [1, 0]
   assert risky['outcome_risk_valid'].tolist() == [1, 0]
   assert np.allclose(risky['outcome_mae'], [3 / 30, 6 / 30, 9 / 30])
@@ -91,7 +91,7 @@ def test_unfilled_adds_produce_no_outcome_label():
 
 def test_mfe_targets_need_a_complete_window_whatever_the_exit():
   # A window the data cut first is unknown; the exit never cuts it.
-  cut = label('SL30', 40, mfe_120=3.0, mfe_120_complete=False)
+  cut = label('SL', 40, mfe_120=3.0, mfe_120_complete=False)
   assert cut['outcome_mfe_valid'].tolist() == [1, 1, 0]
   assert np.allclose(cut['outcome_mfe'], [2 / 30, 6 / 30, 0.])
   censored = label('RIGHT_CENSORED', 100)
@@ -115,8 +115,8 @@ def head(logits, valid):
 
 def test_outcome_loss_is_the_likelihood_of_what_the_trace_observed():
   logits = np.random.default_rng(0).normal(size=(5, L.OUTCOME_CLASSES)).astype(np.float32)
-  data = batch(label('TP5', 12), label('RIGHT_CENSORED', 100),
-               label('RIGHT_CENSORED', 3), L.empty_labels(), label('SL30', 40))
+  data = batch(label('TP', 12), label('RIGHT_CENSORED', 100),
+               label('RIGHT_CENSORED', 3), L.empty_labels(), label('SL', 40))
   legal = [1, 1, 1, 1, 0]  # the SL label sits on a state where ADD was masked
   losses, mets = brain.outcome_loss(head(logits, legal), data, np.ones(5, np.float32))
   logp = jax.nn.log_softmax(logits, -1)
@@ -140,7 +140,7 @@ def test_rows_without_information_give_zero_loss_and_zero_gradient():
     return losses[term] if term else sum(losses.values())
   logits = jnp.asarray(np.random.default_rng(1).normal(size=(3, L.OUTCOME_CLASSES)), jnp.float32)
   empty = batch(*[L.empty_labels()] * 3)
-  labelled = batch(*[label('SL30', 40)] * 3)
+  labelled = batch(*[label('SL', 40)] * 3)
   for data, weight in ((empty, np.ones(3, np.float32)), (labelled, np.zeros(3, np.float32))):
     value, grad = jax.value_and_grad(total)(logits, data, weight)
     assert value == 0 and not np.asarray(grad).any()
@@ -170,7 +170,7 @@ def labelled_batch(agent, seed=0):
   data['action_mask'][...] = 1.
   data['account_valid'][...] = 1.
   data['account_native'][..., 0] = 1.
-  cases = [label('TP5', 12), label('SL30', 400), label('RIGHT_CENSORED', 100),
+  cases = [label('TP', 12), label('SL', 400), label('RIGHT_CENSORED', 100),
            label('OTHER_EXIT', 3)]
   for t in range(T):
     for k, v in cases[t % len(cases)].items():
@@ -271,7 +271,7 @@ def test_corpus_windows_put_cursor_labels_on_funded_flat_legal_rows(corpus, tmp_
   held = TC.CorpusWindows(tc, split='eval', **kw)
   assert train.hi == held.lo == tc.rows - 64
   (count,) = train.summary().values()
-  assert count['tp5'] + count['sl30'] + count['other_exit'] + count['open_at_h'] + \
+  assert count['tp'] + count['sl'] + count['other_exit'] + count['open_at_h'] + \
       count['censored'] == count['labels']
   # The label account carries every filled cursor's label exactly once.
   assert count['labels'] == int(facts['filled'][:train.hi].sum())

@@ -57,6 +57,15 @@ checkpoints of the old structure, which the current code cannot resume.
   - A corpus copies its env, contract and strategy into
     `<corpus>/inputs/` when it is built, and trains and collects from that
     copy.
+- **TP / SL distances (user 2026-10-31):** the Native TP / SL are
+  `entry.take_profit_points / stop_loss_points` of the env inputs, TP5 /
+  SL30 when unset. `ts_v1_corpus --take-profit-points / --stop-loss-points`
+  write other distances into `<corpus>/inputs/env.yaml` (recorded in
+  `source.json` `inputs.rules`); the facts, the strict oracle, the graded
+  teacher, `run check` and every collection, CF and exam built from that
+  corpus follow them. Outcome kinds are `TP` / `SL` at those distances. The
+  student's position inputs and the Outcome MAE / MFE heads keep fixed
+  scales (/5, /30): they are model input scales, not the rule.
   - Each formal run writes its resolved config to `<run_root>/config.yaml`.
 
 ## Commands (from `gym-trading-env/`)
@@ -69,6 +78,7 @@ CFG=../dreamerv3/configs/thinking_student
 $PY -m gym_trading_env.research.ts_v1_corpus --contract CZCE.FG809 \
     --pool $CFG/markets/pool.json --grades $CFG/entry_grades.yaml \
     --out /data/logdir/fg_single3/thinking_student/corpus --workers 24
+#   (other Native distances: --take-profit-points 10 --stop-loss-points 10)
 # graded/ of existing corpora (CPU, ~1 min for 18); --replace for new thresholds
 $PY -m gym_trading_env.research.ts_v1_grades --grades $CFG/entry_grades.yaml \
     --corpus-root /data/logdir/fg_single3/thinking_student/corpus --workers 18

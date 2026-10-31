@@ -6,7 +6,7 @@ policy snapshots and autonomous Native experience.
   python -m dreamerv3.thinking_student.run train-policy  --run DIR --corpus DIR ...
   python -m dreamerv3.thinking_student.run freeze  --run DIR --name pi0 --corpus DIR ... [--out DIR]
   python -m dreamerv3.thinking_student.run collect --policy DIR --corpus DIR --out DIR
-  python -m dreamerv3.thinking_student.run check   --out DIR [--corpus DIR]
+  python -m dreamerv3.thinking_student.run check   --out DIR --corpus DIR
   python -m dreamerv3.thinking_student.run rollout --run DIR --corpus DIR
   python -m dreamerv3.thinking_student.run cf      --policy DIR --corpus DIR [--forks N]
   python -m dreamerv3.thinking_student.run state-check --policy DIR --collection DIR
@@ -431,18 +431,24 @@ def collect(agent, env, out, steps, mode='policy', chunk=1024, policy=None,
   return run
 
 
-FACT_KINDS = {'TAKE_PROFIT': 'TP5', 'STOP_LOSS': 'SL30'}
+FACT_KINDS = {'TAKE_PROFIT': 'TP', 'STOP_LOSS': 'SL'}
 
 
-def check_collection(out, corpus=None, tp_points=5, sl_points=30):
+def check_collection(out, corpus=None, inputs=None):
   """Minimal verification of an autonomous collection (C3 S2): each recorded
   proposal follows the formal rule, the formal pi executed its own proposal
   (forced counterfactual actions excepted), no executed ADD was masked, and
-  each closed Native trade reached TP by >= tp_points or lost >= sl_points at
-  SL (TP5 / SL30, the env defaults). With the corpus of the collection's
-  contract, each student ADD from a funded flat account is compared with the
-  Native fact of the same cursor."""
+  each closed Native trade reached TP by >= the TP distance or lost >= the SL
+  distance at SL, the distances of the env inputs the collection ran on
+  (`inputs`, by default the corpus's inputs/env.yaml). With the corpus of
+  the collection's contract, each student ADD from a funded flat account is
+  compared with the Native fact of the same cursor."""
+  from gym_trading_env.research import ts_v1_corpus as C
   out = Path(out)
+  if inputs is None and corpus is None:
+    raise ValueError('check_collection needs the corpus or the env inputs of the collection')
+  native = C.native_env(inputs or Path(corpus) / 'inputs' / 'env.yaml', market=False)
+  tp_points, sl_points = native.take_profit_points, native.stop_loss_points
   rows = [json.loads(line) for file in sorted((out / 'steps').glob('*.jsonl'))
           for line in file.open()]
   with (out / 'state.pkl').open('rb') as f:
@@ -922,7 +928,7 @@ def main(argv=None):
             args.chunk, meta['policy'])
     return
   if args.command == 'check':
-    report = check_collection(args.out, args.corpus and _one(args.corpus, '--corpus'))
+    report = check_collection(args.out, _one(args.corpus, '--corpus'))
     (Path(args.out) / 'check.json').write_text(json.dumps(report, indent=1))
     print(json.dumps(report, indent=1))
     return

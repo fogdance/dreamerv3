@@ -895,7 +895,8 @@ def test_paper_trading_runs_paper_rows_only_and_chains_them(pik, tmp_path):
   assert native._compute_take_profit_price(100, None, 'short') == 94
   for name in ('P1', 'P2'):
     collect = tmp_path / 'run' / 'sl5' / name / 'collect'
-    assert not ts_run.check_collection(collect, tp_points=6, sl_points=5)['point_violations']
+    assert not ts_run.check_collection(
+        collect, inputs=tmp_path / 'run' / 'sl5' / name / 'inputs' / 'env.yaml')['point_violations']
     with (collect / 'state.pkl').open('rb') as f:
       for t in pickle.load(f)['run']['env']['attributions']:
         move = (1 if t['side'] == 'LONG' else -1) * (float(t['exit_price']) - float(t['entry_price']))
