@@ -1,9 +1,41 @@
 # V2 正向教材：设计
 
 日期：2026-10-31
-依据：Spec V0.3。
-参数集中在 `dreamerv3/configs/thinking_student/v2_positive_entry.yaml`（版本 `V2_POSITIVE_ENTRY_V1`）。
+依据：Spec V0.3，以及用户同日对 V1 教材的 Review（FG205 截图：沿横线的多次接近都是入场点）。
+参数集中在 `dreamerv3/configs/thinking_student/v2_positive_entry.yaml`（当前版本 `V2_POSITIVE_ENTRY_V2`）。
 **以下规则在生成之前就已冻结。** 之后任何改动都算新版本教材，并在 REPORT 中说明；不根据结果回头调参。
+
+## 零、版本记录
+
+### V1（2026-10-31 上午）
+- 输出：`/data/logdir/fg_single3/thinking_student/V2_POSITIVE_ENTRY_20261031/`
+- 代码：gym c402f86。
+- 规则：每条 level 只产生一个事件；事件在远离或 60 分钟后结束；每个事件都需要触及 H 的那根 bar 本身 RV ≥ 2；只取最近的 level；区间 [H−5, H]，R ≤ 10；回看 46 个 bucket。
+
+### V2（2026-10-31，用户 Review 之后）
+- 输出：`/data/logdir/fg_single3/thinking_student/V2_POSITIVE_ENTRY_V2_20261031/`
+
+**用户指出 V1 遗漏的点**（FG205）：
+- 2021-12-14 13:46–13:58：H=1850 的第二次接近。
+- 2021-12-28 10:06–10:10：H=1778 第一次接近，没有放量。
+- 2022-01-04 10:33–11:17：H=1722 的第三次接近。
+- 2021-12-29 21:01：开盘第一分钟冲到 1774。
+
+**改动及原因：**
+
+| # | V1 | V2 | 原因 |
+|---|---|---|---|
+| 1 | 一条 level 只用一次（consumed） | 一条线可以被多次触及；每次远离之后，再接近就是新的 touch（事件） | 用户："后续再接近的时候，这些也是可选的入场点"（12-14、01-04） |
+| 2 | 事件在激活后 60 分钟结束 | 取消窗口；touch 在远离或破位时结束 | 线没有被突破就一直有效 |
+| 3 | 每个事件都要在触及 bar 上 RV ≥ 2 | 放量属于这条线：从线自己的 15m bucket 起，第一根 RV ≥ 2 且 High ≥ H−5 的 bar 标记这条线；之后的 touch 不需要再放量 | 12-28 那次接近没有放量（RV 1.2–1.8），但 1778 这个高点形成时有放量（12-27 15:00，RV 2.3） |
+| 4 | 取最近的 level | 取已武装的 level 中 H 最低的那条（价格上方的第一条线） | 线长期有效之后，最先碰到的是最低那条阻力 |
+| 5 | 区间 [H−5, H]，R ≤ 10 | 区间 [H−7, H]，R ≤ 12 | 接近时 High 常停在 H−4..H−5，收盘后的市价报价和下一根开盘成交通常在 H−6..H−7（12-14 13:46–13:50，12-28 全部） |
+| 6 | 回看 46 个 bucket（约 2 天） | 115 个 bucket（约一周），破位提前结束 | 用户画的线跨越两天以上 |
+
+**仍然不能纳入：** 2021-12-29 21:01 那个点。
+- 这是夜盘开盘第一分钟：开 1759，冲高 1774，收 1757。
+- 在收盘时决策、下一根开盘市价成交（1757），卖不到线附近。
+- 只有提前挂在线上的限价单才能成交，而 Native 不模拟限价单。
 
 ## 一、范围
 
@@ -12,19 +44,19 @@
 - 不用 LONG 合约，也不做镜像。
 - 不用 DEV、PAPER 和 TEST。
 
-## 二、因果前高 H
+## 二、线（因果前高 H）
 
 1. 只用完整的 15 分钟 bucket，即 `MarketData.complete_buckets`，按结束时间排序。
 2. **Pivot 定义：** 第 j 个 bucket 是 pivot high，当且仅当：
    - 它的 High 严格高于前 2 个完整 bucket 的 High；
    - 并且不低于后 2 个完整 bucket 的 High。
-3. **可见时刻：** 第 j+2 个 bucket 的 `available_at`，即 bucket 结束时间。从第一个 bar 结束时间 ≥ 该时刻的游标起，这个 level 才可见。
-4. **Level 的状态**（只看 pivot bucket 结束之后的 1m bar）：
-   - `invalid`：某根 bar 的 High + 点差 ≥ H + 5。这时 Native 的空单止损已经会被触发，结构失效。
-   - `departed`：某根 bar 的 Close ≤ H − 10，即价格已经远离前高。
-   - `expired`：当前已可见的完整 bucket 数，减去 j，超过 46（约 2 个交易日）。
-   - `consumed`：已经被一个事件使用过。每个 level 最多产生一个事件。
-5. **Active H：** 在游标 s，取最近一个已可见、valid、departed、未 expired、未 consumed 的 level。
+3. **可见时刻：** 第 j+2 个 bucket 的 `available_at`，即 bucket 结束时间。从第一个 bar 结束时间 ≥ 该时刻的游标起，这条线才可见。
+4. **线的状态**（以 1m bar 计）：
+   - `broken`：pivot bucket 结束之后，某根 bar 的 High + 点差 ≥ H + 5。这时 Native 的空单止损已经会被触发，线失效。
+   - `expired`：当前已可见的完整 bucket 数，减去 j，超过 115（约一周）。
+   - `spike`（放量标记）：从 pivot bucket 自己的第一根 bar 起，第一根同时满足 RV ≥ 2、High ≥ H − 5、尚未破位的 bar。这个时刻之后，这条线就是"放过量的线"。
+   - `armed`（可以开始 touch）：从 pivot bucket 结束后第一次 Close ≤ H − 10 起；每次 touch 因远离结束后，从下一根 bar 起再次 armed。
+5. **Active 线：** 在游标 s，取已可见、未破位、未过期、已 armed 的线中 H 最低的一条（H 相同时取较新的一条）。
 6. **不做的事：**
    - 不做箱体识别。
    - 不用"事后最高点"反推 H。
@@ -33,43 +65,44 @@
 ## 三、量比 RV
 
 - RV_s = Volume_s / 前 20 根有效 1m bar 的平均 Volume。
-- 每个交易时段（21:00、09:00、10:30、13:30）的第一分钟含集合竞价量，所以既不能作为触发 bar，也不计入基准。
-- 前面不足 20 根基准 bar 时，RV 记为未知，不能触发。
+- 每个交易时段（21:00、09:00、10:30、13:30）的第一分钟含集合竞价量，所以既不能作为放量标记，也不计入基准。
+- 前面不足 20 根基准 bar 时，RV 记为未知。
 
-## 四、事件生命周期
+## 四、Touch（事件）生命周期
 
-每次只处理一个事件，按游标顺序扫描，只用游标 s 及以前的数据。
+每次只处理一个 touch，按游标顺序扫描，只用游标 s 及以前的数据。
 
-1. **激活：** 没有进行中的事件，并且对 active H，bar t 同时满足：
-   - RV_t ≥ 2；
+1. **开始：** 没有进行中的 touch，active 线 H 在 bar t 同时满足：
    - High_t ≥ H − 5；
-   - High_t + 点差 < H + 5（没有失效）。
-   之后 H 冻结，这个 level 记为 consumed。
-2. **结束：** 激活之后的第一根满足下列任一条件的 bar s：
-   - **失效：** High_s + 点差 ≥ H + 5。
-   - **远离：** Close_s ≤ H − 10。
-   - **超时：** 激活后超过 60 个市场分钟。
+   - High_t + 点差 < H + 5（没有破位）；
+   - 这条线的 spike ≤ t。spike 可以就是 bar t 本身，这时 t 的 RV ≥ 2。
+   之后这条线在本 touch 结束前不再 armed，touch 编号加 1。
+   如果 bar t 接近 H，但这条线还没有放过量且 RV_t < 2，就继续等待（`WAIT_NEAR_NO_VOLUME`）。
+2. **结束：** touch 开始之后，第一根满足下列任一条件的 bar s：
+   - **失效：** High_s + 点差 ≥ H + 5。线破位，不再使用。
+   - **远离：** Close_s ≤ H − 10。线从 s+1 起再次 armed，可以有下一次 touch。
+   - **过期：** 线超过回看期。
    - **边界：** 过了 Native 的 ADD 截止时间或 TRAIN 边界。
    结束的那根 bar 不再产生候选。
 
 ## 五、候选
 
-- 激活后，事件内每个决策游标 s（包括 t 本身）都检查：决策时的卖出报价 `quote_s = Close_s − 点差`（向下取整）是否在 [H − 5, H] 内。
-  - 后续候选**不要求** RV ≥ 2。
+- touch 内每个决策游标 s（包括 t 本身）都检查：决策时的卖出报价 `quote_s = Close_s − 点差`（向下取整）是否在 [H − 7, H] 内。
+  - 候选**不要求** RV ≥ 2。
 - 候选可执行的条件：
   - Native 空仓账户的 ADD Mask 打开；
-  - 在 bar s+1 实际成交，成交价 `fill = Open_{s+1} − 点差`，并且 fill 也在 [H − 5, H] 内。如果因跳空落到区外，记为 `FILL_OUT_OF_ZONE`。
+  - 在 bar s+1 实际成交，成交价 `fill = Open_{s+1} − 点差`，并且 fill 也在 [H − 7, H] 内。如果因跳空落到区外，记为 `FILL_OUT_OF_ZONE`。
 - **风险和目标：**
-  - R = H + 5 − fill，取值 5 ≤ R ≤ 10。
-  - SL = H + 5，与冻结的 H 相同。
+  - R = H + 5 − fill，取值 5 ≤ R ≤ 12。
+  - SL = H + 5，与这条线的 H 相同。
   - 主目标 TP = fill − 2R。
   - 并行记录 TP = fill − ceil(1.5R)，只用于分析，不用于筛选。
-- 同一事件的多个候选是**可以互相替代的入场方案**，各自从空仓账户单独计算。任何输出都不把它们的收益相加。
+- 同一 touch 的多个候选，以及同一条线不同 touch 的候选，都是**可以互相替代的入场方案**，各自从空仓账户单独计算。任何输出都不把它们的收益相加。
 
 ## 六、交易结果（离线标签）
 
 - 每个 R 值构造一个真实 Native env：`stop_loss_points = R`、`take_profit_points = 2R`；1.5R 另外构造一组。
-  - 每个合约共 12 个 env。
+  - 每个合约最多 16 个 env（R = 5..12）。
 - 先用 `CandidateIndex.candidate(s)` 给出交易。
   - 正例要再用 `reference_candidate` 逐分钟复核，两者的成交、出场和出场游标必须一致。
   - 测得的 fill 必须等于第五节预先算出的 fill。
@@ -99,28 +132,28 @@
 
 ## 八、WAIT 教学过程（positive_timeline）
 
-只为至少有一个正例的事件生成：
-1. 起点是激活前最后一个 Close ≤ H − 10 的游标。如果 H 在那时还不可见，就从 H 可见的游标开始。
-2. 激活前各阶段：
+只为至少有一个正例的 touch 生成：
+1. 起点是 touch 开始前最后一个 Close ≤ H − 10 的游标，并且不早于这条线连续作为 active 线的那段游标。对于第 2 次及以后的 touch，就是上一次 touch 远离之后。
+2. touch 开始前各阶段：
    - `WAIT_FAR`：远离 H。
    - `WAIT_APPROACH`：正在反弹，但 High < H − 5。
-   - `WAIT_NEAR_NO_VOLUME`：已接近 H，但 RV < 2。
+   - `WAIT_NEAR_NO_VOLUME`：已接近 H，但这条线还没有放过量，且 RV < 2。
    - 每个阶段只保留首行、末行，以及不超过 8 行均匀抽样的行。
-3. `ACTIVATION`：激活游标。如果它本身也是正例，就记为 `ACTIVATION_ADD`。
+3. `ACTIVATION`：touch 开始的游标。如果它本身也是正例，就记为 `ACTIVATION_ADD`。
 4. `ADD`：各个正例，按时间顺序。
 
-**激活后不是正例的候选，不标为 WAIT。** 那等于用未来结果教学生等待，因此它们只出现在审计中。
+**touch 开始后不是正例的候选，不标为 WAIT。** 那等于用未来结果教学生等待，因此它们只出现在审计中。
 
 ## 九、数据合同
 
-输出目录：`/data/logdir/fg_single3/thinking_student/V2_POSITIVE_ENTRY_20261031/`
+输出目录：`/data/logdir/fg_single3/thinking_student/V2_POSITIVE_ENTRY_V2_20261031/`
 
 | 文件 | 内容 |
 |---|---|
-| `teacher/positive_events.csv` | 至少有一个正例的事件 |
+| `teacher/positive_events.csv` | 至少有一个正例的 touch |
 | `teacher/positive_entries.csv` | 正例入场 |
 | `teacher/positive_timeline.csv` | 只含正向教学过程 |
-| `audit/events.csv` | 全部激活的事件 |
+| `audit/events.csv` | 全部 touch |
 | `audit/candidates.csv` | 全部候选及其原因 |
 | `audit/audit_summary.json` | 层层过滤的计数和基准率 |
 | `figures/` | 事件图 |
@@ -130,11 +163,17 @@
 
 **列的划分：**
 - `contract`、`cursor`：cursor 就是 env 行号，可与 `corpus/<contract>/market` 按游标关联。
-- `obs_*`：决策时可见的事实，例如 H、quote、H − quote、RV、激活时的 RV、激活后的分钟数、按 quote 计划的 R 和 SL。
+- `obs_*`：决策时可见的事实，例如：
+  - H、quote、H − quote、RV；
+  - touch 开始时的 RV、touch 开始后的分钟数；
+  - `obs_touch`：这条线的第几次 touch；
+  - `obs_line_spike_rv`：这条线放量标记的 RV（尚未发生时为空）；
+  - 按 quote 计划的 R 和 SL。
+- 事件表另有 `touch`、`line_spike_time`、`line_spike_rv`。
 - `label_*`：离线事实，例如成交、出场、PnL、MAE/MFE、等级、质量分。
 - `obs_*` 中不允许出现未来价格、未来 PnL、等级或事后最高点。
 - 两列说明文字（只用于人工 Review，不是新规则）：
-  - `obs_explain`：只用决策时可见的事实，说明这个点为什么在这里，即位置、与 H 的距离、量能背景、结构止损、计划 R 和计划 TP。WAIT 和 ACTIVATION 行也有。
+  - `obs_explain`：只用决策时可见的事实，说明这个点为什么在这里，即位置、与 H 的距离、第几次 touch、这条线的放量、结构止损、计划 R 和计划 TP。WAIT 和 ACTIVATION 行也有。
   - `label_grade_reason`：离线说明成交、出场、MAE 和持仓时间，以及为什么是这个等级或剔除原因。
 
 **Reader：**
@@ -145,4 +184,4 @@
 
 - 入库正例的 TP 率是 100%，因为它们本来就是按结果筛选出来的。
 - 这**不代表**规则本身有优势或盈利能力。
-- REPORT 同时给出两个基准率：全部候选的，以及每个事件第一个候选的。
+- REPORT 同时给出两个基准率：全部候选的，以及每个 touch 第一个候选的。

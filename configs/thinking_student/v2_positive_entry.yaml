@@ -3,7 +3,9 @@
 # gym_trading_env.research.ts_v2_positive --config. The rules are frozen
 # before generation (docs/thinking_student_v2/DESIGN.md); a change of any
 # value is a new version of the material, reported, never silently retuned.
-version: V2_POSITIVE_ENTRY_V1
+# V2 (user review 2026-10-31): a line is touched many times and holds until
+# broken; the volume spike belongs to the line; zone H-7..H (R <= 12).
+version: V2_POSITIVE_ENTRY_V2
 # The TRAIN direction schedule (strategy_quality_tp_v1.yaml directions) is
 # user-configured and not shown to be known ex ante.
 direction: SHORT
@@ -11,37 +13,38 @@ direction_source: DIRECTION_ASSUMED
 
 prior_high:
   # A complete 15m bucket whose High is above the `left` buckets before it
-  # and not below the `right` buckets after it; visible once the last of
-  # those is available.
+  # and not below the `right` buckets after it (a line); visible once the
+  # last of those is available.
   pivot_left: 2
   pivot_right: 2
-  # A level is used only while its bucket is at most this many complete
-  # buckets old (about two trading days).
-  lookback_buckets: 46
-  # The rebound must start from a 1m close at least this far below H.
+  # A line is used only while its bucket is at most this many complete
+  # buckets old (about one trading week); it ends earlier once broken.
+  lookback_buckets: 115
+  # A touch starts only after a 1m close at least this far below H, and
+  # ends at the next such close; the line may then be touched again.
   departure_points: 10
 
 volume:
   # RV = 1m volume / mean volume of the previous valid 1m bars; the first
-  # minute of each market segment (auction volume) is neither a trigger nor
-  # part of the baseline.
+  # minute of each market segment (auction volume) is neither a spike nor
+  # part of the baseline. A line's spike is its first bar with RV >= ratio
+  # and High >= H - near_points, from the bars of its own 15m bucket on;
+  # touches before it wait, touches after it need no new spike.
   baseline_minutes: 20
   ratio: 2.0
   exclude_segment_open: true
 
 event:
-  # Activation needs the trigger bar's High at least H - near_points.
+  # A touch starts on a bar whose High is at least H - near_points.
   near_points: 5
-  # Candidates up to this many market minutes after activation.
-  window_minutes: 60
 
 entry:
   # The decision-time sell quote (Close - spread) and the actual fill (next
   # Open - spread) both within [H - zone_points, H].
-  zone_points: 5
+  zone_points: 7
   # SL = H + stop_above_points; planned risk R = SL - fill, 0 < R <= max_risk.
   stop_above_points: 5
-  max_risk_points: 10
+  max_risk_points: 12
   # The teacher target TP = fill - target_r * R; parallel_r is recorded only.
   target_r: 2.0
   parallel_r: 1.5
@@ -53,7 +56,7 @@ quality:
   good: {mae_r: 0.8, held_minutes: 345}
 
 timeline:
-  # Each WAIT phase before activation keeps its first and last row plus at
+  # Each WAIT phase before a touch keeps its first and last row plus at
   # most this many evenly spaced rows.
   wait_rows_per_phase: 8
 

@@ -731,3 +731,9 @@
   - [x] 测试与自 Review（因果截断、合成事件、风险/费用、Native 逐分钟核对、Reader、范围）
   - [x] REPORT.md、复现命令、参数 / Git 身份；停止等待用户 Review
   - 结果（2026-10-31）：`/data/logdir/fg_single3/thinking_student/V2_POSITIVE_ENTRY_20261031`，192 个事件、1,548 个正例（EXCELLENT 538）；全部候选 2R TP 率 24.1%、平均净 −157 元，低于盈亏平衡点 34.8%，没有显示出优势；正例高度重复（382 个不同出场）；GOOD 的 MAE 条件不起作用。见 `docs/thinking_student_v2/REPORT.md`；是否使用、用哪部分由用户决定
+- [ ] G-21：V2 教材规则 V2（用户 2026-10-31 Review：FG205 沿横线的多次接近被遗漏）
+  - [x] 逐点诊断用户标出的 4 处：一条 level 只用一次、每次都要放量、区间 H−5 / R ≤ 10 太窄；12-29 21:01 是开盘第一分钟的冲高，市价单卖不到
+  - [x] 规则 V2：线可被多次 touch（远离后重新 armed）、取消 60 分钟窗口、放量属于这条线（从它自己的 15m bucket 起）、取最低的 armed 线、区间 H−7 / R ≤ 12、回看 115 个 bucket；DESIGN.md 版本记录 + 配置
+  - [x] FG205 切片：用户标出的可执行点全部成为正例（12-14 第 2 次 touch 11 个，12-28 5 个，01-04 第 3 次 touch 15 个）
+  - [ ] 测试（多次 touch、高点自身的放量、最低线、因果截断、真实 FG809）+ ruff
+  - [ ] 提交后 9 个合约全部生成到 `V2_POSITIVE_ENTRY_V2_20261031` + figures + REPORT_V2.md；停止等待用户 Review
