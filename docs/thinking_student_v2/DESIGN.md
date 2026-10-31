@@ -13,7 +13,7 @@
 - 规则：每条 level 只产生一个事件；事件在远离或 60 分钟后结束；每个事件都需要触及 H 的那根 bar 本身 RV ≥ 2；只取最近的 level；区间 [H−5, H]，R ≤ 10；回看 46 个 bucket。
 
 ### V2（2026-10-31，用户 Review 之后）
-- 输出：`/data/logdir/fg_single3/thinking_student/V2_POSITIVE_ENTRY_V2_20261031/`
+- 输出：`/data/logdir/fg_single3/thinking_student/V2_1_POSITIVE_ENTRY_20261031/`
 
 **用户指出 V1 遗漏的点**（FG205）：
 - 2021-12-14 13:46–13:58：H=1850 的第二次接近。
@@ -146,7 +146,7 @@
 
 ## 九、数据合同
 
-输出目录：`/data/logdir/fg_single3/thinking_student/V2_POSITIVE_ENTRY_V2_20261031/`
+输出目录：`/data/logdir/fg_single3/thinking_student/V2_1_POSITIVE_ENTRY_20261031/`
 
 | 文件 | 内容 |
 |---|---|

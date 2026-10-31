@@ -2,7 +2,7 @@
 
 日期：2026-10-31
 规则：`V2_POSITIVE_ENTRY_V2`（`docs/thinking_student_v2/DESIGN.md` 第零节有版本记录）。
-输出：`/data/logdir/fg_single3/thinking_student/V2_POSITIVE_ENTRY_V2_20261031/`
+输出：`/data/logdir/fg_single3/thinking_student/V2_1_POSITIVE_ENTRY_20261031/`
 V1 的报告和输出保持不动：`docs/thinking_student_v2/REPORT.md`、`/data/logdir/fg_single3/thinking_student/V2_POSITIVE_ENTRY_20261031/`。
 
 ## 一、结论
@@ -35,7 +35,7 @@ V1 的报告和输出保持不动：`docs/thinking_student_v2/REPORT.md`、`/dat
 
 三处的图（用最终教材表、和 `figures/` 相同的画图代码生成）：
 
-`/data/logdir/fg_single3/thinking_student/V2_POSITIVE_ENTRY_V2_20261031/review_FG205/`
+`/data/logdir/fg_single3/thinking_student/V2_1_POSITIVE_ENTRY_20261031/review_FG205/`
 - `01_FG205_20211214_1346.png`
 - `02_FG205_20211228_1006.png`
 - `03_FG205_20220104_1033.png`
@@ -64,7 +64,7 @@ V1 的报告和输出保持不动：`docs/thinking_student_v2/REPORT.md`、`/dat
 
 | 内容 | 路径 |
 |---|---|
-| 教材（只含正例） | `/data/logdir/fg_single3/thinking_student/V2_POSITIVE_ENTRY_V2_20261031/teacher/{positive_events,positive_entries,positive_timeline}.csv` |
+| 教材（只含正例） | `/data/logdir/fg_single3/thinking_student/V2_1_POSITIVE_ENTRY_20261031/teacher/{positive_events,positive_entries,positive_timeline}.csv` |
 | 审计（全部 touch 与候选，含原因） | `…/audit/{events,candidates}.csv`、`…/audit/audit_summary.json` |
 | 图（12 次 touch） | `…/figures/` |
 | 你的 FG205 三处 | `…/review_FG205/` |
@@ -85,15 +85,15 @@ env PYTHONPATH=.:src JAX_PLATFORMS=cpu \
   /home/v/miniconda3/envs/dreamerv3/bin/python -m gym_trading_env.research.ts_v2_positive \
   --pool ../dreamerv3/configs/thinking_student/markets/pool.json \
   --config ../dreamerv3/configs/thinking_student/v2_positive_entry.yaml \
-  --out /data/logdir/fg_single3/thinking_student/V2_POSITIVE_ENTRY_V2_20261031 --workers 24
+  --out /data/logdir/fg_single3/thinking_student/V2_1_POSITIVE_ENTRY_20261031 --workers 24
 ```
 
 **身份：**
-- `source.json` 记录 Gym `0e1ef3b` 和 Dreamer `869405e`，两仓都不 dirty。
+- `source.json` 记录 Gym `0e1ef3b` 和 Dreamer `c86c8f4`，两仓都不 dirty。规则代码与 `869405e` 相同，之后只提交了文档。
 - 输出目录 57 MB。
-- 日志：`/data/logdir/fg_single3/thinking_student/V2_logs/full_v2_20261031.log`。
+- 日志：`/data/logdir/fg_single3/thinking_student/V2_logs/full_v2_1_20261031.log`。
 
-**读取：** `gym_trading_env.research.ts_v2_positive.load_positive('/data/logdir/fg_single3/thinking_student/V2_POSITIVE_ENTRY_V2_20261031')`，只返回 `teacher/` 下的三张表。
+**读取：** `gym_trading_env.research.ts_v2_positive.load_positive('/data/logdir/fg_single3/thinking_student/V2_1_POSITIVE_ENTRY_20261031')`，只返回 `teacher/` 下的三张表。
 
 ## 五、规模：V1 与 V2
 
@@ -243,6 +243,6 @@ ruff（F/E9）对三个文件无报错。
 3. **长时间横盘的 touch：** 全部保留；或者恢复每次 touch 的时间上限（例如 60 或 120 分钟）；或者训练时按 touch 加权。
 4. **区间：** 保留 H−7 / R ≤ 12，还是回到 H−5 / R ≤ 10（会少 R 11–12 的 2,083 个正例，包括你标出的 12-28 那几个点）。
 5. **使用哪部分：** 全部、只用 EXCELLENT（2,377 个），或者按 touch / 线加权。
-6. **删除旧目录**（之前就在等你同意）：`V2_POSITIVE_ENTRY_20261031_FG809_SLICE`、`V2_POSITIVE_ENTRY_20261031_draft1`。V1 输出 `V2_POSITIVE_ENTRY_20261031` 保留，用于对照。
+6. **删除旧目录**（等你同意）：`V2_POSITIVE_ENTRY_20261031_FG809_SLICE`、`V2_POSITIVE_ENTRY_20261031_draft1`，以及 `V2_POSITIVE_ENTRY_V2_20261031`（同一规则、同一代码的第一次生成，教材、审计和图与 `V2_1_POSITIVE_ENTRY_20261031` 逐字节相同）。V1 输出 `V2_POSITIVE_ENTRY_20261031` 保留，用于对照。
 
 在你决定之前，不训练、不接入老师、不启动 1x。
