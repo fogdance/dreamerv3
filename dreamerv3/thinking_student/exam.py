@@ -8,7 +8,7 @@ market minutes under the same Native rules.
   python -m dreamerv3.thinking_student.exam --policy DIR --out DIR --corpus DIR --steps N
   python -m dreamerv3.thinking_student.exam --policy DIR --out DIR \\
       --paper-pool configs/thinking_student/markets/paper_pool.json --contract CZCE.FG501 \\
-      [--take-profit-points 5] [--stop-loss-points 30]
+      [--take-profit-points 5] [--stop-loss-points 30 | --strategy STRATEGY]
 
 DEV          a VALIDATION row of the TS market pool (gym ts_v1_corpus.dev_row),
              its env inputs only (write_inputs, as for the TRAIN corpora): an
@@ -20,6 +20,8 @@ PAPER        a row of the paper-trading pool (role 'paper', never eligible for
              used to choose or tune a policy. Paper trading may set other
              TP / SL distances than the trained TP5 / SL30 (user 2026-10-30);
              the student and the random accounts then trade under them.
+             --strategy: the V2 strategy of a V2 policy's corpora (user
+             2026-11-04), in place of any TP / SL distances.
 TRAIN_SMOKE  the env of a TRAIN corpus, usually cut short: an engineering
              run, never an out-of-sample result.
 DEV_NOT_CONFIGURED  written by the orchestrator when no DEV market is set.
@@ -175,12 +177,15 @@ def paper_row(contract, pool):
   return row
 
 
-def paper_inputs(row, folder, rules):
+def paper_inputs(row, folder, rules, strategy=None):
   """write_inputs of a PAPER row with the TP / SL distances of `rules`
-  (entry.take_profit_points / stop_loss_points; none: TP5 / SL30)."""
+  (entry.take_profit_points / stop_loss_points; none: TP5 / SL30), or with
+  a V2 `strategy` (load_strategy) as for the TRAIN corpora and DEV."""
   import yaml
   from gym_trading_env.research import ts_v1_corpus as C
-  config = C.write_inputs(row, folder)
+  if strategy and rules:
+    raise ValueError('a V2 strategy sets its own exit rule: no TP / SL distances with it')
+  config = C.write_inputs(row, folder, strategy=strategy)
   if rules:
     env = yaml.safe_load(config.read_text())
     env['entry'].update(rules)
@@ -199,7 +204,7 @@ def main(argv=None):
   parser.add_argument('--take-profit-points', type=int, default=None, help='PAPER only: TP distance (env default 5)')
   parser.add_argument('--stop-loss-points', type=int, default=None, help='PAPER only: SL distance (env default 30)')
   parser.add_argument('--strategy', default=None,
-                      help='DEV only: V2 strategy overlay (gym ts_v1_corpus.load_strategy)')
+                      help='DEV and PAPER: V2 strategy overlay (gym ts_v1_corpus.load_strategy)')
   parser.add_argument('--beta-q', type=float, default=None,
                       help='DEV only: decision beta_Q of the frozen policy (E1 diagnostic, user 2026-10-30)')
   parser.add_argument('--corpus', default=None, help='TRAIN corpus folder (TRAIN_SMOKE)')
@@ -214,8 +219,12 @@ def main(argv=None):
                               ('stop_loss_points', args.stop_loss_points)) if v is not None}
   if rules and not args.paper_pool:
     parser.error('--take-profit-points / --stop-loss-points are for PAPER only')
-  if (args.beta_q is not None or args.strategy) and not args.pool:
-    parser.error('--beta-q and --strategy are for DEV only')
+  if args.beta_q is not None and not args.pool:
+    parser.error('--beta-q is for DEV only')
+  if args.strategy and args.corpus:
+    parser.error('--strategy is for DEV and PAPER; a TRAIN corpus has its own inputs')
+  if args.strategy and rules:
+    parser.error('--strategy sets the exit rule: no --take-profit-points / --stop-loss-points with it')
   ts = None if args.beta_q is None else {'decision.beta_q': args.beta_q}
   from gym_trading_env.research import ts_v1_corpus as C
   if args.pool:
@@ -226,8 +235,10 @@ def main(argv=None):
                                 strategy=args.strategy and str(Path(args.strategy).resolve()))
   elif args.paper_pool:
     row = paper_row(args.contract, args.paper_pool)
-    config = paper_inputs(row, Path(args.out) / 'inputs', rules)
-    label, source = 'PAPER', dict(pool=str(Path(args.paper_pool).resolve()), row=row, rules=rules)
+    config = paper_inputs(row, Path(args.out) / 'inputs', rules,
+                          args.strategy and C.load_strategy(args.strategy))
+    label, source = 'PAPER', dict(pool=str(Path(args.paper_pool).resolve()), row=row, rules=rules,
+                                  strategy=args.strategy and str(Path(args.strategy).resolve()))
   else:
     config = Path(args.corpus) / 'inputs' / 'env.yaml'
     meta = json.loads((Path(args.corpus) / 'source.json').read_text())

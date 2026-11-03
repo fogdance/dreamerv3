@@ -131,3 +131,28 @@ def test_mae_and_mfe_labels_are_in_units_of_the_planned_risk():
   out = L.outcome_labels(facts, ('TP', 'SL', 'OTHER', 'OPEN', 'CENSORED'), graded, 10.)
   assert out['outcome_mae'][0, 0] == .5 and out['outcome_mfe'][0, 0] == 2.
   assert L.outcome_labels(facts, ('TP', 'SL', 'OTHER', 'OPEN', 'CENSORED'), graded)['outcome_mae'][0, 0] == np.float32(5 / 30)
+
+
+def test_paper_trading_takes_the_v2_strategy_in_place_of_tp_sl_distances(tmp_path):
+  """User 2026-11-04: paper trading of a V2 policy on FG501-FG605 under the
+  V2 strategy of its corpora; fixed TP / SL distances and beta_Q are refused
+  with it, and a TRAIN corpus takes no overlay."""
+  from gym_trading_env.research import ts_v1_corpus as C
+  from gym_trading_env.rewards.single3_reward import NET_PNL_SCHEMA
+  from dreamerv3.thinking_student import exam as E
+  configs = FT.Path(FT.__file__).parents[2] / 'configs/thinking_student'
+  strategy, pool = configs / 'markets/strategy_v2_short_structural.yaml', configs / 'markets/paper_pool.json'
+  base = ['--policy', str(tmp_path), '--out', str(tmp_path / 'x'), '--contract', 'CZCE.FG501']
+  for extra in (['--paper-pool', str(pool), '--strategy', str(strategy), '--stop-loss-points', '5'],
+                ['--paper-pool', str(pool), '--beta-q', '0'],
+                ['--corpus', str(tmp_path), '--strategy', str(strategy)]):
+    with pytest.raises(SystemExit):
+      E.main(base + extra)
+  assert not (tmp_path / 'x').exists()
+  with pytest.raises(ValueError, match='own exit rule'):
+    E.paper_inputs(E.paper_row('CZCE.FG501', pool), tmp_path / 'y', {'stop_loss_points': 5},
+                   C.load_strategy(strategy))
+  config = E.paper_inputs(E.paper_row('CZCE.FG501', pool), tmp_path / 'in', {}, C.load_strategy(strategy))
+  env = C.native_env(config, market=False)
+  assert env.stop_rule['max_risk_points'] == 10 and env.context_15m_buckets == 48
+  assert env.reward_config.schema == NET_PNL_SCHEMA and float(env.reward_config.reward_scale_cny) == 618.
