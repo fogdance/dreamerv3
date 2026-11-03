@@ -174,7 +174,7 @@ class StudentModel(embodied.jax.Agent):
       coin = jax.random.bernoulli(k2, 0.5, proposed.shape) & legal_add
       action = jnp.where(explored, coin.astype(jnp.int32), proposed)
       mu = (1 - eps) * f32(action == proposed) + eps / (1 + f32(legal_add))
-    out = answer_sheet(t, dist)
+    out = answer_sheet(t, dist, self.config.ts.outcome_points)
     out.update(proposed=proposed, mu_prob=mu, explored=explored)
     out['finite'] = {k: jnp.isfinite(v).all(range(1, v.ndim))
                      for k, v in dict(feat=market.feat2tensor(feat),
@@ -361,8 +361,9 @@ class StudentModel(embodied.jax.Agent):
     return loss, ({'market': mcarry}, mets)
 
 
-def answer_sheet(t, dist):
-  """B1.2 student answer recorded before the action is executed."""
+def answer_sheet(t, dist, points):
+  """B1.2 student answer recorded before the action is executed; `points`
+  per unit of the MFE head (ts.outcome_points)."""
   o, q, d = t['outcome'], t['q'], t['decision']
   return {
       'answer/p_add': dist.prob(jnp.ones(d['alpha'].shape, jnp.int32)),
@@ -382,7 +383,7 @@ def answer_sheet(t, dist):
       'answer/p_open_h': o['p_open_h'],
       'answer/quality': o['quality'] * o['valid'],
       # MFE answers in points, like the graded table's targets.
-      **{f'answer/{name}': o['mfe'][..., i] * labels.MFE_SCALE * o['valid']
+      **{f'answer/{name}': o['mfe'][..., i] * points * o['valid']
          for i, name in enumerate(labels.MFE_HORIZONS)},
   }
 

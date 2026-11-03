@@ -39,7 +39,7 @@
 | 教材行 | 映射到 |
 |---|---|
 | `ADD`、`ACTIVATION_ADD` | ADD（`grade` 2 / 3，`ready_at` = 出场 cursor）。条件：R ≤ 10；env 的止损线就是教材的线；新语料在同一 cursor 的 Native 事实复现了这笔交易（TP、同一个出场、同样的净盈亏），否则报错。不满足前两条的分别记为 `RISK_ABOVE_MAX`、`STOP_LINE_DIFFERS`，写进 summary |
-| `WAIT_FAR`、`WAIT_APPROACH`、`WAIT_NEAR_NO_VOLUME` | WAIT，只取还保留正例的事件 |
+| `WAIT_FAR`、`WAIT_APPROACH`、`WAIT_NEAR_NO_VOLUME` | WAIT，只取还保留正例的事件；`grade` 为 −1（V2 的 WAIT 不是“POOR 交易”），L5 反馈汇总另按 action 计数（`demo_actions`） |
 | `ACTIVATION` 和其它所有分钟 | `valid=False` |
 
 ## 2. 策略：SHORT_ONLY / 3 手 / 单仓位，结构止损 + 2R
@@ -69,6 +69,8 @@
 | `G/research/ts_v2_positive.py:prior_highs` | 纯 pivot 部分拆成 `pivot_levels()`，“已离开”拆成 `departed_at()`，env 和教材共用；教材的输出不变 |
 | `G/research/fg_single3_oracle.py:CandidateIndex.candidate` | SL / TP 阈值读成交后持仓上的价格；NET_PNL 下各候选的 reward 都是出场净 PnL / 尺度（见第 3 节） |
 | `D/run.py:check_collection` | 按每笔交易自己的 SL / TP 核对 |
+| `G/envs/entry_env.py:fill_model` | 设置了 `stop_rule` 时记为 `minute_structural_risk_first_v1`（同一根 K 线内仍先判止损）；V1 仍是 `minute_tp5_sl30_risk_first_v1`，hash 不变 |
+| `G/research/ts_v1_corpus.py`（`source.json`、CLI） | `inputs.rules` 记录实际的出场规则（V2：`stop_rule`，不再写未使用的 TP5/SL30）。CLI 拒绝 `--strategy` 与 `--take-profit/stop-loss-points` 同时给，`--teacher` 必须配 `--strategy`，且不能与 `--grades` 同时给 |
 
 ## 3. Reward：净 PnL / 固定尺度；Q 用 R2
 
@@ -84,7 +86,13 @@
 
 **一致性：** Replay 和 obs 里的 `reward`、L2 `outcome_quality`、CF 回报、Q 标签都来自同一个 env reward，不再遗留 R0。
 
-**保留不动：** Outcome 的 early10 风险标志和 MAE/MFE 尺度 30，它们是 Outcome 事实，不是 TP/SL 距离。
+**Outcome 标签（Review 后，用户 2026-11-03）：**
+- Outcome 的 TP / SL / 其它出场类别本来就读 Native 交易，不改。
+- MAE / MFE 头的单位原来写死为 30 点（SL30）。现在由语料决定（`D/labels.py:outcome_points`）：V2 用 `max_risk_points` 10，1.0 = 一个 R；V1 仍是 30。
+  - 学生的 `ts.outcome_points` 必须与之相等，训练时检查，不一致就报错。
+  - `formal_train` 的 `student.outcome_points` 经 `run.py --outcome-points` 传给每个新学生，快照里有记录。MFE 答案换算回点数时用它。
+- early10 风险标志不变：5 / 15 分钟内不利 10 点仍是一个真实发生的事实。R ≤ 10 时它几乎等于“这段时间内止损”。
+- `outcome_quality` 键名不变。内容是整笔交易的 env reward（V1：Quality TP；V2：净 PnL / 618），说明文字已改。
 
 ## 4. Observation：删 MACD、15m 24 → 48
 

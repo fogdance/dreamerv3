@@ -40,8 +40,8 @@ config sets iteration.cf_coverage: exploratory; such a round then runs L4 on
 its valid exact pairs as S3_Q_TARGETS_EXPLORATORY, with the contracts below
 the threshold in L4_coverage. No label or coverage changes.
 
-iteration.q_return: native (default) keeps the CF labels of the Native
-Quality reward. net_pnl_h2760 (E2 R2, user 2026-10-30) writes the CF of
+iteration.q_return: native (default) keeps the CF labels of the env reward
+(discounted; V1 the Native Quality reward). net_pnl_h2760 (E2 R2, user 2026-10-30) writes the CF of
 each contract to experience/pi_k/cf_native/ and relabels it into cf/ with
 q_return.py (net trade PnL undiscounted within 2760 market minutes, with its
 exactness checks); the S5 feedback, L4 and the freeze read cf/ as before.
@@ -98,7 +98,9 @@ DEFAULTS = dict(
     student=dict(preset='size50m', device='cuda', seed=0, batch_size=8, batch_length=64,
                  log_every=100, window_start='zero', carry_parallel=1,
                  # ts.market (student.yaml) of every new student; V2: no MACD, 48 buckets.
-                 market=dict(macd=True, context_15m=24)),
+                 market=dict(macd=True, context_15m=24),
+                 # ts.outcome_points: points per MAE / MFE unit, the corpora's (V2: 10).
+                 outcome_points=30.0),
     foundation=dict(market_updates=0, outcome_updates=0, policy_updates=0, save_every=0,
                     holdout=0, demo_balance=1.0),
     iteration=dict(max_rounds=0, contracts=None, contracts_per_round=2, parallel_contracts=1,
@@ -162,6 +164,8 @@ def load_config(path):
     raise ValueError(f'{path}: iteration.cf_min_coverage is in (0, 1] or null')
   if it['cf_coverage'] not in ('representative', 'exploratory'):
     raise ValueError(f'{path}: iteration.cf_coverage is representative or exploratory')
+  if not (isinstance(config['student']['outcome_points'], (int, float)) and config['student']['outcome_points'] > 0):
+    raise ValueError(f'{path}: student.outcome_points is a positive number of points')
   if it['q_return'] not in (Q_NATIVE, Q_NET_PNL):
     raise ValueError(f'{path}: iteration.q_return is {Q_NATIVE} or {Q_NET_PNL}')
   l6 = it['l6']
@@ -285,16 +289,19 @@ def _student(cfg):
   s = cfg['student']
   return ['--preset', s['preset'], '--device', s['device'], '--seed', s['seed'],
           '--batch-size', s['batch_size'], '--batch-length', s['batch_length'],
-          '--log-every', s['log_every'], '--mix', cfg['corpora']['mix'], *_market(cfg)]
+          '--log-every', s['log_every'], '--mix', cfg['corpora']['mix'], *_settings(cfg)]
 
 
 def _strategy(cfg):
   return ['--strategy', cfg['paths']['strategy']] if cfg['paths']['strategy'] else []
 
 
-def _market(cfg):
-  m = cfg['student']['market']
-  return ['--market-macd', int(m['macd']), '--context-15m', m['context_15m']]
+def _settings(cfg):
+  """The student settings every new student is built with (ts.market, ts.outcome_points)."""
+  s = cfg['student']
+  m = s['market']
+  return ['--market-macd', int(m['macd']), '--context-15m', m['context_15m'],
+          '--outcome-points', s['outcome_points']]
 
 
 def _corpus_args(folders):
@@ -316,7 +323,7 @@ def _market_carry(cfg, lay, contracts, source):
     return
   s = cfg['student']
   _call_many([('run', ['market-carry', *source, '--corpus', folder, '--out', lay.carry,
-                       '--preset', s['preset'], '--device', s['device'], *_market(cfg)],
+                       '--preset', s['preset'], '--device', s['device'], *_settings(cfg)],
                lay.log(f'market_carry_{c}'))
               for c, folder in contracts.items() if not (lay.carry / c / 'meta.json').exists()],
              s['carry_parallel'])

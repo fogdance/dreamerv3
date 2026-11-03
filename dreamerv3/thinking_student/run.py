@@ -820,11 +820,13 @@ def _one(folders, flag):
   return folders[0]
 
 
-def market_updates(args):
-  """ts.market of a new student from --market-macd / --context-15m; a frozen
-  policy keeps the one recorded in its snapshot."""
+def student_updates(args):
+  """ts.market and ts.outcome_points of a new student from --market-macd /
+  --context-15m / --outcome-points; a frozen policy keeps the ones recorded
+  in its snapshot."""
   return {**({} if args.market_macd is None else {'agent.ts.market.macd': bool(args.market_macd)}),
-          **({} if args.context_15m is None else {'agent.ts.market.context_15m': args.context_15m})}
+          **({} if args.context_15m is None else {'agent.ts.market.context_15m': args.context_15m}),
+          **({} if args.outcome_points is None else {'agent.ts.outcome_points': args.outcome_points})}
 
 
 def main(argv=None):
@@ -840,6 +842,9 @@ def main(argv=None):
                       help='ts.market.macd of a new student (default student.yaml)')
   parser.add_argument('--context-15m', type=int, default=None,
                       help='ts.market.context_15m of a new student: complete 15m buckets')
+  parser.add_argument('--outcome-points', type=float, default=None,
+                      help='ts.outcome_points of a new student: points per MAE / MFE unit '
+                           '(the corpora\'s, labels.outcome_points)')
   parser.add_argument('--init-f1', default=None)
   parser.add_argument('--init-from', default=None,
                       help='earlier Thinking Student run or checkpoint (listed inheritance)')
@@ -981,7 +986,7 @@ def main(argv=None):
       # The student as the run holds it (its latest checkpoint, else its
       # init source); nothing of the run is written.
       agent = build(args.run, args.preset, args.device or 'cuda', args.init_f1, args.init_from,
-                    record=False, batch_size=1, batch_length=1, updates=market_updates(args))
+                    record=False, batch_size=1, batch_length=1, updates=student_updates(args))
       source = dict(run=str(Path(args.run).resolve()), checkpoint=str(latest(args.run) or ''),
                     init_from=args.init_from, init_f1=args.init_f1)
     else:
@@ -1002,7 +1007,7 @@ def main(argv=None):
     carry_root = args.carry_root
   elif args.window_start == 'carry' and args.command == 'train-market':
     parser.error('L1 trains the market brain: its windows cannot start from a stored carry')
-  updates, anchor = {'agent.ts.stage': stage, **market_updates(args)}, None
+  updates, anchor = {'agent.ts.stage': stage, **student_updates(args)}, None
   if args.command == 'freeze' and args.value_anchor_of:
     if args.beta_q is not None or args.kappa_q is not None or args.cf:
       parser.error('--value-anchor-of keeps an anchor: no --beta-q, --kappa-q or --cf')
@@ -1031,6 +1036,10 @@ def main(argv=None):
     sets, feedback = _feedback(args, 'outcome' if stage == 'L2' else 'demo')
     accounts = None if stage == 'L1' else [LABEL_ACCOUNT]
     corpora = [TSCorpus(c, behaviors=accounts, carry_root=carry_root) for c in args.corpus]
+    for c in corpora:  # the MAE / MFE labels and the student's heads share one unit
+      if c.outcome_points != float(ts.outcome_points):
+        parser.error(f'{c.source["contract"]}: MAE / MFE labels in units of {c.outcome_points} '
+                     f'points, the student\'s ts.outcome_points is {ts.outcome_points}')
     kw = dict(mix=args.mix, holdout=args.holdout, accounts=accounts)
     # Windows that start from the stored carry need no burn-in.
     if stage == 'L2':

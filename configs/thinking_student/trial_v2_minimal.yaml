@@ -57,6 +57,9 @@ student:
   carry_parallel: 6       # market-carry processes, ~1 GB GPU and ~1.7 GB RAM each
   # V0.5: the student reads no MACD and 48 complete 15m buckets (24 before).
   market: {macd: false, context_15m: 48}
+  # MAE / MFE heads in units of the strategy's max_risk_points: 1.0 = one R
+  # (user 2026-11-03; V1: 30 points).
+  outcome_points: 10.0
 
 # Speeds of the 10x run FORMAL_V1_L1_100K_L2_120K_CONTINUE_20261024 alone on
 # the GPU: 0.24 s per L1 update, 0.13 s per L2 and 0.11 s per L3 update, the

@@ -110,7 +110,9 @@ class TSCorpus:
         _table_check(f'carry/{k}', v, rows)
     facts = C.load_arrays(self.folder / 'facts')
     graded = C.load_arrays(self.folder / 'graded')
-    self.outcome = L.outcome_labels(facts, C.KINDS, graded)
+    # MAE / MFE in units of the corpus's points (30, or the V2 max risk).
+    self.outcome_points = L.outcome_points(self.source)
+    self.outcome = L.outcome_labels(facts, C.KINDS, graded, self.outcome_points)
     self.demo_action, self.demo_valid = L.demo_labels(graded)
     floor = self.source['funds_floor']
     self.behaviors, self.labelled = {}, {}

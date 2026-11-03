@@ -1,7 +1,8 @@
 """Economic Q return of a CF folder (E2 R2, user 2026-10-30; e2-r2.md).
 
-The CF engine labels the ADD/WAIT pairs with the Native Quality reward,
-discounted 332/333 per market minute. NET_PNL_H2760 relabels them with the
+The CF engine labels the ADD/WAIT pairs with the env reward (V1: the
+Native Quality reward; V2: net PnL / reward_scale_cny), discounted 332/333
+per market minute. NET_PNL_H2760 relabels them with the
 economic value: the undiscounted net PnL, in units of one standard SL30 net
 loss (1818 CNY), of every trade that is open within the next H = 2760 market
 minutes:

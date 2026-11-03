@@ -15,6 +15,10 @@ ts:
   account: {units: 1024, layers: 2}
   fusion: {units: 1024}
   outcome: {units: 1024, layers: 2}
+  # Points per unit of the MAE / MFE heads: 30 (the V1 SL distance); V2 the
+  # strategy's max_risk_points 10, so 1.0 is one R. It must equal the
+  # corpus's (labels.outcome_points); the MFE answers are in points.
+  outcome_points: 30.0
   value: {units: 1024, layers: 2}
   # beta_q = 0: the value anchor contributes nothing to pi0 (A6 L3); a frozen
   # pi_k+1 raises it once Q has policy-conditioned supervision.

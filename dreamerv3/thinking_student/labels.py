@@ -2,7 +2,8 @@
 
 One Outcome label describes the Native trade "ADD now, then hold" from a flat
 account. Its first ending is one of the three Native ways a trade closes --
-TP, SL (at the env's distances, TP5 / SL30 by default) or another forced
+TP, SL (the env's: fixed distances, TP5 / SL30 by default, or under the V2
+strategy the trade's own structural SL and 2R TP) or another forced
 exit (OTHER_EXIT: main roll, contract expiry, margin call) -- in a
 market-minute bin, or the trade is still open after the
 last edge H (OPEN_AT_H: "not ended within H", never "will not reach TP").
@@ -12,8 +13,9 @@ executable favourable move within 15 / 60 / 120 market minutes of the fill,
 whatever the exit, within the official trading day (gym ts_v1_grades).
 Demonstration labels are the graded teacher's: ADD where it grades the trade
 GOOD or better, WAIT where it grades it POOR, nothing for FAIR or no grade
-(L_policy_demo). Labels are TRAIN teaching data only and never enter the
-policy input.
+(L_policy_demo); the V2 positive teacher writes its ADD / WAIT rows into the
+same arrays (gym ts_v2_positive.graded_teacher). Labels are TRAIN teaching
+data only and never enter the policy input.
 """
 import numpy as np
 
@@ -30,8 +32,10 @@ RISK_FLAGS = ('early10_5', 'early10_15')
 MAE_HORIZONS = ('mae_15', 'mae_60', 'mae_full')
 MAE_COMPLETE = {'mae_15': 'mae_15_complete', 'mae_60': 'mae_60_complete',
                 'mae_full': 'path_complete'}
-# Points; a fixed scale of the MAE / MFE heads (the default SL distance),
-# not the env's rule, so one model reads corpora of any TP / SL.
+# Points per unit of the MAE / MFE heads (student ts.outcome_points): the V1
+# SL distance 30 for the corpora of fixed TP / SL distances; under the V2
+# structural stop its max_risk_points (10), so 1.0 is one planned R
+# (outcome_points; user 2026-11-03).
 MAE_SCALE = 30.0
 MFE_HORIZONS = ('mfe_15', 'mfe_60', 'mfe_120')
 MFE_SCALE = MAE_SCALE
@@ -92,11 +96,19 @@ def empty_labels(batch_shape=()):
   return _zeros({**LABEL_SPACE, **DEMO_SPACE, **Q_SPACE}, batch_shape)
 
 
-def outcome_labels(facts, kinds, graded):
+def outcome_points(source):
+  """Points per unit of the MAE / MFE labels of a corpus (its source.json):
+  the max_risk_points of a V2 structural stop, else MAE_SCALE."""
+  entry = ((source['inputs'].get('strategy') or {}).get('entry') or {})
+  return float(entry['max_risk_points']) if entry.get('stop_rule') else MAE_SCALE
+
+
+def outcome_labels(facts, kinds, graded, points=MAE_SCALE):
   """Outcome labels of every cursor of a corpus facts table whose `kind`
   codes index `kinds` (gym ts_v1_corpus.KINDS), with the MFE targets of its
-  graded table. A cursor has a label exactly when its ADD filled; unknown
-  parts stay zero with valid=0."""
+  graded table; MAE / MFE in units of `points` (outcome_points). A cursor
+  has a label exactly when its ADD filled; unknown parts stay zero with
+  valid=0."""
   n = len(facts['filled'])
   out = _zeros(LABEL_SPACE, (n,))
   for t in np.flatnonzero(facts['filled']):
@@ -109,13 +121,14 @@ def outcome_labels(facts, kinds, graded):
         out['outcome_risk_valid'][t, i] = 1.
     for i, name in enumerate(MAE_HORIZONS):
       if facts[MAE_COMPLETE[name]][t]:
-        out['outcome_mae'][t, i] = float(facts[name][t]) / MAE_SCALE
+        out['outcome_mae'][t, i] = float(facts[name][t]) / points
         out['outcome_mae_valid'][t, i] = 1.
     for i, name in enumerate(MFE_HORIZONS):
       if graded[name + '_complete'][t]:
-        out['outcome_mfe'][t, i] = float(graded[name][t]) / MFE_SCALE
+        out['outcome_mfe'][t, i] = float(graded[name][t]) / points
         out['outcome_mfe_valid'][t, i] = 1.
-    # Official Quality TP reward of the whole trade; unknown until it closed.
+    # The env reward of the whole trade (V1: the Quality TP reward; V2: its
+    # net PnL / reward_scale_cny); unknown until it closed. The name stays.
     if facts['path_complete'][t] and np.isfinite(facts['reward'][t]):
       out['outcome_quality'][t] = float(facts['reward'][t])
       out['outcome_quality_valid'][t] = 1.

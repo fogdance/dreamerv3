@@ -10,12 +10,13 @@ import numpy as np
 import pytest
 
 from dreamerv3.thinking_student import formal_train as FT
+from dreamerv3.thinking_student import labels as L
 from dreamerv3.thinking_student import q_return as QR
 from dreamerv3.thinking_student import transfer
 from dreamerv3.thinking_student.config import observation_space
 from dreamerv3.thinking_student.student import make_agent
 
-V2 = {'agent.ts.market.macd': False, 'agent.ts.market.context_15m': 48}
+V2 = {'agent.ts.market.macd': False, 'agent.ts.market.context_15m': 48, 'agent.ts.outcome_points': 10.}
 
 
 def student(folder, updates=None):
@@ -47,6 +48,7 @@ def tokens(agent, obs):
 def test_the_v2_student_reads_48_buckets_and_no_macd(tmp_path):
   agent = student(tmp_path / 'v2', V2)
   assert dict(agent.config.ts.market) == {'macd': False, 'context_15m': 48}
+  assert agent.config.ts.outcome_points == 10.
   assert not any('macd5' in k for k in agent.params)
   assert agent.params['market_enc/context15/kernel'].shape[0] == 48 * 7
   obs = observation(dict(macd=False, context_15m=48))
@@ -67,6 +69,7 @@ def test_the_v2_student_reads_48_buckets_and_no_macd(tmp_path):
 def test_the_v1_student_is_unchanged(tmp_path):
   agent = student(tmp_path / 'v1')
   assert dict(agent.config.ts.market) == {'macd': True, 'context_15m': 24}
+  assert agent.config.ts.outcome_points == L.MAE_SCALE == 30.
   assert agent.params['market_enc/context15/kernel'].shape[0] == 24 * 7
   obs = observation(dict(macd=True, context_15m=24))
   macd = obs['market_macd_5m'].copy()
@@ -101,10 +104,30 @@ def test_the_formal_settings_carry_the_market_and_the_strategy():
   cfg = FT.load_config(FT.Path(FT.__file__).parents[2] / 'configs/thinking_student/trial_v2_minimal.yaml')
   argv = [str(a) for a in FT._student(cfg)]
   assert argv[argv.index('--market-macd') + 1] == '0' and argv[argv.index('--context-15m') + 1] == '48'
+  assert float(argv[argv.index('--outcome-points') + 1]) == 10.
   assert FT._strategy(cfg)[1].endswith('strategy_v2_short_structural.yaml')
   assert cfg['iteration']['q_return'] == QR.NET_PNL
   assert cfg['foundation']['save_every'] == cfg['iteration']['save_every'] == 0
   v1 = FT.load_config(FT.Path(FT.__file__).parents[2] / 'configs/thinking_student/formal_v1_graded.yaml')
   argv = [str(a) for a in FT._student(v1)]
   assert argv[argv.index('--market-macd') + 1] == '1' and argv[argv.index('--context-15m') + 1] == '24'
+  assert float(argv[argv.index('--outcome-points') + 1]) == 30.
   assert FT._strategy(v1) == []
+
+
+def test_mae_and_mfe_labels_are_in_units_of_the_planned_risk():
+  v2 = {'inputs': {'strategy': {'entry': {'stop_rule': 'prior_15m_high', 'max_risk_points': 10}}}}
+  assert L.outcome_points(v2) == 10. and L.outcome_points({'inputs': {'strategy': None}}) == 30.
+  assert L.outcome_points({'inputs': {}}) == 30.  # a V1 corpus built before the key
+  n = 2
+  facts = {k: np.zeros(n, bool) for k in ('filled', 'early10_5', 'early10_5_valid', 'early10_15',
+                                         'early10_15_valid', 'mae_15_complete', 'mae_60_complete',
+                                         'path_complete')}
+  facts.update(filled=np.array([True, False]), kind=np.zeros(n, np.int8), held_minutes=np.full(n, 30),
+               mae_15=np.array([5., 0.]), mae_60=np.zeros(n), mae_full=np.zeros(n), reward=np.zeros(n),
+               mae_15_complete=np.array([True, False]))
+  graded = {f'mfe_{h}': np.array([20., 0.]) for h in (15, 60, 120)}
+  graded.update({f'mfe_{h}_complete': np.array([True, False]) for h in (15, 60, 120)})
+  out = L.outcome_labels(facts, ('TP', 'SL', 'OTHER', 'OPEN', 'CENSORED'), graded, 10.)
+  assert out['outcome_mae'][0, 0] == .5 and out['outcome_mfe'][0, 0] == 2.
+  assert L.outcome_labels(facts, ('TP', 'SL', 'OTHER', 'OPEN', 'CENSORED'), graded)['outcome_mae'][0, 0] == np.float32(5 / 30)

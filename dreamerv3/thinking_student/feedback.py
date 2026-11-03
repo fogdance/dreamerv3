@@ -381,6 +381,9 @@ def _summary(items, source, meta, collection, corpus, cf, cf_meta, kappa, comple
       teachers_agree=int(items['teachers_agree'].sum()),
       demo_grades={name: int((items['demo_grade'] == k).sum())
                    for k, name in enumerate(('POOR', 'FAIR', 'GOOD', 'EXCELLENT'))},
+      # By action: the V2 positive teacher's WAIT rows have no grade (-1).
+      demo_actions={name: int((items['demo_valid'] & (items['demo_action'] == k)).sum())
+                    for k, name in enumerate(('WAIT', 'ADD'))},
       thresholds=dict(thresholds, kappa_q=kappa and kappa[0], kappa_source=kappa and kappa[1],
                       decision_errors='TAGGED' if kappa else 'DECISION_ERRORS_NOT_TAGGED'),
       errors=marked(errors(items), 'error'), correct=marked(correct(items), 'correct'),
