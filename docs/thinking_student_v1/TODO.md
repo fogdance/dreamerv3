@@ -748,5 +748,5 @@
   - 第 2 步测试（2026-11-03）：gym V2 + 教材 22 项通过（1 项待语料）、gym 已有 87 项通过、dreamer V2 5 项、dreamer 已有 63 项通过；止损线改为“已离开过的线”后与教材一致 5,163/5,164（FG405 1 个触碰中新确认的线 → STOP_LINE_DIFFERS）
   - [x] 对照设计文档 Review 全部改动（用户 2026-11-03）：差异清单 → 与用户讨论（A–E 按建议）→ 统一修复（gym `dcf89b7`、dreamer `3abffab`）→ 重跑测试：gym 112 项通过（含语料教师测试）、dreamer 69 项通过（全套 68 项；新加的 MAE/MFE 单位测试在 float32 比较修正后单独重跑通过）
   - [x] V2 语料：9 个 SHORT TRAIN 合约（`corpus_v2_minimal_20261031`，2026-11-03 20:20）；ADD 5,163（GOOD 3,484 / EXCELLENT 1,679）、WAIT 1,183、RISK_ABOVE_MAX 2,083、STOP_LINE_DIFFERS 1；语料教师测试通过
-  - [ ] 第 3 步：最小验证 + `TEST_REPORT.md`（教师 mask、真实交易、Reward/Q 对账、Obs、L1–L5 GPU smoke（用户 2026-11-03：只用 GPU）、V1 回归）
+  - [x] 第 3 步：最小验证 + `TEST_REPORT.md`（教师 mask、真实交易、Reward/Q 对账、Obs、V1 回归；L1–L5 GPU smoke 按用户 2026-11-03 决定不做，由 1x 跑这条链；手算 G(t) 放到 SMOKE_REPORT）
   - [ ] 第 4 步：`SMOKE_REPORT.md`，取自 1x 的 pi_0000 / 第 1 轮（用户 2026-11-03：重启后直接开 1x `FORMAL_V2_MINIMAL_1X_20261103`，不另跑短试训）

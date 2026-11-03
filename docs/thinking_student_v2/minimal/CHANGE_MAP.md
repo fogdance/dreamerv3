@@ -128,7 +128,7 @@
 | 文件 | 内容 |
 |---|---|
 | `markets/strategy_v2_short_structural.yaml` | 策略叠加：结构止损、R ≤ 10、2R、48 个 bucket、净 PnL / 618 |
-| `formal_v2_minimal.yaml` | 即 V2_CONFIG：1x 预算，**不运行** |
+| `formal_v2_minimal.yaml` | 即 V2_CONFIG：1x 预算。用户 2026-11-03 在训练 worktree `fg-s3-thinking-student-v2-1x-20261103` 上开始运行（`FORMAL_V2_MINIMAL_1X_20261103`） |
 | `trial_v2_minimal.yaml` | 短试训 |
 
 两份训练配置都设 `save_every: 0`，即每个阶段只保存最终 ckpt（size50m 约 388 MB 一个；用户 2026-11-03）。
@@ -141,4 +141,9 @@
 
 ## 提交
 
-（第 2 步完成后填写）
+| 仓库 | 提交 |
+|---|---|
+| gym | `35e5d90` 四项改动；`dcf89b7` Review 后的修复 |
+| dreamer | `8a46bcf` 学生市场开关、R2 净 PnL Q、V2 配置；`3abffab` Review 后的修复；`6f05725` 1x 的 run 目录；`db0239a` TODO、9 个语料 |
+
+验证见 `TEST_REPORT.md`。
