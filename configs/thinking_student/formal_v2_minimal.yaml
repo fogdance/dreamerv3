@@ -1,6 +1,7 @@
 # Thinking Student V2 minimal change (V0.5, user 2026-10-31): V2_CONFIG, the
-# 1x formal run. NOT STARTED: it waits for the user's review of the short
-# trial (trial_v2_minimal.yaml) and permission.
+# 1x formal run. The user starts it after the review fixes (2026-11-03), from
+# the training worktree pair fg-s3-thinking-student-v2-1x-20261103 with
+# FORMAL_V2_MINIMAL_1X_20261103/v2_1x.sh in tmux d3.
 #
 # formal_v1_graded.yaml with only the four V0.5 changes:
 # - Teacher: the V2_1 positive material (GOOD / EXCELLENT ADD with R <= 10,
@@ -29,7 +30,7 @@ paths:  # relative paths are relative to this file
   markets: markets/pool.json
   # The 9 SHORT TRAIN corpora built with the V2 strategy and the V2_1 teacher.
   corpus_root: /data/logdir/fg_single3/thinking_student/corpus_v2_minimal_20261031
-  run_root: /data/logdir/fg_single3/thinking_student/FORMAL_V2_MINIMAL_1X
+  run_root: /data/logdir/fg_single3/thinking_student/FORMAL_V2_MINIMAL_1X_20261103
   # The strategy of the corpora; the DEV exam trades FG409 under it.
   strategy: markets/strategy_v2_short_structural.yaml
   # Market brain of the size50m E-observation formal run on the 18 TRAIN
