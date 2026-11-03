@@ -440,7 +440,8 @@ def check_collection(out, corpus=None, inputs=None):
   (forced counterfactual actions excepted), no executed ADD was masked, and
   each closed Native trade reached TP by >= the TP distance or lost >= the SL
   distance at SL, the distances of the env inputs the collection ran on
-  (`inputs`, by default the corpus's inputs/env.yaml). With the corpus of
+  (`inputs`, by default the corpus's inputs/env.yaml; under entry.stop_rule
+  the trade's own, recomputed from the market). With the corpus of
   the collection's contract, each student ADD from a funded flat account is
   compared with the Native fact of the same cursor."""
   from gym_trading_env.research import ts_v1_corpus as C
@@ -468,6 +469,10 @@ def check_collection(out, corpus=None, inputs=None):
     exits[t['reason']] = exits.get(t['reason'], 0) + 1
     move = (1 if t['side'] == 'LONG' else -1) * (
         Decimal(t['exit_price']) - Decimal(t['entry_price']))
+    if native.stop_rule:
+      plan = native.planned_exit(t['entry_cursor'] - 1, t['entry_price'], t['side'])
+      tp_points = Decimal(t['entry_price']) - plan['take_profit_price']
+      sl_points = plan['stop_loss_price'] - Decimal(t['entry_price'])
     if (t['reason'] == 'TAKE_PROFIT' and move < tp_points) or (
         t['reason'] == 'STOP_LOSS' and move > -sl_points):
       points.append(dict(entry_cursor=t['entry_cursor'], reason=t['reason'], move=str(move)))
@@ -815,6 +820,13 @@ def _one(folders, flag):
   return folders[0]
 
 
+def market_updates(args):
+  """ts.market of a new student from --market-macd / --context-15m; a frozen
+  policy keeps the one recorded in its snapshot."""
+  return {**({} if args.market_macd is None else {'agent.ts.market.macd': bool(args.market_macd)}),
+          **({} if args.context_15m is None else {'agent.ts.market.context_15m': args.context_15m})}
+
+
 def main(argv=None):
   parser = argparse.ArgumentParser()
   parser.add_argument('command', choices=[
@@ -824,6 +836,10 @@ def main(argv=None):
   parser.add_argument('--preset', default='size12m')
   parser.add_argument('--device', default=None,
                       help="cpu or cuda; default cuda (collect: the snapshot's device)")
+  parser.add_argument('--market-macd', type=int, choices=(0, 1), default=None,
+                      help='ts.market.macd of a new student (default student.yaml)')
+  parser.add_argument('--context-15m', type=int, default=None,
+                      help='ts.market.context_15m of a new student: complete 15m buckets')
   parser.add_argument('--init-f1', default=None)
   parser.add_argument('--init-from', default=None,
                       help='earlier Thinking Student run or checkpoint (listed inheritance)')
@@ -965,7 +981,7 @@ def main(argv=None):
       # The student as the run holds it (its latest checkpoint, else its
       # init source); nothing of the run is written.
       agent = build(args.run, args.preset, args.device or 'cuda', args.init_f1, args.init_from,
-                    record=False, batch_size=1, batch_length=1)
+                    record=False, batch_size=1, batch_length=1, updates=market_updates(args))
       source = dict(run=str(Path(args.run).resolve()), checkpoint=str(latest(args.run) or ''),
                     init_from=args.init_from, init_f1=args.init_f1)
     else:
@@ -986,7 +1002,7 @@ def main(argv=None):
     carry_root = args.carry_root
   elif args.window_start == 'carry' and args.command == 'train-market':
     parser.error('L1 trains the market brain: its windows cannot start from a stored carry')
-  updates, anchor = {'agent.ts.stage': stage}, None
+  updates, anchor = {'agent.ts.stage': stage, **market_updates(args)}, None
   if args.command == 'freeze' and args.value_anchor_of:
     if args.beta_q is not None or args.kappa_q is not None or args.cf:
       parser.error('--value-anchor-of keeps an anchor: no --beta-q, --kappa-q or --cf')
@@ -1041,7 +1057,7 @@ def main(argv=None):
                     constant_answer=constant.round(5).tolist(), mfe_minutes=list(L.MFE_HORIZONS),
                     grades=sources[0]['grades'])
     elif stage == 'L3':
-      report.update(teacher='GRADED_ENTRY_TEACHER', grades=sources[0]['grades'],
+      report.update(teacher=sources[0]['teacher'], grades=sources[0]['grades'],
                     demo_balance=args.demo_balance, demo_weights=train.demo_weights,
                     train_demos=train.demo_counts, eval_demos=held and held.demo_counts)
       print('demonstrations', {k: report[k] for k in ('demo_weights', 'train_demos')})

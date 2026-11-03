@@ -738,3 +738,15 @@
   - [x] 测试（多次 touch、高点自身的放量、最低线、因果截断、真实 FG809）+ ruff：13 项通过
   - [x] 提交后 9 个合约全部生成到 `V2_1_POSITIVE_ENTRY_20261031` + figures + REPORT_V2.md；停止等待用户 Review
   - 结果（2026-10-31，gym 0e1ef3b / dreamer 869405e）：1,991 次 touch、7,247 个正例（EXCELLENT 2,377），V1 的 1,548 个正例保留 1,478 个；用户标出的可执行点全部入库，12-29 21:01 是开盘第一分钟冲高，市价单卖不到。全部候选 2R TP 率 25.8%、平均净 −147 元，低于盈亏平衡点 34.8%。新情况：97% 的线放过量（放量几乎不再筛选）；横盘一整天的 touch 最多有 278 个正例；70 个 V1 正例因为改用更低的线而止损。见 `docs/thinking_student_v2/REPORT_V2.md` 第十一节，等待用户决定
+- [ ] G-22：V2 最小改造（V0.5，用户 2026-10-31；分支 `feat/ts-v2-minimal-20261031`，worktree `/data/research/fg-s3-thinking-student-v2-20261031`；风险上限 R ≤ 10）
+  - [x] 第 1 步：`docs/thinking_student_v2/minimal/CHANGE_MAP.md`
+  - [x] 2.1 策略：结构止损 SL = 前高 + 5、TP = 成交 − 2R（`entry.stop_rule`），定长距离的地方改读每笔交易自己的价格
+  - [x] 2.2 Reward：净 PnL / 618（`FG_SINGLE3_REWARD_NET_PNL_V1`），语料输入、facts、R2 `q_return` 同一尺度
+  - [x] 2.3 教师：V2_1 正例（R ≤ 10、Native 复现）→ `graded/` 的 ADD；必要 WAIT；其它分钟无监督
+  - [x] 2.4 Observation：学生不读 MACD；15m 24 → 48（`entry.context_15m_buckets`、`ts.market`）；`inherit_f1` 零行加宽
+  - [x] 2.5 配置：`markets/strategy_v2_short_structural.yaml`、`formal_v2_minimal.yaml`（1x，不运行）、`trial_v2_minimal.yaml`
+  - 第 2 步测试（2026-11-03）：gym V2 + 教材 22 项通过（1 项待语料）、gym 已有 87 项通过、dreamer V2 5 项、dreamer 已有 63 项通过；止损线改为“已离开过的线”后与教材一致 5,163/5,164（FG405 1 个触碰中新确认的线 → STOP_LINE_DIFFERS）
+  - [ ] 对照设计文档 Review 全部改动（用户 2026-11-03）：差异清单 → 与用户讨论 → 统一修复 → 重跑测试
+  - [ ] V2 语料：9 个 SHORT TRAIN 合约
+  - [ ] 第 3 步：最小验证 + `TEST_REPORT.md`（教师 mask、真实交易、Reward/Q 对账、Obs、L1–L5 CPU smoke、V1 回归）
+  - [ ] 第 4 步：GPU 短试训 + `SMOKE_REPORT.md`；停止等待用户 Review（不启动 1x）

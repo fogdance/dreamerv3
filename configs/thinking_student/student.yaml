@@ -9,6 +9,9 @@
 # preset that leaves them alone.
 
 ts:
+  # Market inputs (V2, user 2026-10-31: macd false, 48 complete 15m buckets).
+  # The env still computes the 5m MACD; with macd false no parameter reads it.
+  market: {macd: true, context_15m: 24}
   account: {units: 1024, layers: 2}
   fusion: {units: 1024}
   outcome: {units: 1024, layers: 2}

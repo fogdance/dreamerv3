@@ -184,12 +184,15 @@ def corpus_sources(folders):
       raise ValueError(f'{folder}: no graded teacher (graded/); write it with '
                        + GRADED_COMMAND.format(folder=folder))
     source = json.loads((folder / 'source.json').read_text())
-    source['grades'] = json.loads((folder / 'graded' / 'summary.json').read_text())['grades']
+    graded = json.loads((folder / 'graded' / 'summary.json').read_text())
+    source['grades'] = graded['grades']
+    source['teacher'] = graded['label']['source']
     name = source['contract']
     if source['fold'] != 'TRAIN':
       raise ValueError(f'{name}: fold {source["fold"]} is not TRAIN material')
     key = dict(reward_schema=source['inputs']['reward_schema'], clock=source['clock'],
-               gamma=source['gamma'], grades=source['grades'])
+               gamma=source['gamma'], grades=source['grades'], rules=source['inputs'].get('rules'),
+               strategy=(source['inputs'].get('strategy') or {}).get('version'))
     if shared is not None and key != shared[1]:
       raise ValueError(f'{name}: {key} differs from {shared[0]} {shared[1]}')
     if name in seen:

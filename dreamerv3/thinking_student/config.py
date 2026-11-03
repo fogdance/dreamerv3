@@ -42,13 +42,16 @@ def make_config(preset='size12m', seed=0, batch_size=8, batch_length=64,
   return dict(cfg)
 
 
-def observation_space():
+def observation_space(market=None):
+  """The student's inputs; `market` (ts.market) sets the 15m context length."""
   from gym_trading_env.research.fg_s3_e_observation import E_FIELDS_V2
   from gym_trading_env.research.ts_v1_account import ACCOUNT_NATIVE_SHAPE
   keys = ('market_seq_e_shared', 'market_context_15m', 'market_macd_5m',
           'position_state', 'action_mask', 'reward', 'is_first', 'is_last',
           'is_terminal')
   spaces = {k: elements.Space(E_FIELDS_V2[k][1], E_FIELDS_V2[k][0]) for k in keys}
+  depth = dict(market or TS_DEFAULTS['market'])['context_15m']
+  spaces['market_context_15m'] = elements.Space(np.float32, (depth, 7))
   spaces['account_native'] = elements.Space(np.float32, ACCOUNT_NATIVE_SHAPE)
   return spaces
 

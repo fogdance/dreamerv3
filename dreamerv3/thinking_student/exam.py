@@ -3,7 +3,8 @@ trades a Native account on its own, and random-entry accounts trade the same
 market minutes under the same Native rules.
 
   python -m dreamerv3.thinking_student.exam --policy DIR --out DIR \\
-      --pool configs/thinking_student/markets/pool.json --contract CZCE.FG409
+      --pool configs/thinking_student/markets/pool.json --contract CZCE.FG409 \
+      [--strategy configs/thinking_student/markets/strategy_v2_short_structural.yaml]
   python -m dreamerv3.thinking_student.exam --policy DIR --out DIR --corpus DIR --steps N
   python -m dreamerv3.thinking_student.exam --policy DIR --out DIR \\
       --paper-pool configs/thinking_student/markets/paper_pool.json --contract CZCE.FG501 \\
@@ -11,7 +12,8 @@ market minutes under the same Native rules.
 
 DEV          a VALIDATION row of the TS market pool (gym ts_v1_corpus.dev_row),
              its env inputs only (write_inputs, as for the TRAIN corpora): an
-             independent market under the same Native rules.
+             independent market under the same Native rules (--strategy: the
+             V2 strategy the TRAIN corpora were built with).
 PAPER        a row of the paper-trading pool (role 'paper', never eligible for
              training; user 2026-10-29): paper trading on later markets to see
              the policy's profit. Like DEV it only reads env inputs; it is not
@@ -196,6 +198,8 @@ def main(argv=None):
                       help='paper-trading pool (markets/paper_pool.json) with the row of --contract (PAPER)')
   parser.add_argument('--take-profit-points', type=int, default=None, help='PAPER only: TP distance (env default 5)')
   parser.add_argument('--stop-loss-points', type=int, default=None, help='PAPER only: SL distance (env default 30)')
+  parser.add_argument('--strategy', default=None,
+                      help='DEV only: V2 strategy overlay (gym ts_v1_corpus.load_strategy)')
   parser.add_argument('--beta-q', type=float, default=None,
                       help='DEV only: decision beta_Q of the frozen policy (E1 diagnostic, user 2026-10-30)')
   parser.add_argument('--corpus', default=None, help='TRAIN corpus folder (TRAIN_SMOKE)')
@@ -210,14 +214,16 @@ def main(argv=None):
                               ('stop_loss_points', args.stop_loss_points)) if v is not None}
   if rules and not args.paper_pool:
     parser.error('--take-profit-points / --stop-loss-points are for PAPER only')
-  if args.beta_q is not None and not args.pool:
-    parser.error('--beta-q is for DEV only')
+  if (args.beta_q is not None or args.strategy) and not args.pool:
+    parser.error('--beta-q and --strategy are for DEV only')
   ts = None if args.beta_q is None else {'decision.beta_q': args.beta_q}
   from gym_trading_env.research import ts_v1_corpus as C
   if args.pool:
     row = C.dev_row(args.contract, args.pool)
-    config = C.write_inputs(row, Path(args.out) / 'inputs')
-    label, source = 'DEV', dict(pool=str(Path(args.pool).resolve()), row=row, ts_override=ts)
+    config = C.write_inputs(row, Path(args.out) / 'inputs',
+                            strategy=args.strategy and C.load_strategy(args.strategy))
+    label, source = 'DEV', dict(pool=str(Path(args.pool).resolve()), row=row, ts_override=ts,
+                                strategy=args.strategy and str(Path(args.strategy).resolve()))
   elif args.paper_pool:
     row = paper_row(args.contract, args.paper_pool)
     config = paper_inputs(row, Path(args.out) / 'inputs', rules)

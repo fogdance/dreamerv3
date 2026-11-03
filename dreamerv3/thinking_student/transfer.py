@@ -2,7 +2,8 @@
 
 `inherit_f1`: only parameters whose meaning survives the new architecture are
 copied: the market encoder (with the account/mask input rows removed, and
-widened by zero rows for the 5m MACD input when the source predates it), the
+widened by zero rows for the 5m MACD input when the source predates it and
+for the older 15m buckets of a longer context), the
 market RSSM (its action slot now always sees zeros) and the market decoder
 head. `inherit_student`: an earlier Thinking Student checkpoint of the same
 parameter layout (a round learner from pi_k). Everything not copied keeps
@@ -21,6 +22,9 @@ F1_MINUTE_KERNEL = 'enc/minute/mlp0/kernel'
 # before the MACD branch (e.g. the size50m E_ONLY formal run) has only the
 # first two.
 F1_FUSION_KERNEL = 'enc/fusion/kernel'
+# 7 rows per 15m bucket, oldest bucket first; a longer context (V2: 48
+# buckets) gets zero rows for its older buckets.
+F1_CONTEXT_KERNEL = 'enc/context15/kernel'
 PREFIX_MAP = (('enc/', 'market_enc/'), ('dyn/', 'market_dyn/'),
               ('dec/mlp/', 'market_dec/mlp/'),
               ('dec/vec/market_seq_e_shared/', 'market_dec/vec/market_seq_e_shared/'))
@@ -57,6 +61,13 @@ def plan(source, target):
         # source did until they learn.
         pad = np.zeros((target[dest].shape[0] - value.shape[0], *value.shape[1:]), value.dtype)
         value = np.concatenate([value, pad])
+        widened.append(dest)
+      elif (key == F1_CONTEXT_KERNEL and value.shape[0] < target[dest].shape[0]
+            and (target[dest].shape[0] - value.shape[0]) % 7 == 0):
+        # The older buckets' rows start at zero: the encoder answers on the
+        # newest buckets as the source did until they learn.
+        pad = np.zeros((target[dest].shape[0] - value.shape[0], *value.shape[1:]), value.dtype)
+        value = np.concatenate([pad, value])
         widened.append(dest)
       else:
         reused.append(dest)

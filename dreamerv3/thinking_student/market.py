@@ -20,7 +20,8 @@ NULL_ACTION_DIM = 2
 
 
 class MarketEncoder(nj.Module):
-  """1m minute MLP + completed 15m buckets + partial 5m MACD, market only."""
+  """1m minute MLP + completed 15m buckets + partial 5m MACD, market only.
+  With macd False (V2) the MACD input has no branch and no parameter."""
 
   units: int = 1024
   layers: int = 3
@@ -29,9 +30,11 @@ class MarketEncoder(nj.Module):
   symlog: bool = True
   context_units: int = 128
   macd_units: int = 16
+  macd: bool = True
 
   def __init__(self, obs_space, **kw):
-    expected = {'market_seq_e_shared': (60, 18), 'market_context_15m': (24, 7),
+    self.depth = obs_space['market_context_15m'].shape[0]
+    expected = {'market_seq_e_shared': (60, 18), 'market_context_15m': (self.depth, 7),
                 'market_macd_5m': (4,)}
     if {k: obs_space[k].shape for k in expected} != expected:
       raise ValueError('Market Brain requires the E market observation shapes')
@@ -48,20 +51,24 @@ class MarketEncoder(nj.Module):
         {}, {'market_seq_e_shared': obs['market_seq_e_shared']}, reset,
         training, single)
     context = obs['market_context_15m']
+    if context.shape[-2:] != (self.depth, 7):
+      raise ValueError(f'15m context {context.shape[-2:]} is not the student\'s ({self.depth}, 7)')
     mask = context[..., 6]
     values = jnp.where(mask[..., None] == 1, context[..., :6], 0.)
     clean = jnp.concatenate([values, mask[..., None]], -1)
-    x = nn.cast(clean.reshape((-1, 168)))
+    x = nn.cast(clean.reshape((-1, self.depth * 7)))
     z15m = jax.nn.gelu(self.sub(
         'context15', nn.Linear, self.context_units, **self.kw)(x))
     z15m = jnp.where((mask == 1).any(-1).reshape((-1, 1)), z15m, 0.)
-    macd = obs['market_macd_5m']
-    macd_valid = macd[..., 3:4] == 1
-    clean_macd = jnp.where(macd_valid, macd[..., :3], 0.)
-    zm = jax.nn.gelu(self.sub('macd5', nn.Linear, self.macd_units, **self.kw)(
-        nn.cast(clean_macd.reshape((-1, 3)))))
-    zm = jnp.where(macd_valid.reshape((-1, 1)), zm, 0.)
-    x = jnp.concatenate([z1m.reshape((-1, self.units)), z15m, zm], -1)
+    parts = [z1m.reshape((-1, self.units)), z15m]
+    if self.macd:
+      macd = obs['market_macd_5m']
+      macd_valid = macd[..., 3:4] == 1
+      clean_macd = jnp.where(macd_valid, macd[..., :3], 0.)
+      zm = jax.nn.gelu(self.sub('macd5', nn.Linear, self.macd_units, **self.kw)(
+          nn.cast(clean_macd.reshape((-1, 3)))))
+      parts.append(jnp.where(macd_valid.reshape((-1, 1)), zm, 0.))
+    x = jnp.concatenate(parts, -1)
     tokens = self.sub('fusion', nn.Linear, self.units, **self.kw)(x)
     return tokens.reshape((*bshape, self.units))
 

@@ -77,7 +77,7 @@ class StudentModel(embodied.jax.Agent):
     enc = config.enc.simple
     self.market_enc = market.MarketEncoder(
         obs_space, units=enc.units, layers=3, norm=enc.norm, act=enc.act,
-        symlog=enc.symlog, winit=enc.winit, name='market_enc')
+        symlog=enc.symlog, winit=enc.winit, macd=ts.market.macd, name='market_enc')
     self.market_dyn = market.MarketRSSM('market_dyn', **config.dyn.rssm)
     dec_space = {k: obs_space[k] for k in market.MARKET_DECODER_KEYS}
     self.market_dec = rssm.Decoder(dec_space, **config.dec.simple, name='market_dec')
@@ -409,4 +409,4 @@ def make_agent(logdir, preset='size12m', device='cpu', **kwargs):
       batch_size=cfg.batch_size, batch_length=cfg.batch_length,
       replay_context=cfg.replay_context, report_length=cfg.report_length,
       replica=0, replicas=1)
-  return StudentModel(observation_space(), action_space(), agent_cfg)
+  return StudentModel(observation_space(cfg.agent.ts.market), action_space(), agent_cfg)

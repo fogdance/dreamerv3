@@ -22,6 +22,7 @@ from dreamerv3.thinking_student import corpus as TC
 from dreamerv3.thinking_student import exam as E
 from dreamerv3.thinking_student import formal_train as FT
 from dreamerv3.thinking_student import labels as L
+from dreamerv3.thinking_student import q_return as QR
 from dreamerv3.thinking_student import run as ts_run
 from dreamerv3.thinking_student import value as V
 
@@ -628,6 +629,63 @@ def test_orchestrator_starts_windows_from_the_market_carry(pik, two, tmp_path, m
   assert calls == ['train-value']
   assert argvs[-1][argvs[-1].index('--window-start') + 1] == 'carry'
   assert argvs[-1][argvs[-1].index('--carry-root') + 1] == str(lay.carry)
+
+
+def test_net_pnl_return_counts_every_trade_open_in_the_window():
+  """q_return NET_PNL: undiscounted net PnL / 1818 of the trades open within
+  H market minutes of t; one still open at the window end counts its
+  realized PnL, one entered after the window counts nothing."""
+  class Clock:  # one market minute per row, advance(a, b) = prefix[b + 1] - prefix[a + 1]
+    prefix = np.arange(12.)
+  trades = [dict(entry_cursor=2, exit_cursor=4, net_trade_pnl=-1818.),   # decisions 1 -> 3
+            dict(entry_cursor=5, exit_cursor=10, net_trade_pnl=909.)]    # decisions 4 -> 9
+  g = QR.window_returns(Clock, 0, 10, trades, horizon=3)
+  # t = 0, 1: the first trade (entry within 3 minutes); the second opens at 4
+  # only from t = 2; it closes at 9, after the window of t = 2..5, yet counts.
+  np.testing.assert_allclose(g, [-1, -1, -.5, -.5, .5, .5, .5, .5, .5, .5])
+  assert QR.window_returns(Clock, 0, 10, trades, horizon=1)[0] == 0
+
+
+def test_orchestrator_relabels_the_cf_with_the_net_pnl_return(pik, two, tmp_path, monkeypatch):
+  """iteration.q_return net_pnl_h2760 (E2 R2, user 2026-10-30): the CF of pi_k
+  goes to cf_native/, q_return writes the relabeled cf/ that L4 and the
+  freeze read, and the round keeps the label statistics."""
+  root = tmp_path / 'corpora'
+  root.mkdir()
+  for folder, name in zip(two, CONTRACTS):
+    (root / name).symlink_to(folder)
+  config = tmp_path / 'r2.yaml'
+  config.write_text(yaml.safe_dump(dict(
+      paths=dict(corpus_root='corpora', run_root='run', init_from=str(pik['run'])),
+      student=dict(preset='small', device='cpu', seed=1, batch_size=2, batch_length=T, log_every=1),
+      foundation=dict(policy_updates=1, save_every=1),
+      iteration=dict(max_rounds=1, cf_wait_forks=2, value_updates=1, kappa_floor=0.05,
+                     q_return='net_pnl_h2760'),
+      evaluation=dict(random_seeds=1, smoke_steps=20))))
+  lay = FT.Layout(tmp_path / 'run')
+  calls, argvs = [], []
+  monkeypatch.setattr(FT, '_call', in_process(calls, argvs=argvs))
+  FT.main(['pretrain', '--config', str(config)])
+  calls.clear(), argvs.clear()
+  FT.main(['iterate', '--config', str(config)])
+  assert calls[:8] == ['collect', 'collect', 'check', 'check', 'cf', 'cf', 'q_return', 'q_return']
+  pi0 = lay.policy(0)
+  for c in CONTRACTS:
+    native, cf = lay.experience(pi0, 'cf_native', c), lay.experience(pi0, 'cf', c)
+    meta = json.loads((cf / 'meta.json').read_text())
+    assert meta['q_return']['name'] == 'net_pnl_h2760' and meta['q_return']['horizon'] == 2760
+    assert meta['q_return']['relabeled_from'] == str(native.resolve())
+    assert meta['policy'] == json.loads((native / 'meta.json').read_text())['policy']
+  for name in ('train-value', 'freeze'):
+    argv = argvs[calls.index(name)]
+    assert [argv[i + 1] for i, a in enumerate(argv) if a == '--cf'] == [
+        str(lay.experience(pi0, 'cf', c)) for c in CONTRACTS]
+  rec = json.loads(lay.state.read_text())['rounds']['1']
+  assert rec['q_return']['name'] == 'net_pnl_h2760' and set(rec['q_return']['stats']) == set(CONTRACTS)
+  bad = tmp_path / 'bad.yaml'
+  bad.write_text(config.read_text().replace('net_pnl_h2760', 'net_pnl'))
+  with pytest.raises(ValueError, match='q_return'):
+    FT.load_config(bad)
 
 
 def test_orchestrator_keeps_the_value_brain_when_the_cf_is_not_representative(

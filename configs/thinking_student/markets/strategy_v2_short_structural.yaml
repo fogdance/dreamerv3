@@ -1,0 +1,30 @@
+# Thinking Student V2 strategy (V0.5, user 2026-10-31): applied on top of a
+# pool env by gym ts_v1_corpus.write_inputs(strategy=...) (corpus CLI and
+# exam.py --strategy). Read by ts_v1_corpus.load_strategy.
+#
+# External direction SHORT only (a contract the env trades LONG is refused),
+# 3 lots, one position: the pool env's rules. The student only chooses
+# WAIT / ADD; nothing here masks or gates an ADD.
+version: V2_SHORT_STRUCTURAL_R10
+direction: SHORT
+entry:
+  # SL = H* + 5 with H* the lowest causal prior 15m pivot high (confirmed,
+  # not broken, within the lookback, already departed by a 1m close at
+  # H - 10) at or above the fill; TP = fill - 2R, R = SL - fill <= 10 (user
+  # 2026-10-31). Further than 10 or no such line: R = 10, recorded per trade
+  # as stop_source CAPPED / NO_LINE. Stateless: on the 5,164 R <= 10
+  # positives of the material it takes the material's line on all but one
+  # (a lower line confirmed during that touch).
+  stop_rule: prior_15m_high
+  stop_above_points: 5
+  max_risk_points: 10
+  target_r: 2
+  # The lines of the V2_1 positive material (v2_positive_entry.yaml).
+  prior_high: {pivot_left: 2, pivot_right: 2, lookback_buckets: 115, departure_points: 10}
+  # Complete 15m buckets in the student's market context (24 before).
+  context_15m_buckets: 48
+reward:
+  # Each exit pays its realized net trade PnL (both fees) / 618 CNY: one
+  # full 10-point SL of 3 lots (10 x 3 x 20 + 18 fees) is -1.
+  schema: FG_SINGLE3_REWARD_NET_PNL_V1
+  reward_scale_cny: 618
