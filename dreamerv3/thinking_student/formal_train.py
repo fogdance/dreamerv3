@@ -76,8 +76,9 @@ progress, a finished collection or CF of the same frozen policy is kept, a
 frozen policy is never rewritten, and the missing exams of the newest frozen
 policy come before the round limit or a new round of a later call. Within
 a call, the DEV exam of a new candidate runs alongside the next round's
-collection and CF and is finished before the next exam starts and before
-the call ends. run_state.json mirrors the progress for
+collection and is finished before its CF starts (the CF workers and an exam
+together outgrow the GPU memory: V2.1 1x round 2, V2.2 1x round 4) and
+before the call ends. run_state.json mirrors the progress for
 reading and is never consulted to admit anything. Budgets and rounds come
 from the config; nothing loops without a bound.
 
@@ -581,8 +582,9 @@ def _round_contracts(it, names, r):
 
 class _Exams:
   """The DEV exams of a new candidate run in the background while the next
-  round collects and runs its CF, which do not depend on them; join()
-  finishes them before the next exam starts or iterate returns, and records
+  round collects, which does not depend on them; join() finishes them
+  before that round's CF (GPU memory), the next exam or the end of iterate,
+  and records
   best_dev in the calling thread (the only writer of run_state.json)."""
 
   def __init__(self, cfg, lay, state):
@@ -668,7 +670,10 @@ def _iterate(cfg, lay, state, rounds, until, exams):
     if not usable:
       _step(lay, state, step='check_failed')
       raise RuntimeError(f'Round {r}: no collection of {policy.name} passed its check')
-    # B3: same-policy ADD/WAIT counterfactuals of each usable contract.
+    # B3: same-policy ADD/WAIT counterfactuals of each usable contract, once
+    # pi_k's DEV exams are done: the CF workers and an exam together do not
+    # fit the GPU memory (user 2026-11-04, V2.1 and V2.2 1x).
+    exams.join()
     _step(lay, state, step='cf')
     cf = {c: lay.experience(policy, 'cf', c) for c in usable}
     relabel = it['q_return'] != Q_NATIVE

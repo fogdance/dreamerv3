@@ -6,6 +6,7 @@ orchestrator and Teacher-free exams.
 Two synthetic markets of the same Native rules (engineering checks). Run
 from gym-trading-env with PYTHONPATH=.:src:../dreamerv3:tests/entry_v1.
 """
+import copy
 import importlib
 import json
 import os
@@ -904,6 +905,41 @@ def test_a_call_that_joins_the_dev_exams_ends_done_and_its_export_never_raises(t
   assert json.loads(lay.state.read_text())['step'] == 'done'
   lines = (lay.logs / 'review_export.log').read_text().splitlines()
   assert len(lines) == 2 and all('FAILED' in x for x in lines)
+
+
+def test_a_round_starts_its_cf_only_after_the_dev_exams_of_its_policy(tmp_path, monkeypatch):
+  """The DEV exam of pi_k overlaps the collection of round k+1 only: with
+  the CF workers it outgrew the 16 GB GPU (V2.1 1x round 2, V2.2 1x round 4)."""
+  lay, events = FT.Layout(tmp_path / 'run'), []
+
+  class Stop(Exception):
+    pass
+
+  class Exams:
+    def running(self, policy):
+      return True
+
+    def join(self):
+      events.append('join')
+
+  def call_many(jobs, parallel):
+    events.append([argv[0] for _, argv, _ in jobs])
+    if any(argv[0] == 'cf' for _, argv, _ in jobs):
+      raise Stop
+
+  cfg = copy.deepcopy(FT.DEFAULTS)
+  cfg['iteration'].update(max_rounds=1, contracts=['A'])
+  monkeypatch.setattr(FT, '_contracts', lambda cfg: {'A': tmp_path / 'A'})
+  monkeypatch.setattr(FT, '_newest', lambda lay: 0)
+  monkeypatch.setattr(FT, '_collected', lambda out: True)
+  monkeypatch.setattr(FT, '_call', lambda module, argv, log: events.append(argv[0]))
+  monkeypatch.setattr(FT, '_check_problems', lambda out: [])
+  monkeypatch.setattr(FT, '_call_many', call_many)
+  state = dict(rounds={})
+  with pytest.raises(Stop):
+    FT._iterate(cfg, lay, state, 1, None, Exams())
+  assert events == [[], 'check', 'join', ['cf']]
+  assert state['step'] == 'cf'
 
 
 def test_a_run_prunes_only_what_nothing_reads_any_more(tmp_path):
