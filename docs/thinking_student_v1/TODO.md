@@ -787,7 +787,7 @@
   - [x] V3 教材（SHORT + LONG，合并）：`V2_2_POSITIVE_ENTRY_{SHORT,LONG,BOTH}_20261104`（17:29，两仓 clean）；用户不要统计和图（“生成好，放着就行”）
   - [x] 规范 §12 第 2 项按复盘端建议改写（Downloads 原件和项目副本，sha `659134e6…`）；分工：run 清单、学生成交、阶段状态都由生成端导出
   - [ ] 用户计划（2026-11-04）：V3 教材 → 1x 正式训练 → paper，期间教材和学生成交都用 review-v1
-    - [ ] 18 个 V2.2 语料（`corpus_v2_2_20261104`，训练 worktree 干净状态）→ 教师检查 → `review_export corpus` + `validate`
-    - [ ] run 导出：`review_export run`（run 清单、progress/status、学生 Native 成交），formal_train 在阶段边界调用，导出失败不影响训练；run_state 写 status，结束时不再停在 `exam_running`
-    - [ ] formal_v2_2.yaml + 训练 worktree，用户在 tmux d3 启动 1x
+    - [x] 18 个 V2.2 语料（`corpus_v2_2_20261104`，18:01，两仓 clean）→ 教师检查通过（ADD 9,429 / WAIT 3,355，SHORT 4,832 / 1,614，LONG 4,597 / 1,741）→ review 发布并通过 validate，12,784 条，manifest sha `3df3b2e0…`（`V2_2_DEV_20261104/corpus_build/after_build.sh`）
+    - [x] run 导出：`review_export run` / `paper` / `validate`（run 清单固定教材 id+sha，progress/status 取自 run_state，学生记录取自 Native 的成交、交易和归因并逐笔核对）；formal_train 每次写 run_state 后调用，导出失败只记 `logs/review_export.log`；run_state 写 status，结束时 step 回到 done。在 V2.1 run 上试导出：20 个 dataset、13,250 条，与 run 自己的汇总一致（`REVIEW_EXPORT_IMPL.md` 第五节）
+    - [ ] formal_v2_2.yaml + 训练 worktree `fg-s3-thinking-student-v2-2-1x-20261104` + `FORMAL_V2_2_1X_20261104/v2_2_1x.sh`，用户在 tmux d3 启动 1x
     - [ ] paper，并登记到 run 清单

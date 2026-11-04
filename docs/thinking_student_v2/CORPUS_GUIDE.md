@@ -3,7 +3,7 @@
 日期：2026-11-04
 读者：生成端（本仓库），以及对接复盘端 `review_future` 的 agent。
 规范：`review_export_v1.md`（review-v1）。实现细节和验收记录见 `REVIEW_EXPORT_IMPL.md`。
-范围：只包括生成端的教材，也就是 corpus 的有效教师 ADD/WAIT。不包括 run 清单和学生成交。
+范围：生成端的教材，也就是 corpus 的有效教师 ADD/WAIT。run 清单、阶段状态和学生成交同样由生成端导出，见 `REVIEW_EXPORT_IMPL.md` 第五节。
 
 ## 一、流水线
 
@@ -84,7 +84,8 @@ ROOT/review/
 | corpus | 记录 | manifest sha256 | 说明 |
 |---|---|---|---|
 | `/data/logdir/fg_single3/thinking_student/corpus_v2_1_20261104` | 18 个文件，12,620 条：ADD 10,110，WAIT 2,510 | `8ce21bab…21c7f6` | V2.1 训练（`FORMAL_V2_1_1X_20261104`）使用的教材，2026-11-04 17:13 补导出 |
+| `/data/logdir/fg_single3/thinking_student/corpus_v2_2_20261104` | 18 个文件，12,784 条：ADD 9,429（EXCELLENT 3,431，GOOD 5,998），WAIT 3,355 | `3df3b2e0…5ac54b` | V2.2（V3 教材）。2026-11-04 18:02 发布，同时完成教师检查（`V2_2_DEV_20261104/corpus_build/after_build.sh`）。`FORMAL_V2_2_1X_20261104` 固定使用这份教材 |
 
 V2.2（规则 V3：每次 touch 都要由它自己的 RV ≥ 2 的 K 线开始）走同一条流水线：
 - 第 1 步已完成（2026-11-04 17:29）：`V2_2_POSITIVE_ENTRY_{SHORT,LONG,BOTH}_20261104`，脚本 `V2_2_DEV_20261104/v3_material.sh`；两仓 clean（gym `cd89349`，dreamer `63f4777`）。用户不要统计和图。
-- 用户的计划（2026-11-04）：V3 教材 → 1x 正式训练 → paper，期间的教材和学生成交都按 review-v1 导出。所以接着做第 2–4 步，建 `corpus_v2_2_20261104`；run 清单和学生成交由 run 导出负责（见 `REVIEW_EXPORT_IMPL.md`）。
+- 用户的计划（2026-11-04）：V3 教材 → 1x 正式训练 → paper，期间的教材和学生成交都按 review-v1 导出。所以接着做第 2–4 步，建 `corpus_v2_2_20261104`；run 清单和学生成交由 run 导出负责（见 `REVIEW_EXPORT_IMPL.md` 第五节）。正式训练 `FORMAL_V2_2_1X_20261104`（`formal_v2_2.yaml`）启动前，脚本会检查这份教材的 review 已发布并通过 validate。

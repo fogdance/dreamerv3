@@ -52,6 +52,16 @@ market carry of the continuous path (market_carry/<contract>/, computed
 once before L2 or L3 from the market brain after L1, which no later stage
 trains) instead of the zero state with a loss burn-in.
 
+run_state.json records the status of the latest call (running, then
+completed when the configured rounds and their exams are done, failed or
+cancelled when it stops on an error or an interrupt; a call that ends
+before the run is done leaves it running). After each write of
+run_state.json the run's review-v1 manifest is updated (review/, gym
+review_export.export_run: the fixed corpus review, progress, status and the
+student trades of each finished result); a failed export is written to
+logs/review_export.log and never stops the training. review.label names
+the run there.
+
 Every step runs an existing command in its own process (logs/). A rerun
 continues from the disk: a stage trains its budget minus its recorded
 progress, a finished collection or CF of the same frozen policy is kept, a
@@ -117,6 +127,8 @@ DEFAULTS = dict(
                            decision_correct_margin=1.0, outcome_error_prob=0.1,
                            decision_error_margin=1.0)),
     evaluation=dict(random_seeds=5, smoke_contracts=2, smoke_steps=6000),
+    # review-v1 export of the run (review/manifest.json): its label, else the run id.
+    review=dict(label=None),
 )
 FOUNDATION = (('train-market', 'L1', 'market_updates'), ('train-outcome', 'L2', 'outcome_updates'),
               ('train-policy', 'L3', 'policy_updates'))
@@ -246,6 +258,22 @@ def _write_state(lay, state):
   tmp = lay.state.with_name(lay.state.name + '.tmp')
   tmp.write_text(json.dumps(state, indent=1))
   tmp.rename(lay.state)
+  _review(lay)
+
+
+def _review(lay):
+  """The run's review-v1 manifest after a state write (the calling thread
+  is the only writer); an export failure is logged and never raised."""
+  try:
+    from gym_trading_env.research.review_export import export_run
+    out = export_run(lay.root, log=lambda *_: None)
+    if out['manifest'] == 'unchanged':
+      return
+    line = f'{out["manifest"]} revision {out["revision"]}: {len(out["new"])} new datasets {out["new"]}'
+  except Exception as e:  # never stops the training
+    line = f'FAILED {type(e).__name__}: {e}'
+  with open(lay.log('review_export'), 'a') as f:
+    f.write(f'{time.strftime("%Y-%m-%d %H:%M:%S")} {line}\n')
 
 
 def _state(lay, cfg):
@@ -551,6 +579,8 @@ def iterate(cfg, lay, state, rounds, until=None):
     _iterate(cfg, lay, state, rounds, until, exams)
   finally:
     exams.join()
+  if state['step'] == 'exam_running':
+    _step(lay, state, step='done')  # the candidate's DEV exams are joined
 
 
 def _iterate(cfg, lay, state, rounds, until, exams):
@@ -811,13 +841,29 @@ def main(argv=None):
   _record_config(lay, cfg)
   state = _state(lay, cfg)
   state['config'] = str(Path(args.config).resolve())
-  if args.command in ('pretrain', 'run'):
-    pretrain(cfg, lay, state, args.until)
-  if args.command in ('iterate', 'run'):
-    iterate(cfg, lay, state, args.rounds, args.until if args.command == 'iterate' else None)
-  if args.command == 'evaluate':
-    policy = Path(args.policy) if '/' in args.policy else lay.policies / args.policy
-    evaluate(cfg, lay, state, policy, args.train_smoke)
+  _step(lay, state, status='running')
+  try:
+    if args.command in ('pretrain', 'run'):
+      pretrain(cfg, lay, state, args.until)
+    if args.command in ('iterate', 'run'):
+      iterate(cfg, lay, state, args.rounds, args.until if args.command == 'iterate' else None)
+    if args.command == 'evaluate':
+      policy = Path(args.policy) if '/' in args.policy else lay.policies / args.policy
+      evaluate(cfg, lay, state, policy, args.train_smoke)
+  except KeyboardInterrupt:
+    _step(lay, state, status='cancelled')
+    raise
+  except BaseException:
+    _step(lay, state, status='failed')
+    raise
+  _step(lay, state, status='completed' if _finished(cfg, lay) else 'running')
+
+
+def _finished(cfg, lay):
+  """The configured rounds are frozen and the newest policy's exams done."""
+  k = _newest(lay)
+  return (k is not None and k >= cfg['iteration']['max_rounds']
+          and not _exam_missing(cfg, lay, lay.policy(k), _takes_smoke(cfg, k)))
 
 
 if __name__ == '__main__':

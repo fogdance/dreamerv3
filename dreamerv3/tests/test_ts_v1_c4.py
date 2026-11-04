@@ -493,7 +493,13 @@ def test_orchestrator_rounds_resume_from_the_disk(two, tmp_path, monkeypatch):
   # L1 and L2 first; the next pretrain trains only L3 and freezes pi_0.
   FT.main(['pretrain', '--config', str(config), '--until', 'L2'])
   assert calls == ['train-market', 'train-outcome'] and not lay.policy(0).exists()
-  assert json.loads(lay.state.read_text())['step'] == 'L2_done'
+  state = json.loads(lay.state.read_text())
+  assert (state['step'], state['status']) == ('L2_done', 'running')
+  # These corpora have no review-v1 export: the run's review export fails
+  # after every state write, is logged, and the training goes on.
+  log = (lay.logs / 'review_export.log').read_text()
+  assert 'FAILED ReviewError' in log and 'the corpus review is not published' in log
+  assert not (lay.root / 'review' / 'manifest.json').exists()
   FT.main(['pretrain', '--config', str(config)])
   assert ts_run.progress(lay.foundation) == {'L1': 2, 'L2': 2, 'L3': 2, 'L4': 0}
   assert calls[:4] == ['train-market', 'train-outcome', 'train-policy', 'freeze']
@@ -533,7 +539,7 @@ def test_orchestrator_rounds_resume_from_the_disk(two, tmp_path, monkeypatch):
     FT.main(['iterate', '--config', str(config)])
   assert calls == ['train-value']
   state = json.loads(lay.state.read_text())
-  assert (state['round'], state['step']) == (1, 'L4')
+  assert (state['round'], state['step'], state['status']) == (1, 'L4', 'failed')
   assert state['rounds']['1']['collected'] == CONTRACTS
   assert files(lay.root / 'experience') == experience
   calls.clear()
@@ -565,6 +571,8 @@ def test_orchestrator_rounds_resume_from_the_disk(two, tmp_path, monkeypatch):
   assert all((lay.exam(lay.policy(1), 'TRAIN_SMOKE', c) / 'exam.json').exists() for c in CONTRACTS)
   state = json.loads(lay.state.read_text())
   assert state['step'] == 'done' and state['best_dev'] is None
+  # max_rounds 1: pi_1 and its exams end the run.
+  assert state['status'] == 'completed'
 
   # The configured rounds are done; status only reads.
   calls.clear()
@@ -866,6 +874,22 @@ def test_orchestrator_finishes_the_exam_of_a_frozen_candidate_first(pik, two, tm
   state = json.loads(lay.state.read_text())
   assert state['step'] == 'done' and state['best_dev']['policy'] == str(lay.policy(1))
   assert not lay.policy(2).exists() and not (lay.root / 'experience').exists()
+
+
+def test_a_call_that_joins_the_dev_exams_ends_done_and_its_export_never_raises(tmp_path, monkeypatch):
+  """The DEV exams of the last candidate are joined when iterate returns:
+  the state then says done, not exam_running (V2.1 ended so). The review
+  export after each state write fails here (no config) and only logs."""
+  lay = FT.Layout(tmp_path / 'run')
+  state = dict(step=None)
+
+  def one_round(cfg, lay, state, rounds, until, exams):
+    FT._step(lay, state, step='exam_running')
+  monkeypatch.setattr(FT, '_iterate', one_round)
+  FT.iterate({}, lay, state, 1)
+  assert json.loads(lay.state.read_text())['step'] == 'done'
+  lines = (lay.logs / 'review_export.log').read_text().splitlines()
+  assert len(lines) == 2 and all('FAILED' in x for x in lines)
 
 
 def test_exam_is_teacher_free_and_names_its_market(pik, two, tmp_path):

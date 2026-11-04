@@ -1,11 +1,12 @@
-# review-v1 生成端实施说明（教材部分）
+# review-v1 生成端实施说明（教材与 run）
 
 日期：2026-11-04
 规范：`review_export_v1.md`，即用户的 `review-export-v1-revised.md` 原样复制。初版 sha256 `559e95a9…ab7f0a91`；2026-11-04 按复盘端的建议改了 §12 第 2 项（“生成端从 `run_state.json` 导出 progress/status；复盘端只展示 manifest 中已发布的阶段状态”），现在是 `659134e6…`，改前的原件在 `V2_2_DEV_20261104/review_export/spec_before_12_2_559e95a9.md`。
-范围：用户说“我们只处理生成端的教材”。
-- **只做：** corpus 的有效教师 ADD/WAIT 导出。
+范围：生成端的全部导出（用户 2026-11-04 转来的分工：run 清单的生成和更新、学生成交的提取和导出、阶段状态都由训练 / 交易项目负责；`review_future` 只负责读取、校验和展示）。
+- **做：**
+  - corpus 的有效教师 ADD/WAIT 导出（第一到四节）；
+  - run 清单、阶段状态和学生 Native 成交（第五节）。
 - **不做：**
-  - run 清单和学生成交；
   - 原始正例和 P4；
   - 复盘端 `review_future`（由其他 agent 对接）。
 
@@ -92,4 +93,75 @@ env PYTHONPATH=src python -m gym_trading_env.research.review_export validate \
 | 训练发现 | `discover` 仍找到 18 个 corpus，`review/` 被跳过 |
 | 测试 | `test_review_export.py` 4 项通过（规范记录与总数、K 线与交易日、重复导出与冲突、validate 的四类拒绝）；ruff F/E9 通过 |
 
-**未做：** run 清单、学生成交和复盘端读取（都不在本次范围内）。
+教材部分到此为止；run 部分见第五节。
+
+## 五、run 部分：run 清单、阶段状态、学生成交（gym `review_export.py`）
+
+```bash
+cd gym-trading-env
+env PYTHONPATH=src python -m gym_trading_env.research.review_export run --input RUN_DIR
+env PYTHONPATH=src python -m gym_trading_env.research.review_export paper --input RUN_DIR \
+  --results PAPER_DIR/TAG --policy pi_0000 --result r0001
+env PYTHONPATH=src python -m gym_trading_env.research.review_export validate --input RUN_DIR
+```
+
+**输出：** `RUN/review/manifest.json`，以及每个结果每个合约一个 `review/student/<policy>/<scope>/<result>/<合约>.jsonl`。
+
+**run 清单的来源：**
+
+| 字段 | 来源 |
+|---|---|
+| `corpus` | `paths.corpus_root/review/manifest.json` 的 id、相对路径和 sha256；第一次发布时先完整 validate 这份教材，之后固定，指向别的教材就报冲突 |
+| `progress` | `run_state.json` 的 phase、step、round |
+| `status` | `run_state.json` 的 status，由 formal_train 写入；没有记录就拒绝导出，不从文件推断 |
+| `latest_policy_id` / `best_dev_policy_id` | `run_state.json` 的 latest_candidate / best_dev；只有当该策略已有发布的结果时才引用，否则为 null |
+| `label` | 配置的 `review.label`，没有就用 run id |
+| `strategy` | 所固定教材的 strategy |
+| `contracts` | 各结果的 `inputs/contract.yaml`（tick、乘数），CNY |
+
+**学生 dataset：** 每个冻结策略的每个已完成结果登记一次，id 为 `student:<policy>:<scope>:r0001`。
+
+| scope | 何时登记 | Native 来源 | 行情来源 |
+|---|---|---|---|
+| TRAIN | 该策略所在轮次的所有合约 collect 都已 done | `experience/<policy>/collect/<合约>/state.pkl` | corpus 的 pool 行 |
+| TRAIN_SMOKE | `evaluation.smoke_contracts` 个 smoke 考试都有 exam.json | `eval/<policy>/TRAIN_SMOKE/<合约>/collect/state.pkl` | exam.json 所记 corpus 的 pool 行 |
+| DEV | 每个 DEV 合约都有 exam.json | `eval/<policy>/DEV/<合约>/collect/state.pkl` | exam.json 所记的 pool 行 |
+| PAPER | 手工 `paper` 登记，结果目录里每个合约都有 exam.json | `<paper 目录>/<合约>/collect/state.pkl` | 同上 |
+
+CF 分支和随机基线都不是学生的真实成交，不导出。已登记的 dataset 和文件不再重建，每次更新只核对 sha256。
+
+**学生记录：** 一笔已提交的 Native 入场对应一行。入场的 ENTRY 成交、开仓交易、平仓交易和平仓归因都要彼此对上，任何一处不一致就拒绝发布。
+
+| 字段 | 来源与核对 |
+|---|---|
+| `id` | `student:<Native entry_id>`，entry_id 本身是“合约:账户序号:入场序号” |
+| `decision_time` | 第 `entry_cursor − 1` 根 K 线的 eob：Native 在 t+1 根的开盘价成交 t 根的 ADD |
+| `entry_time`、`bar_bob`、`bar_eob`、`trading_day` | ENTRY 成交时刻，必须等于第 `entry_cursor` 根 K 线的 bob；K 线和交易日取行情 CSV |
+| `entry_price`、`volume` | ENTRY 成交的价格和手数，与开仓交易一致 |
+| `stop_price`、`target_price` | ENTRY 成交时记录的计划止损和止盈（stop_rule 策略才有，否则为 null） |
+| `grade`、`label_ready_at` | null |
+| `outcome`（已平仓） | CLOSED。exit_time 是归因的退出时刻，必须等于第 `exit_cursor` 根 K 线的 eob，也等于最后一笔退出成交；net_pnl = 平仓交易的 pnl 之和 − 开平全部手续费，必须等于归因的 net；退出价和原因只在唯一时填写 |
+| `outcome`（结果结束时仍持仓） | CENSORED，退出字段全部为 null（例如 6000 步的 TRAIN smoke 停在一笔持仓上）。只导出已完成的结果，所以不会出现 OPEN；single3 只能一次全平 3 手，所以没有 PARTIAL |
+| `details` | `Native entry ID`、`Account`、`Stop source`、`Line`、`Risk (points)`、`Held (market minutes)`、`Gross PnL (CNY)`、`Fees (CNY)`、`Gap slippage (points)`、`Exit fills`；持仓结束的加 `Open at the end of the result` |
+
+文件 summary 为 `entries = records = closed + open + partial + censored`；`market_complete` 取 Native 的 `terminated`（走到主力切换等真实终局）。
+
+**发布：**
+- 学生 JSONL 与教材一样不覆盖：同字节复用，不同字节报冲突。
+- run 清单先写 `manifest.json.tmp`，再原子替换。只有内容（不计 revision 和 updated_at）变化时才增加 revision、刷新 updated_at。
+- 每份 run 清单只有一个写入者：训练期间由 formal_train 写；手工的 `run` / `paper` 只在没有 formal_train 运行时使用。
+
+**formal_train（dreamer）：**
+- 每次写 `run_state.json` 后调用 `export_run`。失败只写进 `logs/review_export.log`，从不中断训练。
+- 写入 status：调用开始时为 running；所配轮次和最后一个策略的考试都完成时为 completed；出错为 failed，中断为 cancelled；提前结束的调用保持 running。
+- 一次调用结束时，后台的 DEV 考试已经 join，step 写回 done，不再像 V2.1 那样停在 `exam_running`。
+
+**验收（2026-11-04，在 V2.1 run 上试导出）：**
+- 试验目录 `V2_2_DEV_20261104/review_run_trial/FORMAL_V2_1_1X_20261104_TRIAL/`。用符号链接指向 V2.1 的结果，run_state 的副本补上 `status: completed`；V2.1 run 本身没有改动。
+- 20 个 dataset，39 个文件，13,250 条：CLOSED 13,248，CENSORED 2。用时 28 秒，validate 通过（含所固定的教材）。
+- 与 run 自己的汇总一致（`crosscheck.txt`）：37 个文件的入场数和已平仓净额等于 meta 的 adds 和 account_net_pnl。另外 2 个 smoke 文件期末有持仓，已平仓净额 = Native realized − 已平仓手续费，账户净值再加上浮动盈亏（`crosscheck_censored.txt`）。
+- 跨午休：11:30 决策的入场标在 13:30–13:31；夜盘的交易日为下一交易日。
+- 重跑：manifest 不变，字节相同。
+- 测试：gym `test_review_export.py` 7 项（新增 run 导出、revision 与固定教材、Native 账本不一致的拒绝）；dreamer `test_ts_v1_c4.py` 断言了 status 的变化、导出失败只记日志，以及 step 回到 done。
+
+**V2.1 run 本身没有补导出：** 它的 run_state 没有 status，按规范不能推断，所以没有导出。
