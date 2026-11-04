@@ -783,5 +783,11 @@
     - 新代码按 V2 规则重新生成 FG205 / FG401，与 V2.1 代码的结果逐字节相同；gym 11 个测试文件全部通过（`V2_2_DEV_20261104/`）
   - [x] review-v1 教材导出（用户的 `review-export-v1-revised.md`，只做生成端的教材，复盘端由其他 agent 对接）：gym `review_export.py`（`cd89349`），规范原文与实施说明在 `docs/thinking_student_v2/review_export_v1.md`、`REVIEW_EXPORT_IMPL.md`
     - `corpus_v2_1_20261104/review/` 已补导出：18 个文件，12,620 条（ADD 10,110、WAIT 2,510），validate 通过，重复导出不变；导出文字全部用英文（用户要求）；先发的中文版原样移到 `V2_2_DEV_20261104/review_export/superseded_zh_20261104_1710/`
-  - [ ] V3 教材（SHORT + LONG，合并）→ 统计和 K 线图 → 用户审（脚本 `V2_2_DEV_20261104/v3_material.sh`，等用户说生成）
-  - [ ] 用户批准后：18 个语料 → 教师检查 → `review_export corpus` + `validate`
+  - [x] Corpus 指南：`docs/thinking_student_v2/CORPUS_GUIDE.md`（教材 → 合并 → corpus → 教师检查 → review-v1 导出的命令、目录、字段和已发布清单）
+  - [x] V3 教材（SHORT + LONG，合并）：`V2_2_POSITIVE_ENTRY_{SHORT,LONG,BOTH}_20261104`（17:29，两仓 clean）；用户不要统计和图（“生成好，放着就行”）
+  - [x] 规范 §12 第 2 项按复盘端建议改写（Downloads 原件和项目副本，sha `659134e6…`）；分工：run 清单、学生成交、阶段状态都由生成端导出
+  - [ ] 用户计划（2026-11-04）：V3 教材 → 1x 正式训练 → paper，期间教材和学生成交都用 review-v1
+    - [ ] 18 个 V2.2 语料（`corpus_v2_2_20261104`，训练 worktree 干净状态）→ 教师检查 → `review_export corpus` + `validate`
+    - [ ] run 导出：`review_export run`（run 清单、progress/status、学生 Native 成交），formal_train 在阶段边界调用，导出失败不影响训练；run_state 写 status，结束时不再停在 `exam_running`
+    - [ ] formal_v2_2.yaml + 训练 worktree，用户在 tmux d3 启动 1x
+    - [ ] paper，并登记到 run 清单

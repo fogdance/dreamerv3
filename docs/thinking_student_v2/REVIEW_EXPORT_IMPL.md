@@ -1,7 +1,7 @@
 # review-v1 生成端实施说明（教材部分）
 
 日期：2026-11-04
-规范：`review_export_v1.md`，即用户的 `review-export-v1-revised.md` 原样复制，sha256 `559e95a9…ab7f0a91`。
+规范：`review_export_v1.md`，即用户的 `review-export-v1-revised.md` 原样复制。初版 sha256 `559e95a9…ab7f0a91`；2026-11-04 按复盘端的建议改了 §12 第 2 项（“生成端从 `run_state.json` 导出 progress/status；复盘端只展示 manifest 中已发布的阶段状态”），现在是 `659134e6…`，改前的原件在 `V2_2_DEV_20261104/review_export/spec_before_12_2_559e95a9.md`。
 范围：用户说“我们只处理生成端的教材”。
 - **只做：** corpus 的有效教师 ADD/WAIT 导出。
 - **不做：**

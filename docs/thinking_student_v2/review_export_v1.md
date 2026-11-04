@@ -384,7 +384,7 @@ npm run dev:electron -- --review /data/logdir/fg_single3/thinking_student/FORMAL
 按最小纵切实现即可，不拆新平台：
 
 1. **FG205教师样本**：先验证ADD游标941、WAIT游标956、时间/档位/null、可见性，再完成18合约12,620条Corpus导出。
-2. **Run清单**：固定已发布教材ID/hash，从已有`run_state.json`展示真实阶段；没有学生结果时保持`datasets=[]`。
+2. **Run清单**：固定已发布教材ID/hash，生成端从`run_state.json`导出progress/status；复盘端只展示manifest中已发布的阶段状态；没有学生结果时保持`datasets=[]`。
 3. **学生Native结果**：按`entry_id`导出入场及完整/部分/删失归因；加入独立结果dataset。没有可核实的Native事实时拒绝发布，而不是从行情猜测。
 4. **复盘端**：只读manifest及其登记JSONL，复用现有图表，完成ADD/WAIT标记、详情和精确行情匹配。
 
