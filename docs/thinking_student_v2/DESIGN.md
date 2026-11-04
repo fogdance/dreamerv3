@@ -2,7 +2,7 @@
 
 日期：2026-10-31
 依据：Spec V0.3，以及用户同日对 V1 教材的 Review（FG205 截图：沿横线的多次接近都是入场点）。
-参数集中在 `dreamerv3/configs/thinking_student/v2_positive_entry.yaml`（当前版本 `V2_POSITIVE_ENTRY_V2`）。
+参数集中在 `dreamerv3/configs/thinking_student/v2_positive_entry.yaml`（版本 `V2_POSITIVE_ENTRY_V2`）和 `v2_positive_entry_v3.yaml`（V3，V2.2 用）；LONG 是各自的 `_long` 镜像。
 **以下规则在生成之前就已冻结。** 之后任何改动都算新版本教材，并在 REPORT 中说明；不根据结果回头调参。
 
 ## 零、版本记录
@@ -36,6 +36,19 @@
 - 这是夜盘开盘第一分钟：开 1759，冲高 1774，收 1757。
 - 在收盘时决策、下一根开盘市价成交（1757），卖不到线附近。
 - 只有提前挂在线上的限价单才能成交，而 Native 不模拟限价单。
+
+### V3（2026-11-04，V2.2）
+- 用户："之前修改了一点逻辑，去掉了放量的条件……恢复原有的教材高位放量逻辑"。
+- 配置：`v2_positive_entry_v3.yaml`（SHORT）、`v2_positive_entry_v3_long.yaml`（LONG），`volume.activation: touch`。
+- 只改 V2 的第 3 条，其余 5 条不变：
+
+| # | V2 | V3 |
+|---|---|---|
+| 3 | 放量属于这条线，之后的 touch 不需要再放量（97% 的线都有放量，实际上不筛选） | 回到 Spec V0.3 / V1：**每次 touch 都要由它自己的一根 bar 开始**，这根 bar 同时满足 High ≥ H − 5 和 RV ≥ 2；之前接近 H 的 bar 都是 `WAIT_NEAR_NO_VOLUME`；touch 开始之后的候选不要求 RV ≥ 2 |
+
+- 线自己的放量时刻（`line_spike`）仍然记录，但不再决定 touch 何时开始。
+- 预计代价：12-28 10:06–10:10 那次接近（RV 1.2–1.8）不再满足放量条件，V2 时用户点出的这个点会被排除（生成 V3 教材后核对）。
+- LONG 镜像同理：接近 L（Low ≤ L + 5）且 RV ≥ 2 的那根 bar 开始 touch（低位放量）。
 
 ## 一、范围
 
@@ -75,9 +88,9 @@
 1. **开始：** 没有进行中的 touch，active 线 H 在 bar t 同时满足：
    - High_t ≥ H − 5；
    - High_t + 点差 < H + 5（没有破位）；
-   - 这条线的 spike ≤ t。spike 可以就是 bar t 本身，这时 t 的 RV ≥ 2。
+   - 放量：V2 是这条线的 spike ≤ t（spike 可以就是 bar t 本身，这时 t 的 RV ≥ 2）；V3 是 bar t 自己 RV_t ≥ 2。
    之后这条线在本 touch 结束前不再 armed，touch 编号加 1。
-   如果 bar t 接近 H，但这条线还没有放过量且 RV_t < 2，就继续等待（`WAIT_NEAR_NO_VOLUME`）。
+   如果 bar t 接近 H 但没有满足放量条件，就继续等待（`WAIT_NEAR_NO_VOLUME`）：V2 是这条线还没放过量且 RV_t < 2；V3 是 RV_t < 2。
 2. **结束：** touch 开始之后，第一根满足下列任一条件的 bar s：
    - **失效：** High_s + 点差 ≥ H + 5。线破位，不再使用。
    - **远离：** Close_s ≤ H − 10。线从 s+1 起再次 armed，可以有下一次 touch。

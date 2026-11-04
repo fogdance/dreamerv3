@@ -1,0 +1,68 @@
+# V2.2 LONG positive entry corpus, rules V3 (user 2026-11-04): the mirror of
+# v2_positive_entry_v3.yaml, "pull back to the prior 15m low, then buy", for
+# the TRAIN contracts traded LONG. Every value is the SHORT one; only the
+# direction differs: a touch starts on its own bar with Low <= L + 5 and
+# RV >= 2 (the low-position volume spike). The line is a prior 15m pivot low
+# L, the zone L..L+7, a departure a 1m close at L + 10, SL = L - 5 (R <= 12),
+# TP = fill + 2R (ts_v2_positive runs the SHORT scan on negated prices).
+# Read by gym gym_trading_env.research.ts_v2_positive --config.
+version: V2_POSITIVE_ENTRY_V3
+# The TRAIN direction schedule (strategy_quality_tp_v1.yaml directions) is
+# user-configured and not shown to be known ex ante.
+direction: LONG
+direction_source: DIRECTION_ASSUMED
+
+prior_high:
+  # A complete 15m bucket whose High is above the `left` buckets before it
+  # and not below the `right` buckets after it (a line); visible once the
+  # last of those is available.
+  pivot_left: 2
+  pivot_right: 2
+  # A line is used only while its bucket is at most this many complete
+  # buckets old (about one trading week); it ends earlier once broken.
+  lookback_buckets: 115
+  # A touch starts only after a 1m close at least this far below H, and
+  # ends at the next such close; the line may then be touched again.
+  departure_points: 10
+
+volume:
+  # RV = 1m volume / mean volume of the previous valid 1m bars; the first
+  # minute of each market segment (auction volume) is neither a spike nor
+  # part of the baseline. activation touch: a touch starts on a bar with
+  # RV >= ratio and High >= H - near_points (decided at that minute's close);
+  # bars near H before it wait. The line's first such bar from its own 15m
+  # bucket on is still recorded (line_spike), but no longer starts a touch.
+  activation: touch
+  baseline_minutes: 20
+  ratio: 2.0
+  exclude_segment_open: true
+
+event:
+  # A touch starts on a bar whose High is at least H - near_points.
+  near_points: 5
+
+entry:
+  # The decision-time sell quote (Close - spread) and the actual fill (next
+  # Open - spread) both within [H - zone_points, H].
+  zone_points: 7
+  # SL = H + stop_above_points; planned risk R = SL - fill, 0 < R <= max_risk.
+  stop_above_points: 5
+  max_risk_points: 12
+  # The teacher target TP = fill - target_r * R; parallel_r is recorded only.
+  target_r: 2.0
+  parallel_r: 1.5
+
+quality:
+  # A positive reached the target_r TP (Native); EXCELLENT / GOOD by its MAE
+  # (max High - fill, points, as a share of R) and its market minutes to TP.
+  excellent: {mae_r: 0.5, held_minutes: 120}
+  good: {mae_r: 0.8, held_minutes: 345}
+
+timeline:
+  # Each WAIT phase before a touch keeps its first and last row plus at
+  # most this many evenly spaced rows.
+  wait_rows_per_phase: 8
+
+figures:
+  max_events: 12
+  per_contract: 2
