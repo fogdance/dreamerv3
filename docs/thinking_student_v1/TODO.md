@@ -769,3 +769,8 @@
     - `formal_v2_1.yaml` 预检（训练 worktree 的代码，CPU）：18 个语料、DEV FG409、9 轮、L6 从第 7 轮、策略版本与语料一致
   - [x] 训练 worktree + 运行脚本 + 命令（`formal_v2_1.yaml`，`FORMAL_V2_1_1X_20261104`），用户在 d3 启动
     - worktree `/data/research/fg-s3-thinking-student-v2-1-1x-20261104`（分支 `run/ts-v2-1-1x-20261104`，从 dev 快进）；脚本 `FORMAL_V2_1_1X_20261104/v2_1_1x.sh TAG`
+  - [x] 1x 训练：start1 在第 2 轮 FG101 的 CF 因 GPU 显存不足退出（12 个 CF 进程同时启动的峰值，无 Xid），start2 从断点接着跑，2026-11-04 13:28 跑完 9 轮
+    - DEV FG409 best_dev = pi_0000（没有一轮比基础策略好）；各轮 DEV 净亏 −27.7k ~ −33.8k，随机 −30.8k ~ −41.9k，胜率 28–29%（`PAPER_V2_1_1X_20261104/checks/dev_table.txt`）
+  - [x] paper trading：best_dev pi_0000 和最终 pi_0009，FG501–FG605（全 SHORT），`PAPER_V2_1_1X_20261104`
+    - pi_0000 −126,210（随机 −117,414 ± 6,772，0/5）；pi_0009 −114,630（随机 −118,863 ± 7,633，3/5）；胜率 27.3% / 27.4%，2R 盈亏平衡需 34.3%
+    - 入场里 STRUCTURAL 只有 18–19%，R = 10（CAPPED / NO_LINE）占 83%，与 V2 paper 相同；仍没有优势
