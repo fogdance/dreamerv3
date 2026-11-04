@@ -15,7 +15,7 @@
 cd gym-trading-env
 env PYTHONPATH=src python -m gym_trading_env.research.review_export corpus \
   --input /data/logdir/fg_single3/thinking_student/corpus_v2_1_20261104 \
-  --label "V2.1 训练教材" --expect-contracts 18
+  --label "V2.1 teacher" --expect-contracts 18
 env PYTHONPATH=src python -m gym_trading_env.research.review_export validate \
   --input /data/logdir/fg_single3/thinking_student/corpus_v2_1_20261104
 ```
@@ -29,6 +29,8 @@ env PYTHONPATH=src python -m gym_trading_env.research.review_export validate \
 
 所有字段都是已记录的事实，不重算任何金融规则。来源对不上时，导出直接失败，不发布任何东西。
 
+导出器写入的文字一律用英文（用户 2026-11-04："像这些不要用中文，用英文"）：`details` 的键、`note`、数据集 label；manifest 的 label 由 `--label` 给出，例如 `V2.1 teacher`。规范示例中的中文键名只是示例，不照搬。
+
 | 字段 | ADD | WAIT |
 |---|---|---|
 | 时间、K 线 | `decision_time` 取决策游标那根 K 线的 eob（CSV 的 `Date`）。`entry_time`、`bar_bob`、`bar_eob`、`trading_day` 取成交那根 K 线（`facts.entry_cursor`）的 `bob` / `Date` / `trading_date`；跨午休时就是 13:30–13:31 | 都取决策那根 K 线 |
@@ -38,8 +40,8 @@ env PYTHONPATH=src python -m gym_trading_env.research.review_export validate \
 | 止损、目标 | 教材的 `label_sl` / `label_tp` | null |
 | `label_ready_at` | `graded.ready_at` 所指那根 K 线的 eob | 同左 |
 | `outcome` | CLOSED。退出时间是 `facts.exit_cursor` 那根 K 线的 eob；退出价取教材；退出原因和净盈亏取 `facts`；都与教材核对 | null |
-| `details` | 原始正例编号、前高 H / 前低 L、第几次触线、该线放量量比、本次触线起始量比、决策报价、成交后风险 R（点）、持有市场分钟、最大逆行（点）、最大顺行（点）、教学解释 | 等待类型、前高 H / 前低 L、第几次触线、当分钟量比、教学解释（不放“如果入场”的价格） |
-| `note` | `Native 逐分钟复核通过`（教材的 `label_native_verified`） | `有效 WAIT 教师示范` |
+| `details` | `Positive ID`、`Prior high H` / `Prior low L`、`Touch`、`Line spike RV`、`Touch start RV`、`Decision quote`、`Risk R (points)`（成交后的风险 SL − fill）、`Held (market minutes)`、`MAE (points)`、`MFE (points)`、`Explanation` | `Wait type`、`Prior high H` / `Prior low L`、`Touch`、`RV`、`Explanation`（不放“如果入场”的价格） |
+| `note` | `Native minute trace verified`（教材的 `label_native_verified`） | `Valid teacher WAIT` |
 
 **导出前先核对的来源：**
 - **行情 CSV：** 它的 sha256 和行数要与 pool 行一致，`Date` 要与 corpus 的 `market/time.npy` 一致。
@@ -71,6 +73,23 @@ env PYTHONPATH=src python -m gym_trading_env.research.review_export validate \
   - WAIT 的入场 / 止损 / 目标 / 档位 / outcome 字段全部为 null；
   - 各文件的 summary 与记录一致。
 
-## 四、验收（2026-11-04）
+## 四、验收（2026-11-04，gym `cd89349`）
 
-详见下面的回填记录（`V2_2_DEV_20261104/review_export/`）。
+`corpus_v2_1_20261104` 已经补导出到它自己的 `review/` 下（17:13，英文版）。日志 `V2_2_DEV_20261104/review_export/backfill.log`，脚本 `backfill.sh`，各文件 sha256 在 `sha256.txt`。
+
+17:10 先发布过一版中文键名的导出（gym `a6dff55`）。用户要求改成英文之后，那一版没有删除，原样移到 `V2_2_DEV_20261104/review_export/superseded_zh_20261104_1710/` 留作证据，然后重新发布。改英文前没有任何读取方使用过那一版。
+
+| 项目 | 结果 |
+|---|---|
+| 文件 / 记录 | 18 个文件，12,620 条：ADD 10,110（EXCELLENT 3,786，GOOD 6,324），WAIT 2,510；分合约数与 `graded/summary.json` 一致 |
+| 文字 | manifest 和 18 个 JSONL 中没有中文 |
+| FG205 游标 941 | ADD SHORT：决策 11:27，入场 11:27，K 线 11:27–11:28，交易日 2021-12-14，入场 1846、止损 1855、目标 1828，EXCELLENT，ready 21:01；outcome CLOSED，21:01 TAKE_PROFIT，1828，净收益 1062 |
+| FG205 游标 956 | WAIT：K 线 13:41–13:42，grade、entry_price、outcome 都是 null，ready 21:08 |
+| 方向 | FG001 全部 LONG，FG205 全部 SHORT |
+| 跨午休、夜盘 | 11:30 决策的 ADD 都标在 13:30–13:31 的成交 K 线上；夜盘记录的交易日取 CSV 的 `trading_date`（下一交易日） |
+| validate | 通过 |
+| 重复导出 | manifest 不变，18 个文件原样复用，字节与预先的试导出完全相同 |
+| 训练发现 | `discover` 仍找到 18 个 corpus，`review/` 被跳过 |
+| 测试 | `test_review_export.py` 4 项通过（规范记录与总数、K 线与交易日、重复导出与冲突、validate 的四类拒绝）；ruff F/E9 通过 |
+
+**未做：** run 清单、学生成交和复盘端读取（都不在本次范围内）。

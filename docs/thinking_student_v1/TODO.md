@@ -778,3 +778,10 @@
     - 5 / 30：pi_0000 −97,068（随机 −90,923，2/5）、pi_0009 −87,774（随机 −76,658，0/5）；V1 1x pi_0006 同规则 −72,420（随机 −83,170，4/5）
     - 5 / 10：pi_0000 −343,584、pi_0009 −316,998，都 0/5；胜率 52%，盈亏平衡需 68.7%
     - 对比表 `checks/compare_fixed.md`；出场检查 `checks/fixed_exits.txt`（TP 都是 +282，SL 都是 −618 / −1,818，另有 10–29 笔跳空成交或换月平仓）
+- [ ] G-24：V2.2 = V2.1 + 恢复教材的高位放量（用户 2026-11-04；分支 `feat/ts-v2-2-volume-20261104`，worktree `/data/research/fg-s3-thinking-student-v2-2-20261104`）
+  - [x] 教材规则 V3：每次 touch 都要由它自己接近线位且 RV ≥ 2 的那根 bar 开始（`v2_positive_entry_v3.yaml` / `_long.yaml`，`volume.activation: touch`；gym `1fa8fea`，dreamer `0bbcd3e`）
+    - 新代码按 V2 规则重新生成 FG205 / FG401，与 V2.1 代码的结果逐字节相同；gym 11 个测试文件全部通过（`V2_2_DEV_20261104/`）
+  - [x] review-v1 教材导出（用户的 `review-export-v1-revised.md`，只做生成端的教材，复盘端由其他 agent 对接）：gym `review_export.py`（`cd89349`），规范原文与实施说明在 `docs/thinking_student_v2/review_export_v1.md`、`REVIEW_EXPORT_IMPL.md`
+    - `corpus_v2_1_20261104/review/` 已补导出：18 个文件，12,620 条（ADD 10,110、WAIT 2,510），validate 通过，重复导出不变；导出文字全部用英文（用户要求）；先发的中文版原样移到 `V2_2_DEV_20261104/review_export/superseded_zh_20261104_1710/`
+  - [ ] V3 教材（SHORT + LONG，合并）→ 统计和 K 线图 → 用户审（脚本 `V2_2_DEV_20261104/v3_material.sh`，等用户说生成）
+  - [ ] 用户批准后：18 个语料 → 教师检查 → `review_export corpus` + `validate`
