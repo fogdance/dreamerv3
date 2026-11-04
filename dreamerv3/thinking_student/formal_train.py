@@ -62,6 +62,14 @@ student trades of each finished result); a failed export is written to
 logs/review_export.log and never stops the training. review.label names
 the run there.
 
+A run keeps only what is still read (user 2026-11-04): once a round's CF
+is finished its work/ and the snapshots of its TRAIN collection (but the
+hard link of state.pkl) go; once a policy is frozen the agent.pkl of its
+learner's checkpoints goes (their json files stay); an exam drops its
+replay/ and older snapshots after exam.json (exam.py). The foundation's
+checkpoints, every policy, collection steps/, replay/ and state.pkl, the CF
+results, feedback and market carry stay. logs/prune.log lists what went.
+
 Every step runs an existing command in its own process (logs/). A rerun
 continues from the disk: a stage trains its budget minus its recorded
 progress, a finished collection or CF of the same frozen policy is kept, a
@@ -94,7 +102,7 @@ import yaml
 from .corpus import corpus_sources, discover
 from .feedback import OFFLINE_TRAIN, TIME_ORDERED_NOT_SUPPORTED, check_order, check_thresholds
 from .q_return import NATIVE as Q_NATIVE, NET_PNL as Q_NET_PNL
-from .run import latest, progress, reports
+from .run import latest, progress, prune_cf, prune_checkpoints, prune_collection, reports
 
 DEFAULTS = dict(
     # Relative paths are relative to the config file.
@@ -259,6 +267,41 @@ def _write_state(lay, state):
   tmp.write_text(json.dumps(state, indent=1))
   tmp.rename(lay.state)
   _review(lay)
+
+
+def _prune(lay):
+  """What the run no longer reads (user 2026-11-04), after each round's CF,
+  each freeze and each iterate: work/ of every finished CF, the snapshots of
+  a TRAIN collection whose CF is finished, agent.pkl of every learner whose
+  policy is frozen. Exams prune themselves (exam.py). The foundation's
+  checkpoints stay, and a path that leads out of the run (a link to another
+  run's experience) is never touched. Logged in logs/prune.log; a failure
+  never stops the training."""
+  root, jobs = lay.root.resolve(), []
+  for meta in sorted(lay.root.glob('experience/*/cf*/*/meta.json')):
+    jobs.append((prune_cf, meta.parent))
+  for collect in sorted(lay.root.glob('experience/*/collect/*')):
+    if any((collect.parent.parent / kind / collect.name / 'meta.json').exists()
+           for kind in ('cf', 'cf_native')):
+      jobs.append((prune_collection, collect))
+  for learner in sorted(lay.root.glob('learners/pi_[0-9][0-9][0-9][0-9]')):
+    if _frozen(lay.policies / learner.name):
+      jobs.append((prune_checkpoints, learner))
+  lines = []
+  for prune, path in jobs:
+    if path.resolve() != root / path.relative_to(lay.root):
+      continue  # through a link
+    try:
+      n, freed = prune(path)
+    except Exception as e:
+      lines.append(f'FAILED {path.relative_to(lay.root)}: {type(e).__name__}: {e}')
+      continue
+    if n:
+      lines.append(f'{path.relative_to(lay.root)}: {n} paths, {freed / 2 ** 20:.1f} MiB')
+  if lines:
+    stamp = time.strftime('%Y-%m-%d %H:%M:%S')
+    with open(lay.log('prune'), 'a') as f:
+      f.writelines(f'{stamp} {line}\n' for line in lines)
 
 
 def _review(lay):
@@ -579,6 +622,7 @@ def iterate(cfg, lay, state, rounds, until=None):
     _iterate(cfg, lay, state, rounds, until, exams)
   finally:
     exams.join()
+    _prune(lay)  # also what a call stopped after a freeze left
   if state['step'] == 'exam_running':
     _step(lay, state, step='done')  # the candidate's DEV exams are joined
 
@@ -657,6 +701,7 @@ def _iterate(cfg, lay, state, rounds, until, exams):
                       '--seed-offset', it['state_check_seed_offset'], '--corpus',
                       contracts[usable[0]], *_windows(cfg, lay)],
               lay.log(f'r{r:03d}_state_check'))
+    _prune(lay)  # the CF work and the collection snapshots of this round
     if until == 'cf':
       _step(lay, state, step='cf_done')
       print(f'iterate stops after the CF of round {r} (--until cf); L4 has not started')
@@ -732,6 +777,7 @@ def _iterate(cfg, lay, state, rounds, until, exams):
       _call('run', ['freeze', '--run', learner, '--name', new.name, '--out', new, *corpora, *anchor,
                     '--holdout', it['holdout'], *feedback, *_student(cfg)],
             lay.log(f'r{r:03d}_freeze'))
+    _prune(lay)  # the learner's checkpoints
     p, anchor = _updates(lay, r), _read(new / 'policy.json')['teaching'].get('value_anchor', {})
     rec.update(policy_out=new.name, updates=dict(L4=p['L4'], L5=p['L5']), value_anchor=dict(
         beta_q=anchor.get('beta_q'), kappa_q=anchor.get('kappa_q'),

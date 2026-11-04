@@ -790,4 +790,6 @@
     - [x] 18 个 V2.2 语料（`corpus_v2_2_20261104`，18:01，两仓 clean）→ 教师检查通过（ADD 9,429 / WAIT 3,355，SHORT 4,832 / 1,614，LONG 4,597 / 1,741）→ review 发布并通过 validate，12,784 条，manifest sha `3df3b2e0…`（`V2_2_DEV_20261104/corpus_build/after_build.sh`）
     - [x] run 导出：`review_export run` / `paper` / `validate`（run 清单固定教材 id+sha，progress/status 取自 run_state，学生记录取自 Native 的成交、交易和归因并逐笔核对）；formal_train 每次写 run_state 后调用，导出失败只记 `logs/review_export.log`；run_state 写 status，结束时 step 回到 done。在 V2.1 run 上试导出：20 个 dataset、13,250 条，与 run 自己的汇总一致（`REVIEW_EXPORT_IMPL.md` 第五节）
     - [ ] formal_v2_2.yaml + 训练 worktree `fg-s3-thinking-student-v2-2-1x-20261104` + `FORMAL_V2_2_1X_20261104/v2_2_1x.sh`，用户在 tmux d3 启动 1x
+    - [ ] run 自动瘦身（用户 2026-11-04：“每一步完成后，自动删掉它不再读取的中间文件”）：CF 完成后删 work/ 和 TRAIN 采集的旧快照（保留 state.pkl 的硬链接）；policy 冻结后删 learner 各 checkpoint 的 agent.pkl（json 留着）；考试写完 exam.json 后删 replay/ 和旧快照。foundation 的 checkpoint、所有 policy、采集的 steps/replay/state.pkl、CF 结果、feedback、market_carry 都保留；删了什么记在 `logs/prune.log`，失败只记录不中断训练
+    - [x] 旧 run 的多余文件清理（`CLEANUP_20261104/cleanup.py`，规则 R1–R4）：用户 18:23 执行，删 3,786 个路径、147 GB；thinking_student 306 GB → 159 GB，/data 剩 189 GB（`deleted.tsv`、`delete.log`）
     - [ ] paper，并登记到 run 清单

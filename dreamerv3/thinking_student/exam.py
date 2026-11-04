@@ -121,7 +121,7 @@ def exam(policy, out, label, config, source, steps=None, seeds=5, device=None, l
   """The student's Teacher-free run on the Native env of `config` (all of it,
   or its first `steps` minutes) and `seeds` random-entry accounts on the
   same minutes; writes and returns out/exam.json."""
-  from .run import _write, collect, load_policy
+  from .run import _write, collect, load_policy, prune_collection
   from gym_trading_env.research import ts_v1_corpus as C
   from gym_trading_env.research.ts_v1_account import StudentEnv
   began, out = time.time(), Path(out)
@@ -163,6 +163,14 @@ def exam(policy, out, label, config, source, steps=None, seeds=5, device=None, l
   _write(out / 'exam.json', json.dumps(report, indent=1).encode())
   log(f'{label} {meta["policy"]}: reward {student["reward"]:.3f} over {student["minutes"]} minutes, '
       f'random mean {summary.get("reward", {}).get("mean")}')
+  # Read from now on through exam.json, steps/ and state.pkl only (the paper
+  # report, the review export): replay/ and the older snapshots go. A failure
+  # here is logged and leaves the finished exam as it is.
+  try:
+    n, freed = prune_collection(out / 'collect', replay=True)
+    log(f'pruned {n} paths of {out / "collect"}: {freed / 2 ** 20:.1f} MiB')
+  except Exception as e:
+    log(f'pruning {out / "collect"} FAILED {type(e).__name__}: {e}')
   return report
 
 

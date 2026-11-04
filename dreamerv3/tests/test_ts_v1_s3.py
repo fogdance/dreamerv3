@@ -12,7 +12,8 @@ import pickle
 import numpy as np
 import pytest
 
-from dreamerv3.tests.test_ts_v1_s2 import T, flat_states, group_of, small, snapshot, update
+from dreamerv3.tests.test_ts_v1_s2 import (DEVICE, INFERENCE, T, flat_states, group_of, small, snapshot,
+                                          update)
 from dreamerv3.thinking_student import run as ts_run
 from dreamerv3.thinking_student import value as V
 
@@ -139,7 +140,7 @@ def test_cf_targets_train_the_value_brain_and_freeze_the_anchor(world, tmp_path)
   reference, _ = V.build_reference(world['collection'], ts_run.corpus_env(world['corpus']))
   assert len(pairs) == meta['forks']['chosen'] == len(reference.forks())
   assert meta['valid_pairs'] == sum(p['delta_g'] is not None for p in pairs) > 0
-  assert meta['replay']['z_differs'] == [0] and meta['inference']['platform'] == 'cpu'
+  assert meta['replay']['z_differs'] == [0] and meta['inference'] == INFERENCE
   targets = dict(np.load(cf / 'targets.npz'))
   np.testing.assert_array_equal(targets['q_real'], reference.g.astype(np.float32))
   for p in pairs:
@@ -161,7 +162,7 @@ def test_cf_targets_train_the_value_brain_and_freeze_the_anchor(world, tmp_path)
   assert (data['q_real_valid'][:, burnin:] > 0).any(-1).all()
 
   # L4 in a new run from the frozen pi_k: only the Value Brain learns.
-  args = ['--preset', 'small', '--device', 'cpu', '--batch-size', '1',
+  args = ['--preset', 'small', '--device', DEVICE, '--batch-size', '1',
           '--batch-length', str(T), '--holdout', str(HOLDOUT)]
   run = tmp_path / 'run'
   ts_run.main(['train-value', '--run', str(run), '--init-from', str(world['policy']),
@@ -258,7 +259,7 @@ def test_a_cf_budget_probes_every_fork_and_resumes_only_the_sample(world, tmp_pa
   assert supplement['valid_pairs'] >= meta['valid_pairs']
 
   # A round that skips L4 keeps the value anchor of the policy it inherits.
-  args = ['--preset', 'small', '--device', 'cpu', '--batch-size', '1', '--batch-length', str(T),
+  args = ['--preset', 'small', '--device', DEVICE, '--batch-size', '1', '--batch-length', str(T),
           '--holdout', str(HOLDOUT)]
   ts_run.main(['freeze', '--run', str(world['run']), '--name', 'anchored', '--out',
                str(tmp_path / 'anchored'), '--beta-q', '1', '--kappa-q', '0.7', '--cf', str(cf),

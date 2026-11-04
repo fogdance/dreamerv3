@@ -8,6 +8,7 @@ from gym-trading-env with PYTHONPATH=.:src:../dreamerv3:tests/entry_v1.
 """
 import importlib
 import json
+import os
 import pickle
 import shutil
 from pathlib import Path
@@ -16,7 +17,7 @@ import numpy as np
 import pytest
 import yaml
 
-from dreamerv3.tests.test_ts_v1_s2 import T, group_of, small
+from dreamerv3.tests.test_ts_v1_s2 import DEVICE, T, group_of, small
 from dreamerv3.thinking_student import config as TSC
 from dreamerv3.thinking_student import corpus as TC
 from dreamerv3.thinking_student import exam as E
@@ -67,7 +68,7 @@ def stores(pik, two, tmp_path_factory):
   """MarketCarry stores of both contracts, computed by the frozen pik."""
   root = tmp_path_factory.mktemp('ts_c4_carry')
   ts_run.main(['market-carry', '--policy', str(pik['policy']), '--corpus', str(two[0]),
-               '--corpus', str(two[1]), '--out', str(root), '--device', 'cpu'])
+               '--corpus', str(two[1]), '--out', str(root), '--device', DEVICE])
   return root
 
 
@@ -149,7 +150,7 @@ def test_windows_mix_contracts_and_never_join_them(two):
 
 
 def test_stages_on_two_contracts_save_resume_and_freeze_pi0(two, tmp_path):
-  base = ['--preset', 'small', '--device', 'cpu', '--batch-size', '2', '--batch-length', str(T),
+  base = ['--preset', 'small', '--device', DEVICE, '--batch-size', '2', '--batch-length', str(T),
           '--holdout', '0', '--save-every', '2', '--corpus', str(two[0]), '--corpus', str(two[1])]
   source = tmp_path / 'source'
   ts_run.save(small(tmp_path / 'init'), source)  # an earlier student to inherit from
@@ -169,7 +170,7 @@ def test_stages_on_two_contracts_save_resume_and_freeze_pi0(two, tmp_path):
   # never from --init-from, and trains the remaining update.
   shutil.rmtree(ckpt / '000000000003')
   (ckpt / 'latest').write_text('000000000002')
-  agent = ts_run.build(run, 'small', 'cpu', init_from=source, batch_size=2, batch_length=T,
+  agent = ts_run.build(run, 'small', DEVICE, init_from=source, batch_size=2, batch_length=T,
                        updates={'agent.ts.stage': 'L1'})
   for k, v in params(ckpt / '000000000002').items():
     np.testing.assert_array_equal(np.asarray(agent.params[k]), np.asarray(v), err_msg=k)
@@ -269,7 +270,7 @@ def test_q_targets_of_one_policy_on_two_contracts(pik, two, tmp_path):
   assert source['pairs'] == len(dgs[0]) >= 2
 
   # L4 on both contracts' targets moves only the Value Brain.
-  args = ['--preset', 'small', '--device', 'cpu', '--batch-size', '2', '--batch-length', str(T),
+  args = ['--preset', 'small', '--device', DEVICE, '--batch-size', '2', '--batch-length', str(T),
           '--holdout', '0']
   q = [a for c in cf for a in ('--cf', str(c))]
   run = tmp_path / 'run'
@@ -362,7 +363,7 @@ def test_state_check_from_the_continuous_carry_repeats_the_path(pik):
   its policy seeds, repeat the path exactly; from the zero state they do not
   (C4 review R3, item 4 of the user decision)."""
   collection = pik['collect'][CONTRACTS[0]]
-  check = dict(windows=4, length=T, device='cpu', **QUIET)
+  check = dict(windows=4, length=T, device=DEVICE, **QUIET)
   exact = V.window_check(pik['policy'], collection, start='carry', **check)
   assert (exact['start'], exact['seed_offset']) == ('carry', 0)
   assert exact['control_max_abs_diff'] == exact['control_action_flips'] == 0
@@ -389,7 +390,7 @@ def test_market_carry_store_is_the_deployed_market_memory(pik, two, stores, tmp_
     np.testing.assert_array_equal(store.arrays[k][0], np.asarray(zero[k][0]))
   # Both contracts of the one market-carry call: each starts from the zero
   # state and the policy's own seed counter, like its collection.
-  check = dict(windows=4, length=T, device='cpu', start='carry', **QUIET)
+  check = dict(windows=4, length=T, device=DEVICE, start='carry', **QUIET)
   for name in CONTRACTS:
     exact = V.window_check(pik['policy'], pik['collect'][name], store=stores / name, **check)
     assert exact['store_vs_path_max_abs_diff'] == 0 and exact['burnin'] == 0, name
@@ -405,9 +406,9 @@ def test_market_carry_store_is_the_deployed_market_memory(pik, two, stores, tmp_
   collection = pik['collect'][CONTRACTS[0]]
   with pytest.raises(ValueError, match='store'):
     V.window_check(pik['policy'], collection, store=stores / CONTRACTS[0], windows=4, length=T,
-                   device='cpu', **QUIET)
+                   device=DEVICE, **QUIET)
   run, before = pik['run'], files(pik['run'])
-  ts_run.main(['market-carry', '--run', str(run), '--preset', 'small', '--device', 'cpu',
+  ts_run.main(['market-carry', '--run', str(run), '--preset', 'small', '--device', DEVICE,
                '--corpus', str(two[0]), '--out', str(tmp_path)])
   assert files(run) == before
   again = TC.MarketCarry(tmp_path / CONTRACTS[0])
@@ -446,7 +447,7 @@ def test_windows_start_from_the_stored_carry(pik, two, stores):
 
 
 def test_carry_windows_train_only_their_stage(pik, two, stores, tmp_path):
-  args = ['--preset', 'small', '--device', 'cpu', '--batch-size', '2', '--batch-length', str(T),
+  args = ['--preset', 'small', '--device', DEVICE, '--batch-size', '2', '--batch-length', str(T),
           '--holdout', '0', '--window-start', 'carry', '--carry-root', str(stores)]
   corpora = ['--corpus', str(two[0]), '--corpus', str(two[1])]
   run = tmp_path / 'run'
@@ -480,7 +481,7 @@ def test_orchestrator_rounds_resume_from_the_disk(two, tmp_path, monkeypatch):
   config = tmp_path / 'smoke.yaml'
   config.write_text(yaml.safe_dump(dict(
       paths=dict(corpus_root='corpora', run_root='run'),
-      student=dict(preset='small', device='cpu', seed=1, batch_size=2, batch_length=T, log_every=1),
+      student=dict(preset='small', device=DEVICE, seed=1, batch_size=2, batch_length=T, log_every=1),
       foundation=dict(market_updates=2, outcome_updates=2, policy_updates=2, save_every=1),
       iteration=dict(max_rounds=1, cf_wait_forks=2, value_updates=2, prior_refresh_updates=2,
                      save_every=1, kappa_floor=0.05, state_check_windows=4),
@@ -506,6 +507,7 @@ def test_orchestrator_rounds_resume_from_the_disk(two, tmp_path, monkeypatch):
   for name in CONTRACTS:
     report = json.loads((lay.exam(lay.policy(0), 'TRAIN_SMOKE', name) / 'exam.json').read_text())
     assert report['label'] == 'TRAIN_SMOKE' and report['student']['minutes'] == 40
+    assert not (lay.exam(lay.policy(0), 'TRAIN_SMOKE', name) / 'collect' / 'replay').exists()
   assert json.loads((lay.root / 'eval' / 'pi_0000' / 'DEV_NOT_CONFIGURED.json').read_text())
   # More L1 after L2, L3 and pi_0 stand on it is refused, before any call.
   raised = tmp_path / 'raised.yaml'
@@ -529,6 +531,14 @@ def test_orchestrator_rounds_resume_from_the_disk(two, tmp_path, monkeypatch):
   assert check['control_max_abs_diff'] == check['control_action_flips'] == 0
   assert check['replay_vs_record_max_abs_diff'] == check['replay_vs_record_action_flips'] == 0
   assert check['actions']['masked_flips'] == 0
+  # Gone once nothing reads them (user 2026-11-04): the CF work and the
+  # collection snapshots but the newest, a hard link of state.pkl.
+  for c in CONTRACTS:
+    collect = lay.experience(lay.policy(0), 'collect', c)
+    assert not (lay.experience(lay.policy(0), 'cf', c) / 'work').exists()
+    assert [os.path.samefile(p, collect / 'state.pkl') for p in (collect / 'snapshots').iterdir()] == [True]
+    assert list((collect / 'replay').glob('*.npz'))
+  assert 'experience/pi_0000/cf/' in (lay.logs / 'prune.log').read_text()
 
   # The rerun keeps pi_0's collections and CF and stops at L4; the next one
   # freezes pi_1 and stops at its first exam.
@@ -561,6 +571,10 @@ def test_orchestrator_rounds_resume_from_the_disk(two, tmp_path, monkeypatch):
   assert state['step'] == 'exam' and state['latest_candidate'] == str(lay.policy(1))
   assert frozen['lineage']['q_teacher_policy'] == [str(lay.policy(0))]
   assert (lay.experience(lay.policy(0), 'collect', CONTRACTS[0]) / 'state_check.json').exists()
+  # pi_1 is frozen: its learner keeps the json files of its checkpoints only.
+  assert not list(lay.learner(1).glob('ckpt/*/agent.pkl'))
+  assert ts_run.progress(lay.learner(1)) == {'L1': 0, 'L2': 0, 'L3': 2, 'L4': 2}
+  assert list(lay.foundation.glob('ckpt/*/agent.pkl'))
 
   # pi_1 is frozen and its exam is not done: the rerun takes only its
   # missing exams and no new round (C4 review R1).
@@ -597,7 +611,7 @@ def test_orchestrator_starts_windows_from_the_market_carry(pik, two, tmp_path, m
   config = tmp_path / 'carry.yaml'
   config.write_text(yaml.safe_dump(dict(
       paths=dict(corpus_root='corpora', run_root='run', init_from=str(pik['run'])),
-      student=dict(preset='small', device='cpu', seed=1, batch_size=2, batch_length=T,
+      student=dict(preset='small', device=DEVICE, seed=1, batch_size=2, batch_length=T,
                    log_every=1, window_start='carry'),
       foundation=dict(policy_updates=1, save_every=1),
       iteration=dict(max_rounds=1, cf_wait_forks=1, value_updates=1, state_check_windows=2,
@@ -665,7 +679,7 @@ def test_orchestrator_relabels_the_cf_with_the_net_pnl_return(pik, two, tmp_path
   config = tmp_path / 'r2.yaml'
   config.write_text(yaml.safe_dump(dict(
       paths=dict(corpus_root='corpora', run_root='run', init_from=str(pik['run'])),
-      student=dict(preset='small', device='cpu', seed=1, batch_size=2, batch_length=T, log_every=1),
+      student=dict(preset='small', device=DEVICE, seed=1, batch_size=2, batch_length=T, log_every=1),
       foundation=dict(policy_updates=1, save_every=1),
       iteration=dict(max_rounds=1, cf_wait_forks=2, value_updates=1, kappa_floor=0.05,
                      q_return='net_pnl_h2760'),
@@ -709,7 +723,7 @@ def test_orchestrator_keeps_the_value_brain_when_the_cf_is_not_representative(
   config = tmp_path / 'thin.yaml'
   config.write_text(yaml.safe_dump(dict(
       paths=dict(corpus_root='corpora', run_root='run', init_from=str(pik['run'])),
-      student=dict(preset='small', device='cpu', seed=1, batch_size=2, batch_length=T,
+      student=dict(preset='small', device=DEVICE, seed=1, batch_size=2, batch_length=T,
                    log_every=1),
       foundation=dict(policy_updates=1, save_every=1),
       iteration=dict(max_rounds=1, cf_wait_forks=1, cf_max_steps=2, cf_probe_steps=1, cf_budget=0,
@@ -792,7 +806,7 @@ def test_orchestrator_trains_l2_on_the_carry_of_an_l1_continued_by_hand(pik, two
   leaves L1 alone, builds the stores from the continued L1 brain and trains
   the remaining L2 and then L3 on them. L2 and L3 leave the market brain
   alone, so the stores are pi_0000's deployed market memory."""
-  base = ['--preset', 'small', '--device', 'cpu', '--batch-size', '2', '--batch-length', str(T),
+  base = ['--preset', 'small', '--device', DEVICE, '--batch-size', '2', '--batch-length', str(T),
           '--holdout', '0', '--corpus', str(two[0]), '--corpus', str(two[1])]
   source = tmp_path / 'source'
   ts_run.main(['train-market', '--run', str(source), '--init-from', str(pik['run']), *base,
@@ -810,7 +824,7 @@ def test_orchestrator_trains_l2_on_the_carry_of_an_l1_continued_by_hand(pik, two
   config = tmp_path / 'continue.yaml'
   config.write_text(yaml.safe_dump(dict(
       paths=dict(corpus_root='corpora', run_root='run', init_from=str(ts_run.latest(source))),
-      student=dict(preset='small', device='cpu', seed=1, batch_size=2, batch_length=T,
+      student=dict(preset='small', device=DEVICE, seed=1, batch_size=2, batch_length=T,
                    log_every=1, window_start='carry'),
       foundation=dict(market_updates=3, outcome_updates=2, policy_updates=1, save_every=1),
       evaluation=dict(random_seeds=1, smoke_steps=20))))
@@ -828,7 +842,7 @@ def test_orchestrator_trains_l2_on_the_carry_of_an_l1_continued_by_hand(pik, two
   assert (report['window_start'], report['carry_root']) == ('carry', str(lay.carry))
   deployed = tmp_path / 'deployed'
   ts_run.main(['market-carry', '--policy', str(lay.policy(0)), '--corpus', str(two[0]),
-               '--corpus', str(two[1]), '--out', str(deployed), '--device', 'cpu'])
+               '--corpus', str(two[1]), '--out', str(deployed), '--device', DEVICE])
   for name in CONTRACTS:
     built = TC.MarketCarry(lay.carry / name).arrays
     for k in TC.CARRY_KEYS:
@@ -856,7 +870,7 @@ def test_orchestrator_finishes_the_exam_of_a_frozen_candidate_first(pik, two, tm
   config = tmp_path / 'dev.yaml'
   config.write_text(yaml.safe_dump(dict(
       paths=dict(markets='pool.json', corpus_root='corpora', run_root='run'),
-      dev=dict(contracts=['DEV1', 'DEV2']), student=dict(preset='small', device='cpu'),
+      dev=dict(contracts=['DEV1', 'DEV2']), student=dict(preset='small', device=DEVICE),
       iteration=dict(max_rounds=2), evaluation=dict(random_seeds=2))))
   lay = FT.Layout(tmp_path / 'run')
   for k in (0, 1):
@@ -892,6 +906,75 @@ def test_a_call_that_joins_the_dev_exams_ends_done_and_its_export_never_raises(t
   assert len(lines) == 2 and all('FAILED' in x for x in lines)
 
 
+def test_a_run_prunes_only_what_nothing_reads_any_more(tmp_path):
+  """User 2026-11-04: work/ of a finished CF, the snapshots of a TRAIN
+  collection whose CF is finished (but the hard link of state.pkl) and
+  agent.pkl of a learner whose policy is frozen; nothing else, nothing
+  behind a link, each once, and a failure is only logged."""
+  lay = FT.Layout(tmp_path / 'run')
+
+  def put(path, data=b'x' * 5000):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+  def collection(folder):
+    for name in ('state.pkl', 'replay/000000.npz', 'steps/000000.jsonl', 'snapshots/000001.pkl'):
+      put(folder / name)
+    put(folder / 'meta.json', b'{"done": true}')
+    os.link(folder / 'state.pkl', folder / 'snapshots' / '000002.pkl')
+
+  pi0 = lay.policy(0)
+  for c in ('A', 'B'):
+    collection(lay.experience(pi0, 'collect', c))
+    put(lay.experience(pi0, 'cf', c) / 'work' / 'plan.json')
+  done, unfinished = lay.experience(pi0, 'cf', 'A'), lay.experience(pi0, 'cf', 'B')
+  put(done / 'meta.json', b'{}')
+  put(done / 'pairs.jsonl')
+  # Another run's finished collection and CF, linked into this run: read only.
+  other = tmp_path / 'other'
+  collection(other / 'collect')
+  put(other / 'cf' / 'meta.json', b'{}')
+  put(other / 'cf' / 'work' / 'plan.json')
+  for kind in ('collect', 'cf'):
+    link = lay.experience(lay.policy(1), kind, 'C')
+    link.parent.mkdir(parents=True)
+    link.symlink_to(other / kind)
+  for k in (1, 2):  # pi_0001 is frozen, pi_0002 is not yet
+    for step in (1, 2):
+      put(lay.learner(k) / 'ckpt' / f'{step:012d}' / 'agent.pkl')
+      put(lay.learner(k) / 'ckpt' / f'{step:012d}' / 'progress.json',
+          json.dumps(dict(updates=dict(L4=step))).encode())
+    (lay.learner(k) / 'ckpt' / 'latest').write_text(f'{2:012d}')
+  put(lay.policy(1) / 'agent.pkl')
+  put(lay.policy(1) / 'policy.json', b'{}')
+  put(lay.foundation / 'ckpt' / f'{1:012d}' / 'agent.pkl')
+  untouched = files(other)
+  FT._prune(lay)
+  assert not (done / 'work').exists() and (done / 'pairs.jsonl').exists()
+  assert (unfinished / 'work' / 'plan.json').exists()
+  a, b = (lay.experience(pi0, 'collect', c) for c in ('A', 'B'))
+  assert sorted(p.name for p in (a / 'snapshots').iterdir()) == ['000002.pkl']
+  assert (a / 'replay' / '000000.npz').exists() and (a / 'state.pkl').read_bytes()
+  assert sorted(p.name for p in (b / 'snapshots').iterdir()) == ['000001.pkl', '000002.pkl']
+  assert not list(lay.learner(1).glob('ckpt/*/agent.pkl'))
+  assert ts_run.progress(lay.learner(1))['L4'] == 2
+  assert len(list(lay.learner(2).glob('ckpt/*/agent.pkl'))) == 2
+  assert (lay.policy(1) / 'agent.pkl').exists() and list(lay.foundation.glob('ckpt/*/agent.pkl'))
+  assert files(other) == untouched
+  log = (lay.logs / 'prune.log').read_text().splitlines()
+  assert [x.split(' ')[2] for x in log] == [
+      'experience/pi_0000/cf/A:', 'experience/pi_0000/collect/A:', 'learners/pi_0001:']
+  assert log[1].endswith(': 1 paths, 0.0 MiB') and ': 2 paths' in log[2]
+  FT._prune(lay)
+  assert (lay.logs / 'prune.log').read_text().splitlines() == log
+  # A collection whose CF is finished but that has no state.pkl: logged only.
+  put(lay.experience(pi0, 'collect', 'D') / 'meta.json', b'{"done": true}')
+  put(lay.experience(pi0, 'cf', 'D') / 'meta.json', b'{}')
+  FT._prune(lay)
+  last = (lay.logs / 'prune.log').read_text().splitlines()[-1]
+  assert 'FAILED experience/pi_0000/collect/D: ValueError' in last
+
+
 def test_exam_is_teacher_free_and_names_its_market(pik, two, tmp_path):
   from wp02_fixture import native_factory
   policy = str(pik['policy'])
@@ -900,6 +983,10 @@ def test_exam_is_teacher_free_and_names_its_market(pik, two, tmp_path):
           '--steps', '60', '--random-seeds', '2'])
   report = json.loads((tmp_path / 'smoke' / 'exam.json').read_text())
   assert report['label'] == 'TRAIN_SMOKE' and report['teacher_free'] and not report['trained']
+  # A finished exam keeps what is read of it: exam.json, steps/, state.pkl.
+  collect = tmp_path / 'smoke' / 'collect'
+  assert not (collect / 'replay').exists() and list((collect / 'steps').glob('*.jsonl'))
+  assert [os.path.samefile(p, collect / 'state.pkl') for p in (collect / 'snapshots').iterdir()] == [True]
   assert not report['complete'] and report['source']['fold'] == 'TRAIN'
   student, random = report['student'], report['random']
   assert student['minutes'] == 60 and [x['minutes'] for x in random['per_seed']] == [60, 60]

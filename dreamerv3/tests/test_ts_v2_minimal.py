@@ -9,6 +9,7 @@ import ninjax as nj
 import numpy as np
 import pytest
 
+from dreamerv3.tests.test_ts_v1_s2 import DEVICE
 from dreamerv3.thinking_student import formal_train as FT
 from dreamerv3.thinking_student import labels as L
 from dreamerv3.thinking_student import q_return as QR
@@ -20,7 +21,7 @@ V2 = {'agent.ts.market.macd': False, 'agent.ts.market.context_15m': 48, 'agent.t
 
 
 def student(folder, updates=None):
-  return make_agent(folder, preset='small', batch_size=1, batch_length=1, updates=updates)
+  return make_agent(folder, preset='small', device=DEVICE, batch_size=1, batch_length=1, updates=updates)
 
 
 def observation(market, seed=0):

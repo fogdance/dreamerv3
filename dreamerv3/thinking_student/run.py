@@ -54,6 +54,7 @@ import hashlib
 import json
 import os
 import pickle
+import shutil
 import subprocess
 import time
 from decimal import Decimal
@@ -377,7 +378,8 @@ def collect(agent, env, out, steps, mode='policy', chunk=1024, policy=None,
   steps/<n>.jsonl answer and account records, replay/<n>.npz decision arrays,
   then state.pkl, so a stopped collection resumes at its last full chunk.
   snapshots/<n>.pkl keeps the state after each chunk (a hard link of that
-  state.pkl): the CF replays the reference path from them in parallel."""
+  state.pkl): the CF replays the reference path from them in parallel
+  (prune_collection removes them once nothing reads them)."""
   out = Path(out)
   for sub in ('steps', 'replay', 'snapshots'):
     (out / sub).mkdir(parents=True, exist_ok=True)
@@ -429,6 +431,57 @@ def collect(agent, env, out, steps, mode='policy', chunk=1024, policy=None,
         f'legal={totals["legal"]} tp={last["tp_count"]} '
         f'non_tp={last["non_tp_exits"]} reward={totals["reward"]:.3f}')
   return run
+
+
+# ---- pruning (user 2026-11-04: a run keeps only what is still read) ----
+
+
+def _freed(path):
+  """Bytes the removal of `path` frees: blocks of files without another hard link."""
+  path = Path(path)
+  files = [p for p in path.rglob('*') if p.is_file()] if path.is_dir() else [path]
+  return sum(s.st_blocks * 512 for s in (p.stat() for p in files) if s.st_nlink == 1)
+
+
+def _remove(paths):
+  freed = 0
+  for p in paths:
+    freed += _freed(p)
+    shutil.rmtree(p) if p.is_dir() else p.unlink()
+  return len(paths), freed
+
+
+def prune_collection(out, replay=False):
+  """A finished collection (the caller knows it is) without what nothing reads
+  any more: snapshots/ but its hard link of state.pkl (only the CF of the
+  collection replays from them; a resume reads state.pkl), and with
+  replay=True replay/ (an exam is read through exam.json, steps/ and
+  state.pkl). Returns (paths removed, bytes freed)."""
+  out = Path(out)
+  state = out / 'state.pkl'
+  if not state.exists():
+    raise ValueError(f'{out} has no state.pkl: not a finished collection')
+  paths = [p for p in sorted((out / 'snapshots').glob('*.pkl')) if not os.path.samefile(p, state)]
+  if replay and (out / 'replay').is_dir():
+    paths.append(out / 'replay')
+  return _remove(paths)
+
+
+def prune_cf(out):
+  """work/ of a finished CF (meta.json written): run_cf refuses an existing
+  output, and a supplement reads only its meta.json and pairs.jsonl."""
+  out = Path(out)
+  if not (out / 'meta.json').exists():
+    raise ValueError(f'{out} has no meta.json: not a finished CF')
+  return _remove([out / 'work'] if (out / 'work').is_dir() else [])
+
+
+def prune_checkpoints(run):
+  """agent.pkl of every checkpoint of a run whose policy is frozen (the
+  policy folder holds its own complete copy). The json files and the latest
+  pointer stay, so progress() and reports() read as before; resume() of the
+  run fails from then on."""
+  return _remove(sorted(Path(run).glob('ckpt/*/agent.pkl')))
 
 
 FACT_KINDS = {'TAKE_PROFIT': 'TP', 'STOP_LOSS': 'SL'}

@@ -5,6 +5,7 @@ Synthetic native market, TS teaching material and batches (engineering checks).
 Run from gym-trading-env with PYTHONPATH=.:src:../dreamerv3:tests/entry_v1.
 """
 import json
+import os
 
 import jax.numpy as jnp
 import numpy as np
@@ -18,11 +19,17 @@ from dreamerv3.thinking_student import run as ts_run
 from dreamerv3.thinking_student.student import GROUPS, make_agent
 
 T = 8
+# Device of the TS tests (user 2026-11-04: on the GPU): cuda runs the formal
+# path (platform cuda, bfloat16); TS_TEST_DEVICE=cpu the float32 CPU one.
+DEVICE = os.environ.get('TS_TEST_DEVICE', 'cuda')
+INFERENCE = ({'platform': 'cpu', 'compute_dtype': 'float32'} if DEVICE == 'cpu' else
+             {'platform': 'cuda', 'compute_dtype': 'bfloat16'})
 
 
 def small(folder, **ts):
   updates = {f'agent.ts.{k}': v for k, v in ts.items()}
-  return make_agent(folder, preset='small', batch_size=1, batch_length=T, updates=updates)
+  return make_agent(folder, preset='small', device=DEVICE, batch_size=1, batch_length=T,
+                    updates=updates)
 
 
 def group_of(key):
@@ -187,7 +194,7 @@ def test_frozen_policy_records_and_reloads_what_decides_actions(corpus, tmp_path
   source = json.loads((corpus / 'source.json').read_text())
   assert meta['action_selection'] == 'DETERMINISTIC_MASKED_ARGMAX'
   assert meta['ts']['decision.beta_q'] == 0.25 and meta['preset'] == 'small'
-  assert meta['inference'] == {'platform': 'cpu', 'compute_dtype': 'float32'}
+  assert meta['inference'] == INFERENCE
   assert meta['outcome']['horizon_minutes'] == 2760 and len(meta['outcome']['classes']) == 34
   assert 'no CHUNK_END' in meta['rssm_initialization']
   assert meta['reward_version'] == source['inputs']['reward_schema']

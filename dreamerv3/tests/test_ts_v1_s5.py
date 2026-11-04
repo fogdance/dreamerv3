@@ -16,7 +16,7 @@ import yaml
 
 from dreamerv3.tests.test_ts_v1_c4 import (CONTRACTS, changed_groups, in_process, params,
                                            pik, stores, two)  # noqa: F401 (fixtures)
-from dreamerv3.tests.test_ts_v1_s2 import T
+from dreamerv3.tests.test_ts_v1_s2 import DEVICE, T
 from dreamerv3.thinking_student import corpus as TC
 from dreamerv3.thinking_student import feedback as F
 from dreamerv3.thinking_student import formal_train as FT
@@ -338,7 +338,7 @@ def test_l6_rounds_teach_offline_train_feedback(pik, two, tmp_path, monkeypatch)
   config = tmp_path / 's5.yaml'
   config.write_text(yaml.safe_dump(dict(
       paths=dict(corpus_root='corpora', run_root='run', init_from=str(pik['run'])),
-      student=dict(preset='small', device='cpu', seed=1, batch_size=2, batch_length=T,
+      student=dict(preset='small', device=DEVICE, seed=1, batch_size=2, batch_length=T,
                    log_every=1, window_start='carry'),
       foundation=dict(policy_updates=1, save_every=1),
       iteration=dict(max_rounds=2, cf_wait_forks=1, value_updates=1, prior_refresh_updates=1,
@@ -383,6 +383,9 @@ def test_l6_rounds_teach_offline_train_feedback(pik, two, tmp_path, monkeypatch)
   calls.clear()
   start = len(argvs)
   monkeypatch.setattr(FT, '_call', guarded(in_process(calls, argvs=argvs)))
+  # Below the learner's checkpoints are read after its freeze, so they stay
+  # here (the pruning of a run: test_ts_v1_c4).
+  monkeypatch.setattr(FT, '_prune', lambda lay: None)
   FT.main(['iterate', '--config', str(config)])
   assert calls == ['feedback', 'feedback', 'train-outcome', 'train-value', 'train-policy', 'freeze', 'exam', 'exam']
   for c, folder in items.items():
@@ -540,7 +543,7 @@ def test_round_learners_draw_their_own_windows(pik, two, stores, tmp_path, monke
       return data
 
   monkeypatch.setattr(ts_run, 'MultiCorpusWindows', Recording)
-  args = ['--preset', 'small', '--device', 'cpu', '--batch-size', '2', '--batch-length', str(T),
+  args = ['--preset', 'small', '--device', DEVICE, '--batch-size', '2', '--batch-length', str(T),
           '--holdout', '0', '--window-start', 'carry', '--carry-root', str(stores),
           '--corpus', str(two[0]), '--corpus', str(two[1]), '--updates', '2']
   for command in ('train-outcome', 'train-policy'):
@@ -549,7 +552,7 @@ def test_round_learners_draw_their_own_windows(pik, two, stores, tmp_path, monke
     ts_run.main([command, '--run', str(runs['a']), '--init-from', str(pik['policy']), *args])
     ts_run.main([command, '--run', str(runs['b']), '--init-from', str(pik['policy']), *args])
     # pi_1: the learner of round a, frozen; round c inherits it.
-    agent = ts_run.build(runs['a'], 'small', 'cpu')
+    agent = ts_run.build(runs['a'], 'small', DEVICE)
     pi1 = ts_run.freeze(agent, runs['a'], 'pi1', 'small', list(two), out=tmp_path / command / 'pi1')
     ts_run.main([command, '--run', str(runs['c']), '--init-from', str(pi1), *args])
     first, again, next_round = drawn
