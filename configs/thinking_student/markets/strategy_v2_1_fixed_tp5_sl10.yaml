@@ -1,0 +1,19 @@
+# PAPER only (user 2026-11-04): the V2.1 1x policies under fixed exits,
+# TP 5 / SL 10 points, instead of their structural SL and 2R TP. Everything
+# else as strategy_v2_1_structural.yaml: 48 complete 15m buckets in the
+# market context (the policies' input shape), net PnL / 618 reward, the same
+# minute fills (risk first). Without entry.stop_rule the env trades the fixed
+# take_profit_points / stop_loss_points. Direction SHORT, since all PAPER
+# contracts (FG501-FG605) are SHORT and a BOTH strategy needs the stop rule;
+# write_inputs refuses a contract traded in another direction.
+# Read by ts_v1_corpus.load_strategy (exam.py --paper-pool --strategy).
+version: V2_1_FIXED_TP5_SL10
+direction: SHORT
+entry:
+  take_profit_points: 5
+  stop_loss_points: 10
+  context_15m_buckets: 48
+reward:
+  # One SL of 3 lots is -(10 x 3 x 20 + 18) / 618, the training scale
+  schema: FG_SINGLE3_REWARD_NET_PNL_V1
+  reward_scale_cny: 618
