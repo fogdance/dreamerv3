@@ -793,5 +793,6 @@
     - [x] run 自动瘦身（用户 2026-11-04；dreamer `488d40f`，测试改在 GPU 上跑，c4/s5/s3/s2/v2_minimal 共 53 个通过）（“每一步完成后，自动删掉它不再读取的中间文件”）：CF 完成后删 work/ 和 TRAIN 采集的旧快照（保留 state.pkl 的硬链接）；policy 冻结后删 learner 各 checkpoint 的 agent.pkl（json 留着）；考试写完 exam.json 后删 replay/ 和旧快照。foundation 的 checkpoint、所有 policy、采集的 steps/replay/state.pkl、CF 结果、feedback、market_carry 都保留；删了什么记在 `logs/prune.log`，失败只记录不中断训练
     - [x] 旧 run 的多余文件清理（`CLEANUP_20261104/cleanup.py`，规则 R1–R4）：用户 18:23 执行，删 3,786 个路径、147 GB；thinking_student 306 GB → 159 GB，/data 剩 189 GB（`deleted.tsv`、`delete.log`）
     - [x] 1x 启动 start1（19:09）在第 4 轮 CF 时 GPU 显存不够失败（21:50）：pi_0003 的 DEV 考试还没结束，3 个合约 × 4 个 CF worker 就开始了；V2.1 1x 第 2 轮也是同一原因。start2 于 21:53 接着跑（旧代码）
-    - [x] 修复：每轮 CF 开始前先等 DEV 考试结束（formal_train `_iterate` 里 `exams.join()`），用户要求直接合并到训练 worktree，从下一次启动生效；完整 c4 的 GPU 测试等这次 run 结束后补跑
-    - [ ] paper，并登记到 run 清单
+    - [x] 修复：每轮 CF 开始前先等 DEV 考试结束（formal_train `_iterate` 里 `exams.join()`），用户要求直接合并到训练 worktree，从下一次启动生效；run 结束后补跑 GPU 测试：c4 24、s5 8、v2_minimal 9 个通过（`V2_2_DEV_20261104/tests/join_gpu_*`）
+    - [x] 1x 完成（start2，23:26，9 轮）：best_dev pi_0007（DEV 每市场分钟奖励 -0.00118，pi_0000 为 -0.00197），最终 pi_0009；run 占 15 GB；run 清单 102 次更新无失败
+    - [x] paper（`PAPER_V2_2_1X_20261104/run.sh`，规则同 V2.1，结构化策略）：没有优势。pi_0007 -117,405（随机 -111,836 ± 6,776，赢 2/5 个种子，胜率 27.9%），pi_0009 -128,301（随机 -101,378 ± 11,129，0/5，26.3%），与 V2.1 相当；已登记 `student:pi_0007/pi_0009:PAPER:r0001`，run 清单 revision 104、22 个 dataset，validate 通过
