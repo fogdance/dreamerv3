@@ -760,5 +760,6 @@
     - FG401 LONG：692/692 正例全部通过；`planned_exit` LONG 445 STRUCTURAL + 247 CAPPED 与教材一致（`V2_1_DEV_20261104/checks/long_FG401.json`）
     - 测试：gym 116 项通过（V2 + 已有 TS / env / e_data），dreamer 18 项通过（V2、c4 paper、s2）；ruff F/E9 全部通过（日志 `V2_1_DEV_20261104/tests/`）
   - [ ] LONG 教材：9 个 LONG TRAIN 合约（FG001、FG009、FG101、FG105、FG109、FG305、FG309、FG401、FG909），统计 + K 线图 → 用户审
+    - 2026-11-04 已生成 `V2_1_POSITIVE_ENTRY_LONG_20261104`（7,571 正例，R ≤ 10 的 5,040 个），检查通过，等用户审（统计见 CHANGE_MAP §4，图 12 张在 `figures/`）
   - [ ] 合并教材（V2_1 SHORT 原样 + LONG）→ 18 个语料（`corpus_v2_1_20261104`）→ 语料教师测试
   - [ ] 训练 worktree + 运行脚本 + 命令（`formal_v2_1.yaml`，`FORMAL_V2_1_1X_20261104`），用户在 d3 启动
