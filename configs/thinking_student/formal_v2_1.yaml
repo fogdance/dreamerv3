@@ -1,0 +1,153 @@
+# Thinking Student V2.1 (user 2026-11-04): the V2 minimal change on both
+# directions, the 1x formal run. V0.5 said SHORT_ONLY; the user found that
+# wrong (a spec error): V2.1 trades every TRAIN contract in the direction its
+# env trades (9 SHORT + 9 LONG), so it compares with the V1 1x
+# FORMAL_V1_GRADED_20261028 (formal_v1_graded.yaml) on the same 18 TRAIN
+# contracts, DEV FG409, 9 rounds with L6 in rounds 7-9.
+#
+# formal_v1_graded.yaml with only the four V0.5 changes, two-sided:
+# - Teacher: V2_1 positive material, SHORT (V2_1_POSITIVE_ENTRY_20261031,
+#   unchanged) and its LONG mirror (v2_positive_entry_long.yaml), combined
+#   into one material (ts_v2_positive --combine): GOOD / EXCELLENT ADD with
+#   R <= 10, the WAIT rows of their touches, no demonstration elsewhere.
+# - Strategy: markets/strategy_v2_1_structural.yaml, SL = prior 15m high + 5
+#   (SHORT) / prior 15m low - 5 (LONG), TP = fill -/+ 2R, R <= 10.
+# - Reward: net trade PnL / 618 in the env (replay, Outcome quality, CF) and
+#   R2 Q labels (iteration.q_return) in the same unit.
+# - Observation: student.market (no MACD, 48 complete 15m buckets).
+# The other keys are the V1 1x ones (save_every 0: user 2026-11-03).
+#
+# Corpora (CPU, ~2 min per contract on 24 workers), from gym-trading-env/,
+# for each of the 18 TRAIN contracts:
+#   env PYTHONPATH=.:src /home/v/miniconda3/envs/dreamerv3/bin/python -m gym_trading_env.research.ts_v1_corpus \
+#     --contract CZCE.FG205 --pool ../dreamerv3/configs/thinking_student/markets/pool.json \
+#     --strategy ../dreamerv3/configs/thinking_student/markets/strategy_v2_1_structural.yaml \
+#     --teacher /data/logdir/fg_single3/thinking_student/V2_1_POSITIVE_ENTRY_BOTH_20261104 \
+#     --out /data/logdir/fg_single3/thinking_student/corpus_v2_1_20261104 --workers 24
+# Then:
+#   cd gym-trading-env && env PYTHONPATH=.:src:../dreamerv3 \
+#     /home/v/miniconda3/envs/dreamerv3/bin/python -m dreamerv3.thinking_student.formal_train \
+#     run --config ../dreamerv3/configs/thinking_student/formal_v2_1.yaml --rounds 9
+
+paths:  # relative paths are relative to this file
+  markets: markets/pool.json
+  # The 18 TRAIN corpora (9 SHORT + 9 LONG) built with the V2.1 strategy and
+  # the combined SHORT + LONG V2_1 teacher.
+  corpus_root: /data/logdir/fg_single3/thinking_student/corpus_v2_1_20261104
+  run_root: /data/logdir/fg_single3/thinking_student/FORMAL_V2_1_1X_20261104
+  # The strategy of the corpora; the DEV exam trades FG409 (SHORT) under it.
+  strategy: markets/strategy_v2_1_structural.yaml
+  # Market brain of the size50m E-observation formal run on the 18 TRAIN
+  # contracts (S3-V2 E_ONLY, 1M env steps): encoder (with zero rows for the
+  # 24 older 15m buckets; F1 has no MACD branch, nor has the V2 student), RSSM
+  # and market decoder are inherited; the Thinking Student heads start fresh.
+  init_f1: /data/logdir/fg_single3/s3_v2/E_ONLY_MARKET_MINUTE_FORMAL_1M_v1_20261016/ckpt/step_000001000000
+
+corpora:
+  contracts: discover   # every TRAIN corpus under corpus_root (18: 9 SHORT + 9 LONG)
+  mix: uniform_contract
+
+dev:
+  contracts: [CZCE.FG409]
+
+student:
+  preset: size50m
+  device: cuda
+  seed: 20261024
+  batch_size: 16
+  batch_length: 64
+  log_every: 100
+  window_start: carry     # L2-L5; L1 trains the market brain on zero-carry windows
+  carry_parallel: 6       # market-carry processes, ~1 GB GPU and ~1.7 GB RAM each
+  # V0.5: the student reads no MACD and 48 complete 15m buckets (24 before).
+  market: {macd: false, context_15m: 48}
+  # MAE / MFE heads in units of the strategy's max_risk_points: 1.0 = one R
+  # (user 2026-11-03; V1: 30 points).
+  outcome_points: 10.0
+
+# Speeds of the 10x run FORMAL_V1_L1_100K_L2_120K_CONTINUE_20261024 alone on
+# the GPU: 0.24 s per L1 update, 0.13 s per L2 and 0.11 s per L3 update, the
+# 18 MarketCarry stores ~15 min: ~1.7 h here.
+foundation:
+  market_updates: 10000   # L1
+  outcome_updates: 12000  # L2
+  policy_updates: 12000   # L3
+  # Only the final checkpoint of each stage (388 MB each; user 2026-11-03:
+  # not too frequent, checkpoints take a lot of space).
+  save_every: 0
+  holdout: 0
+
+iteration:
+  max_rounds: 9             # as the V1 1x: one rotation through the 18 contracts, then rounds 7-9 with L6
+  contracts_per_round: 3    # rotates through the 18 contracts round by round
+  parallel_contracts: 3     # x cf_workers GPU processes, ~1.6 GB RAM and 1.1 GB GPU each
+  cf_wait_forks: 100
+  cf_workers: 4             # 3 x 4 = 12 workers: GPU memory is the bound; RAM may use swap
+  # Every legal fork first gets a Native probe of cf_probe_steps; it ends
+  # validly at an exact (EXACT_STATE) or funds-safe coupling or at the true
+  # terminal. 48 of the unfinished probes per contract, a sample stratified by
+  # action, equity quartile and 60-minute volatility, continue from their saved
+  # state up to cf_max_steps; the others are UNAVAILABLE_BUDGET without a label
+  # (Astra CF fix, user decision 2026-10-27; FG201 of pi_0002: 914 of 1596).
+  cf_probe_steps: 64
+  cf_budget: 48
+  # L4 needs valid pairs for >= 80% of each contract's forks for a
+  # representative round. Exploratory as the mainline
+  # (formal_v1_carry_pi2_cf_explore.yaml) and formal_v1_graded_10x.yaml: the
+  # Astra CF covered 0.51-0.61 of each contract's forks in rounds 3-4 of the
+  # mainline, and a representative round below 0.8 would skip L4 and with it
+  # the correct decisions of L6. Such a round learns on its valid exact pairs
+  # as S3_Q_TARGETS_EXPLORATORY with L4_coverage; no label or coverage changes.
+  cf_min_coverage: 0.8
+  cf_coverage: exploratory
+  # L4 budget from the pilot L4 (C4_STATE_CHECK_20261024/carry_pilot_l4, 3000
+  # updates from pi_0000 on this round's CF, TRAIN_INTERNAL_DIAGNOSTIC holdout
+  # of 135 pairs): the held-out q_pair and q_cf are best after 500 updates
+  # (q_pair 0.354, constant 0.352; sign agreement 0.55, constant 0.46) and
+  # worsen from there on (q_pair 0.40 at 1000, 0.50 at 2000).
+  value_updates: 500
+  prior_refresh_updates: 100
+  save_every: 0             # only each learner's final checkpoint (user 2026-11-03)
+  holdout: 0
+  beta_q: 1.0             # 0 with Q_ANCHOR_NOT_READY when the round's CF holds < 2 valid pairs
+  kappa_q: auto
+  kappa_floor: 0.05       # replaces a zero or smaller std of real pairs, never missing pairs
+  state_check_windows: 0  # by hand on FG005: run.py state-check --window-start carry
+  state_check_seed_offset: 1000003
+  # V0.5: Q learns the undiscounted net PnL within 2760 market minutes (R2),
+  # in the unit of the env reward (reward_scale_cny 618 of the strategy).
+  q_return: net_pnl_h2760
+  # L6 (S5) from round 7 on, as the V1 1x: rounds 7-9 take the contracts of
+  # rounds 1-3 again (FG001/005/009, FG101/105/109, FG201/205/209), so each L6
+  # round has a round without L6 on the same contracts to compare with.
+  # OFFLINE_TRAIN only: TRAIN feedback is released whatever its ready_at
+  # (TIME_ORDERED_NOT_SUPPORTED).
+  l6:
+    from_round: 7
+    order: OFFLINE_TRAIN
+    outcome_review_updates: 200   # L2 review before L4, ~0.1 s/update
+    # Correct set, on (user 2026-10-28): a quarter of every batch of the L2
+    # review and of L5 are windows around correct answers of pi_k, and in L4
+    # a correct decision row weighs 4x. Correct: the answer gave the realized
+    # ending a probability >= outcome_correct_prob; the executed action's
+    # return beat the other's by > decision_correct_margin x kappa_Q.
+    # Risk (E-7): fixed-share windows move the natural distribution, and the
+    # outcome correct answers are mostly TPs, so p_TP may rise. Compare the
+    # outcome metrics of round 4 with round 1 (same contracts) and lower
+    # correct_fraction if they worsen.
+    correct_fraction: 0.25
+    correct_boost: 4.0
+    outcome_correct_prob: 0.5
+    decision_correct_margin: 1.0
+    # Error set, off: remedial_fraction > 0 adds windows around the errors to
+    # the L2 review and L5 (with correct_fraction at most 1 in all), and
+    # remedial_boost other than 1 weighs the decision errors in L4.
+    remedial_fraction: 0
+    remedial_boost: 1.0
+    outcome_error_prob: 0.1       # must not exceed outcome_correct_prob
+    decision_error_margin: 1.0    # x kappa_Q of the round's CF
+
+evaluation:
+  random_seeds: 5
+  smoke_contracts: 2
+  smoke_steps: 6000

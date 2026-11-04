@@ -750,3 +750,15 @@
   - [x] V2 语料：9 个 SHORT TRAIN 合约（`corpus_v2_minimal_20261031`，2026-11-03 20:20）；ADD 5,163（GOOD 3,484 / EXCELLENT 1,679）、WAIT 1,183、RISK_ABOVE_MAX 2,083、STOP_LINE_DIFFERS 1；语料教师测试通过
   - [x] 第 3 步：最小验证 + `TEST_REPORT.md`（教师 mask、真实交易、Reward/Q 对账、Obs、V1 回归；L1–L5 GPU smoke 按用户 2026-11-03 决定不做，由 1x 跑这条链；手算 G(t) 放到 SMOKE_REPORT）
   - [ ] 第 4 步：`SMOKE_REPORT.md`，取自 1x 的 pi_0000 / 第 1 轮（用户 2026-11-03：重启后直接开 1x `FORMAL_V2_MINIMAL_1X_20261103`，不另跑短试训）
+  - 用户 2026-11-04：V2 1x 已跑完（6 轮），但只做 SHORT 不合适（V0.5 spec 写成了 SHORT_ONLY，是 spec 的错误），改做 V2.1（G-23）；V2 1x 的第 4 步 SMOKE_REPORT 是否还写，待用户定
+- [ ] G-23：V2.1 = V2 最小改造做多空两个方向（用户 2026-11-04；分支 `feat/ts-v2-1-20261104`，从 V2 分支 gym `dcf89b7` / dreamer `d9bc7dd` 拉出；新的训练 worktree）
+  - 用户决定：与早期 V1 1x（`FORMAL_V1_GRADED_20261028`）结构一致，便于对比：18 个 TRAIN（9 SHORT + 9 LONG）、DEV 只用 FG409、9 轮、L6 从第 7 轮开始；LONG 教材先给用户审，再建语料和训练
+  - [x] 代码：教材生成器 LONG 镜像（价格取负在“空头空间”里跑同一套扫描）；env `stop_rule: prior_15m_extreme`（SHORT 前高 + 5，LONG 前低 − 5）；LONG 的 TP 守卫和 `check_collection` 距离取绝对值；策略 `direction: BOTH`；教材合并 `--combine`
+    - 另修两处：K 线图标题被坐标轴循环变量覆盖成 “direction bottom”；paper 报告在策略文件下误写 “5 / 30”（V2 1x paper 报告已重新生成，数字不变）。改动清单：`docs/thinking_student_v2/v2_1/CHANGE_MAP.md`
+  - [x] 校验：SHORT 用新代码重生成 FG205，与 V2_1 教材逐字节相同；LONG 单合约（FG401）合理性检查；测试与 lint
+    - FG205：events 74 行、entries 310 行逐字节相同；timeline 466 行数值相同，列顺序随第一行而变（旧代码同样，`combine` 遇表头不同即报错）
+    - FG401 LONG：692/692 正例全部通过；`planned_exit` LONG 445 STRUCTURAL + 247 CAPPED 与教材一致（`V2_1_DEV_20261104/checks/long_FG401.json`）
+    - 测试：gym 116 项通过（V2 + 已有 TS / env / e_data），dreamer 18 项通过（V2、c4 paper、s2）；ruff F/E9 全部通过（日志 `V2_1_DEV_20261104/tests/`）
+  - [ ] LONG 教材：9 个 LONG TRAIN 合约（FG001、FG009、FG101、FG105、FG109、FG305、FG309、FG401、FG909），统计 + K 线图 → 用户审
+  - [ ] 合并教材（V2_1 SHORT 原样 + LONG）→ 18 个语料（`corpus_v2_1_20261104`）→ 语料教师测试
+  - [ ] 训练 worktree + 运行脚本 + 命令（`formal_v2_1.yaml`，`FORMAL_V2_1_1X_20261104`），用户在 d3 启动

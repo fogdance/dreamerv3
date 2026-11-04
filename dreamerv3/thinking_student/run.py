@@ -471,8 +471,9 @@ def check_collection(out, corpus=None, inputs=None):
         Decimal(t['exit_price']) - Decimal(t['entry_price']))
     if native.stop_rule:
       plan = native.planned_exit(t['entry_cursor'] - 1, t['entry_price'], t['side'])
-      tp_points = Decimal(t['entry_price']) - plan['take_profit_price']
-      sl_points = plan['stop_loss_price'] - Decimal(t['entry_price'])
+      # The trade's own distances, either side of its fill (SHORT or LONG).
+      tp_points = abs(Decimal(t['entry_price']) - plan['take_profit_price'])
+      sl_points = abs(plan['stop_loss_price'] - Decimal(t['entry_price']))
     if (t['reason'] == 'TAKE_PROFIT' and move < tp_points) or (
         t['reason'] == 'STOP_LOSS' and move > -sl_points):
       points.append(dict(entry_cursor=t['entry_cursor'], reason=t['reason'], move=str(move)))

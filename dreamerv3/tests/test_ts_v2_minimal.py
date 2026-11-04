@@ -156,3 +156,55 @@ def test_paper_trading_takes_the_v2_strategy_in_place_of_tp_sl_distances(tmp_pat
   env = C.native_env(config, market=False)
   assert env.stop_rule['max_risk_points'] == 10 and env.context_15m_buckets == 48
   assert env.reward_config.schema == NET_PNL_SCHEMA and float(env.reward_config.reward_scale_cny) == 618.
+
+
+def test_the_paper_report_names_the_strategy_not_the_v1_distances():
+  """A V2 paper run trades each trade's own SL / TP: its report names the
+  strategy file, never the V1 default 5 / 30."""
+  from dreamerv3.thinking_student import paper as P
+  whole = dict(first='2024-08-19', last='2025-12-31', net_pnl=-1., max_drawdown=1., positive_months=0,
+               months=1, adds=1, tp=0, sl=1, monthly={'2024-08': -1.},
+               random_net_pnl=dict(mean=0., std=0., beaten=0, seeds=5))
+
+  def report(rules):
+    return P.markdown(dict(contracts=['CZCE.FG501'], policies={'pi': dict(whole=whole, contracts=[], rules=rules)}))
+  v2 = report(dict(strategy='strategy_v2_short_structural.yaml'))
+  assert '| pi | strategy strategy_v2_short_structural.yaml |' in v2 and '5 / 30' not in v2
+  assert '| pi | 5 / 30 |' in report(dict(take_profit_points=5, stop_loss_points=30))
+
+
+POOL = FT.Path(FT.__file__).parents[2] / 'configs/thinking_student/markets/pool.json'
+
+
+@pytest.mark.skipif(not POOL.exists(), reason='Thinking Student pool not present')
+def test_check_collection_measures_a_long_trade_on_its_own_side(tmp_path):
+  """V2.1 (user 2026-11-04): a LONG's TP lies above its fill and its SL below;
+  both distances are positive, so a LONG TP short of its target or an SL
+  above its stop is a violation, as it is for a SHORT."""
+  import json
+  import pickle
+  from decimal import Decimal
+  from gym_trading_env.research import ts_v1_corpus as C
+  from dreamerv3.thinking_student import run as R
+  strategy = C.load_strategy(POOL.parent / 'strategy_v2_1_structural.yaml')
+  inputs = C.write_inputs(C.train_row('CZCE.FG401', POOL), tmp_path / 'in', strategy=strategy)
+  env = C.native_env(inputs, market=False)
+  t = 400
+  fill = Decimal(str(env._price(env._raw.Open.iloc[t + 1], 'LONG', env.bobs[t + 1], opening=True)))
+  plan = env.planned_exit(t, fill, 'LONG')
+  tp, sl = Decimal(plan['take_profit_price']), Decimal(plan['stop_loss_price'])
+  assert sl < fill < tp
+  row = dict(step=0, cursor=0, time='x', mode='policy', mask=[1., 1.], proposed=0, executed=0, forced=False,
+             mu_prob=1., explored=False, z=-1., reward=0., **{k: 0 for k in R.ACCOUNT_KEYS})
+
+  def violations(name, exit_price, reason):
+    out = tmp_path / name
+    (out / 'steps').mkdir(parents=True)
+    (out / 'steps' / '000000.jsonl').write_text(json.dumps(row) + '\n')
+    trade = dict(entry_cursor=t + 1, entry_price=str(fill), exit_price=str(exit_price), exit_cursor=t + 9,
+                 reason=reason, side='LONG')
+    with (out / 'state.pkl').open('wb') as f:
+      pickle.dump({'run': {'env': {'attributions': [trade], 'entries': {}}}}, f)
+    return R.check_collection(out, inputs=inputs)['point_violations']
+  assert not violations('tp', tp, 'TAKE_PROFIT') and not violations('sl', sl, 'STOP_LOSS')
+  assert violations('tp_short', tp - 1, 'TAKE_PROFIT') and violations('sl_short', sl + 1, 'STOP_LOSS')

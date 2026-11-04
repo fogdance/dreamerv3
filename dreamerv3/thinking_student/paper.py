@@ -97,12 +97,15 @@ def markdown(report):
          'each main roll; the whole period chains the contracts as one account. Random: 5 accounts that '
          "ADD at the student's own ADD rate, chained per seed.", '']
   out += ['## Whole period', '',
-          '| policy | TP / SL points | period | net PnL | random net PnL (mean ± std) | beats random seeds '
+          '| policy | exits (TP / SL points or strategy) | period | net PnL | random net PnL (mean ± std) | beats random seeds '
           '| max drawdown | months > 0 | ADDs | TP / SL |', '|---|---|---|---|---|---|---|---|---|---|']
   for tag, r in report['policies'].items():
     w, rn = r['whole'], r['whole']['random_net_pnl']
     rules = r.get('rules') or dict(take_profit_points=5, stop_loss_points=30)
-    out.append(f"| {tag} | {rules['take_profit_points']} / {rules['stop_loss_points']} "
+    # A strategy file sets each trade's own SL / TP (V2): name it, never the V1 default distances.
+    exits = (f"strategy {rules['strategy']}" if rules.get('strategy')
+             else f"{rules['take_profit_points']} / {rules['stop_loss_points']}")
+    out.append(f"| {tag} | {exits} "
                f"| {w['first'][:10]} → {w['last'][:10]} | {w['net_pnl']:.0f} "
                f"| {rn['mean']:.0f} ± {rn['std']:.0f} | {rn['beaten']}/{rn['seeds']} "
                f"| {w['max_drawdown']:.0f} | {w['positive_months']}/{w['months']} | {w['adds']} "
@@ -144,11 +147,16 @@ def main(argv=None):
     meta = read(Path(args.run) / t / contracts[0] / 'exam.json')
     report['policies'][t]['policy'] = meta['policy']
     rules = meta['source'].get('rules') or {}
-    if any((read(Path(args.run) / t / c / 'exam.json')['source'].get('rules') or {}) != rules
-           for c in contracts):
-      raise ValueError(f'{t}: its contracts trade under different TP / SL rules')
-    report['policies'][t]['rules'] = dict(take_profit_points=rules.get('take_profit_points', 5),
-                                          stop_loss_points=rules.get('stop_loss_points', 30))
+    strategy = meta['source'].get('strategy')
+    for c in contracts:
+      source = read(Path(args.run) / t / c / 'exam.json')['source']
+      if (source.get('rules') or {}) != rules or source.get('strategy') != strategy:
+        raise ValueError(f'{t}: its contracts trade under different TP / SL rules or strategies')
+    if strategy:
+      report['policies'][t]['rules'] = dict(strategy=Path(strategy).name)
+    else:
+      report['policies'][t]['rules'] = dict(take_profit_points=rules.get('take_profit_points', 5),
+                                            stop_loss_points=rules.get('stop_loss_points', 30))
   run = Path(args.run)
   (run / 'paper_report.json').write_text(json.dumps(report, indent=1))
   (run / 'paper_report.md').write_text(markdown(report))
