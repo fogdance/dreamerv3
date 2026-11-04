@@ -759,7 +759,13 @@
     - FG205：events 74 行、entries 310 行逐字节相同；timeline 466 行数值相同，列顺序随第一行而变（旧代码同样，`combine` 遇表头不同即报错）
     - FG401 LONG：692/692 正例全部通过；`planned_exit` LONG 445 STRUCTURAL + 247 CAPPED 与教材一致（`V2_1_DEV_20261104/checks/long_FG401.json`）
     - 测试：gym 116 项通过（V2 + 已有 TS / env / e_data），dreamer 18 项通过（V2、c4 paper、s2）；ruff F/E9 全部通过（日志 `V2_1_DEV_20261104/tests/`）
-  - [ ] LONG 教材：9 个 LONG TRAIN 合约（FG001、FG009、FG101、FG105、FG109、FG305、FG309、FG401、FG909），统计 + K 线图 → 用户审
+  - [x] LONG 教材：9 个 LONG TRAIN 合约（FG001、FG009、FG101、FG105、FG109、FG305、FG309、FG401、FG909），统计 + K 线图 → 用户审
     - 2026-11-04 已生成 `V2_1_POSITIVE_ENTRY_LONG_20261104`（7,571 正例，R ≤ 10 的 5,040 个），检查通过，等用户审（统计见 CHANGE_MAP §4，图 12 张在 `figures/`）
-  - [ ] 合并教材（V2_1 SHORT 原样 + LONG）→ 18 个语料（`corpus_v2_1_20261104`）→ 语料教师测试
-  - [ ] 训练 worktree + 运行脚本 + 命令（`formal_v2_1.yaml`，`FORMAL_V2_1_1X_20261104`），用户在 d3 启动
+    - 用户 2026-11-04 审过：“没问题，准备训练”
+  - [x] 合并教材（V2_1 SHORT 原样 + LONG）→ 18 个语料（`corpus_v2_1_20261104`）→ 语料教师测试
+    - 合并完成：`V2_1_POSITIVE_ENTRY_BOTH_20261104`（events 1,060、entries 14,818、timeline 18,613 行 = SHORT + LONG）
+    - 18 个语料 2026-11-04 08:35–09:03 建好（CPU，2 个并行 × 12 workers，`V2_1_DEV_20261104/corpus_build/`）
+    - 语料教师检查（`checks/corpus_teacher.json`）18/18 通过，同一个教师：ADD 10,110（SHORT 5,163 / LONG 4,947）、WAIT 2,510（1,183 / 1,327）；丢弃 RISK_ABOVE_MAX 4,614、STOP_LINE_DIFFERS 94（SHORT 1 + LONG 93）
+    - `formal_v2_1.yaml` 预检（训练 worktree 的代码，CPU）：18 个语料、DEV FG409、9 轮、L6 从第 7 轮、策略版本与语料一致
+  - [x] 训练 worktree + 运行脚本 + 命令（`formal_v2_1.yaml`，`FORMAL_V2_1_1X_20261104`），用户在 d3 启动
+    - worktree `/data/research/fg-s3-thinking-student-v2-1-1x-20261104`（分支 `run/ts-v2-1-1x-20261104`，从 dev 快进）；脚本 `FORMAL_V2_1_1X_20261104/v2_1_1x.sh TAG`
