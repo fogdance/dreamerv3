@@ -830,5 +830,5 @@
   - [x] 只换止损（用户 2026-11-05："v2.4新建个分支，直接将止损换回结构止损（H+5），其他不变，跑paper"）：分支 `paper/ts-v2-4-h5-stop-20261105`（gym e04b144、dreamer b67edac），V2.4 策略不重训，`PAPER_V2_4_1X_H5STOP_20261105`：pi_0005 +6,558（随机 +6,580 ± 6,124，赢 2/5；always-ADD +7,948；胜率 36.2%），pi_0009 +8,352（随机 +5,696 ± 4,810，3/5；胜率 36.9%）；止损 RULE 349 / CAPPED 32；review r0002
 - [ ] G-28：V2.5 = V2.4 的设置 + 触线止损 H+5（用户 2026-11-05："V2.4 的设置下，把止损换回 H+5，从材料、语料开始重新训练一次 1x。用新的worktree"）
   - [x] 代码：env 闸门恢复 H+5 止损（RULE / CAPPED / GAP），规则 V6 = V5 去掉 fixed_stop_points；配置 `v2_positive_entry_v6(_long).yaml`、`strategy_v2_5_h5_stop.yaml`、`formal_v2_5.yaml`；测试 gym `test_rule_gate.py` 11、`test_ts_v2_positive.py` 通过
-  - [ ] 新 worktree → V6 材料 → 18 个语料 → 教师检查 → review 导出
+  - [x] 新 worktree `fg-s3-thinking-student-v2-5-1x-20261105`（`run/ts-v2-5-1x-20261105`）→ V6 材料 → 18 个语料 → 教师检查 → review 导出（`V2_5_DEV_20261105/`）：ADD 16,217（SHORT 7,803 / LONG 8,414），WAIT_IN_RULE 6,977，规则位置 74,979，覆盖 31%；STOP_LINE_DIFFERS / RISK_ABOVE_MAX 0，止损全部 RULE；review 23,194 条
   - [ ] 1x（用户在 tmux d3 启动 `formal_v2_5.yaml`）→ paper
