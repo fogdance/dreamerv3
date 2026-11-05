@@ -80,6 +80,15 @@
   - touch 之前的行（WAIT_FAR、WAIT_APPROACH、WAIT_NEAR_NO_VOLUME、ACTIVATION）在闸门下本来就不能 ADD，不做标签，计入 `dropped.WAIT_OFF_RULE`。
 - **exam：** 每个账户报告合规率（`rule_compliance`，闸门下小于 1 就报错）、成交价在区间内的比例和 stop_source 分布；基准有两个：随机账户（规则内随机时机）和 always-ADD 账户（每个规则位置都 ADD）。
 
+
+### V5（2026-11-05，V2.4：止损固定 5 点）
+- **用户：** "止损固定5点"；范围选"全部：SL = 成交价+5"。
+- 配置：`v2_positive_entry_v5.yaml` / `v2_positive_entry_v5_long.yaml`，在 V4 基础上只加 `entry.fixed_stop_points: 5`；策略 `markets/strategy_v2_4_fixed_stop.yaml`（version `V2_4_RULE_GATE_FIXED5`）。
+- **止损：** 每个闸门 ADD 都是 SHORT SL = 成交价 + 5、TP = 成交价 − 10，LONG SL = 成交价 − 5、TP = 成交价 + 10（R = 5，2R），跳空成交也一样。`stop_source` 记 `FIXED`，不再有 RULE / CAPPED / GAP。
+- **线 H 的作用不变：** 规则位置仍由决策报价在 [H−5, H] 决定，`stop_above_points` 只剩"线被突破，touch 结束"的作用。所以 V5 的规则位置与 V4 逐分钟相同（`test_rule_gate.py` 检查）。
+- **材料：** 计划 R 与 `label_R` 都是 5；`obs_sl` = 决策报价 ± 5（计划值），`label_sl` = 实际成交价 ± 5；成交跳出 [H−5, H] 的候选也照常交易，不再记 FILL_OUT_OF_ZONE（`label_fill_in_zone` 仍保留在审计里）。
+- **教师：** 闸门 SL 与 `label_sl` 比对，不一致直接报错。
+
 ## 一、范围
 
 - 只用 9 个方向为 SHORT 的 TRAIN 合约：FG809、FG901、FG905、FG005、FG201、FG205、FG209、FG301、FG405。

@@ -109,3 +109,16 @@ V2.2（规则 V3：每次 touch 都要由它自己的 RV ≥ 2 的 K 线开始�
 - 成本只写在 `markets/costs_fg_real_20261105.yaml` 一个文件里，格式与原来的 CZCE_FG 成本预设相同；以后改成本只改它（新文件名、新版本）。
 - 教材里的 WAIT 只有 `WAIT_IN_RULE`：touch 之前的 WAIT 在闸门下不是标签。
 - 学生成交的 `details` 多 `Rule touch` 和 `Touch`。
+
+## 六、V2.4（止损固定 5 点，2026-11-05）
+
+用户："止损固定5点"，"全部：SL = 成交价+5"。设计见 `DESIGN.md` 的 V5 一节。流水线与 V2.3 相同，只换配置和目录：
+
+| 步 | 输出 | 配置 |
+|---|---|---|
+| 1 原始正例 | `V2_4_POSITIVE_ENTRY_SHORT_20261105`、`V2_4_POSITIVE_ENTRY_LONG_20261105` | `v2_positive_entry_v5.yaml`（LONG：`v2_positive_entry_v5_long.yaml`） |
+| 1b 合并 | `V2_4_POSITIVE_ENTRY_BOTH_20261105` | `--combine` |
+| 2 训练语料 | `corpus_v2_4_20261105/<合约>/` | `--strategy .../markets/strategy_v2_4_fixed_stop.yaml --teacher .../V2_4_POSITIVE_ENTRY_BOTH_20261105` |
+| 4 review 导出 | `corpus_v2_4_20261105/review/` | `--label "V2.4 teacher" --expect-contracts 18` |
+
+完整命令写在 `formal_v2_4.yaml` 的文件头里。V2.3 的 V4 材料和 `corpus_v2_3_20261105`（15 个语料）原样保留，不再用于训练。

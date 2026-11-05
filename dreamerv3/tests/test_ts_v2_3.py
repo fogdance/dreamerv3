@@ -18,6 +18,8 @@ from dreamerv3.thinking_student import paper as P
 CONFIGS = Path(E.__file__).parents[2] / 'configs/thinking_student'
 POOL = CONFIGS / 'markets/pool.json'
 STRATEGY = CONFIGS / 'markets/strategy_v2_3_rule_gate.yaml'
+# V2.4 (user 2026-11-05, "止损固定5点"): the same gate, every stop fixed at the fill +/- 5.
+STRATEGY_V24 = CONFIGS / 'markets/strategy_v2_4_fixed_stop.yaml'
 ZONES = dict(SHORT=5., LONG=5.)
 SHORT = dict(reason='ENTRY', side='SHORT', price='97', line='100', stop_source='RULE', rule_event='X@5', touch=1)
 LONG = dict(reason='ENTRY', side='LONG', price='108', line='100', stop_source='CAPPED', rule_event='Y@9', touch=2)
@@ -82,10 +84,12 @@ def test_the_paper_report_chains_the_rule_numbers_and_shows_a_dash_for_older_exa
   assert '| 1/1 | — |' in text and text.count('| — | — | — |') == 1
 
 
-@pytest.mark.skipif(not (POOL.exists() and STRATEGY.exists()), reason='Thinking Student V2.3 configs missing')
-def test_under_the_rule_gate_both_baselines_enter_at_rule_positions_only(tmp_path):
+@pytest.mark.skipif(not (POOL.exists() and STRATEGY.exists() and STRATEGY_V24.exists()),
+                    reason='Thinking Student V2.3 / V2.4 configs missing')
+@pytest.mark.parametrize('strategy, sources', [(STRATEGY, {'RULE', 'CAPPED', 'GAP'}), (STRATEGY_V24, {'FIXED'})])
+def test_under_the_rule_gate_both_baselines_enter_at_rule_positions_only(tmp_path, strategy, sources):
   from gym_trading_env.research import ts_v1_corpus as C
-  config = C.write_inputs(C.train_row('CZCE.FG205', POOL), tmp_path / 'in', strategy=C.load_strategy(STRATEGY))
+  config = C.write_inputs(C.train_row('CZCE.FG205', POOL), tmp_path / 'in', strategy=C.load_strategy(strategy))
   opens = np.flatnonzero(C.native_env(config, market=False)._gate('SHORT')['open'])
   steps = int(opens[min(60, len(opens) - 1)]) + 1  # the first 60 rule positions
   always = E._random_job(dict(config=str(config), kind='always_add', probability=1., seed=0, steps=steps))
@@ -94,4 +98,4 @@ def test_under_the_rule_gate_both_baselines_enter_at_rule_positions_only(tmp_pat
   for x in (always, rnd):
     assert x['minutes'] == steps and x['filled_entries'] > 0
     assert x['rule_entries'] == x['filled_entries'] and x['rule_compliance'] == 1.
-    assert set(x['stop_sources']) <= {'RULE', 'CAPPED', 'GAP'} and 0 < x['fill_in_zone'] <= 1
+    assert set(x['stop_sources']) <= sources and 0 < x['fill_in_zone'] <= 1

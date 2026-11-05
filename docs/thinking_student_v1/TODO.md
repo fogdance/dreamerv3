@@ -818,3 +818,8 @@
   - [x] 对照设计文档检查（V4 回到 Spec V0.3 的 [H−5, H] / R ≤ 10；闸门取代 V0.5 §1 / §7，已写入 DESIGN.md）；两仓提交
   - [ ] V4 材料 → 18 个语料 → 教师检查 → review 导出
   - [ ] GPU smoke → 1x 命令（用户在 tmux d3 启动）→ paper
+- [ ] G-27：V2.4 = V2.3 + 止损固定 5 点（用户 2026-11-05："止损固定5点"，"全部：SL = 成交价+5"；取代 G-26 的 SL = H+5，G-26 剩下的步骤改在 V2.4 上做）
+  - [x] 代码：规则 V5（`entry.fixed_stop_points: 5`），env 闸门止损 `FIXED`，材料 R = 5、跳空成交照常交易，教师按 `label_sl` 核对；配置 `v2_positive_entry_v5(_long).yaml`、`strategy_v2_4_fixed_stop.yaml`、`formal_v2_4.yaml`、`smoke_v2_4.yaml`；DESIGN.md V5、CORPUS_GUIDE.md 第六节
+  - [x] 测试（只跑相关的）：gym `test_rule_gate.py` 11、`test_ts_v2_positive.py`、`test_ts_v2_minimal.py`；dreamer GPU `test_ts_v2_3.py` 4，全过；ruff 0 → 0
+  - [ ] V5 材料 → 18 个语料 → 教师检查 → review 导出
+  - [ ] GPU smoke → 1x 命令（用户在 tmux d3 启动）→ paper
