@@ -828,3 +828,7 @@
   - [x] paper `PAPER_V2_4_1X_20261105`（FG501–FG605）：合规率 1，止损全部 FIXED；pi_0005 -12,168（随机 -17,318 ± 3,631，赢 4/5；always-ADD -12,853），pi_0009 -11,041（随机 -16,573 ± 2,877，5/5）；胜率 33.4% / 33.6%，保本线约 34.7%（TP 10 / SL 5 加手续费 0.21 点）；review 清单已登记 r0001，validate 通过
   - [x] 对照（用户 2026-11-05："v2.2那部分，将交易成本的修改也合并到那个worktree, 重新跑paper"，"只改交易成本，其他无关的不要打开"）：V2.2 run 分支只加成本预设支持（gym ef4623b、dreamer 9f0b8b7），`PAPER_V2_2_1X_REALCOST_20261105`：pi_0007 +896（随机 +1,758 ± 8,879，赢 2/5，胜率 34.6%），pi_0009 -11,330（随机 +4,100 ± 11,533，1/5）；review r0002。同为真实成本，V2.4（闸门 + 固定 5 点）-12,168 比 V2.2 差。先快进再停掉的那轮在 `PAPER_V2_2_1X_REALCOST_FF_STOPPED_20261105`（未用）
   - [x] 只换止损（用户 2026-11-05："v2.4新建个分支，直接将止损换回结构止损（H+5），其他不变，跑paper"）：分支 `paper/ts-v2-4-h5-stop-20261105`（gym e04b144、dreamer b67edac），V2.4 策略不重训，`PAPER_V2_4_1X_H5STOP_20261105`：pi_0005 +6,558（随机 +6,580 ± 6,124，赢 2/5；always-ADD +7,948；胜率 36.2%），pi_0009 +8,352（随机 +5,696 ± 4,810，3/5；胜率 36.9%）；止损 RULE 349 / CAPPED 32；review r0002
+- [ ] G-28：V2.5 = V2.4 的设置 + 触线止损 H+5（用户 2026-11-05："V2.4 的设置下，把止损换回 H+5，从材料、语料开始重新训练一次 1x。用新的worktree"）
+  - [x] 代码：env 闸门恢复 H+5 止损（RULE / CAPPED / GAP），规则 V6 = V5 去掉 fixed_stop_points；配置 `v2_positive_entry_v6(_long).yaml`、`strategy_v2_5_h5_stop.yaml`、`formal_v2_5.yaml`；测试 gym `test_rule_gate.py` 11、`test_ts_v2_positive.py` 通过
+  - [ ] 新 worktree → V6 材料 → 18 个语料 → 教师检查 → review 导出
+  - [ ] 1x（用户在 tmux d3 启动 `formal_v2_5.yaml`）→ paper

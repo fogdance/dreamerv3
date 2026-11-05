@@ -90,6 +90,13 @@
 - **材料：** 计划 R 与 `label_R` 都是 5；`obs_sl` = 决策报价 ± 5（计划值），`label_sl` = 实际成交价 ± 5；成交跳出 [H−5, H] 的候选也照常交易，不再记 FILL_OUT_OF_ZONE（`label_fill_in_zone` 仍保留在审计里）。
 - **教师：** 闸门 SL 与 `label_sl` 比对，不一致直接报错。
 
+
+### V6（2026-11-05，V2.5：闸门 + 触线止损 H+5）
+- **用户：** "V2.4 的设置下，把止损换回 H+5，从材料、语料开始重新训练一次 1x"。依据：V2.4 的策略只把止损换成 H+5 来跑 paper，结果 +6,558（固定 5 点是 −12,168），见 `PAPER_V2_4_1X_H5STOP_20261105`。
+- 配置：`v2_positive_entry_v6(_long).yaml` 就是 V5 去掉 `fixed_stop_points`；策略 `markets/strategy_v2_5_h5_stop.yaml`（version `V2_5_RULE_GATE_H5`）。
+- **止损：** 闸门 ADD 的止损用本次触线的线：SL = H + 5（LONG：L − 5），R = SL − fill，R ≤ 10，TP 2R。R > 10 记 `CAPPED`（R 取 10）；成交价越过 SL 记 `GAP`（R 取 10）；其余记 `RULE`。这就是 V4 的止损，env 里对应的代码已经恢复。
+- 规则位置、`WAIT_IN_RULE`、真实成本都与 V5 相同。
+
 ## 一、范围
 
 - 只用 9 个方向为 SHORT 的 TRAIN 合约：FG809、FG901、FG905、FG005、FG201、FG205、FG209、FG301、FG405。

@@ -124,3 +124,7 @@ V2.2（规则 V3：每次 touch 都要由它自己的 RV ≥ 2 的 K 线开始�
 | 4 review 导出 | `corpus_v2_4_20261105/review/` | `--label "V2.4 teacher" --expect-contracts 18` |
 
 完整命令写在 `formal_v2_4.yaml` 的文件头里。V2.3 的 V4 材料、语料和配置已删除（见第五节）。
+
+## 七、V2.5（闸门 + 触线止损 H+5，2026-11-05）
+
+用户："V2.4 的设置下，把止损换回 H+5，从材料、语料开始重新训练一次 1x"。设计见 `DESIGN.md` 的 V6 一节。流程与第六节相同，只换配置和目录：材料 `V2_5_POSITIVE_ENTRY_{SHORT,LONG,BOTH}_20261105`（`v2_positive_entry_v6(_long).yaml`），语料 `corpus_v2_5_20261105/`（`markets/strategy_v2_5_h5_stop.yaml`），review 导出时 `--label "V2.5 teacher"`。完整命令写在 `formal_v2_5.yaml` 的文件头里。
