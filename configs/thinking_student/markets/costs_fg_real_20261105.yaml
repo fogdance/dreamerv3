@@ -8,9 +8,9 @@
 # 0, and configured_fg_costs sets slippage 0. leverage 10 is the margin rate 0.1
 # of the earlier preset.
 #
-# Referenced by path, never copied as numbers: the V2.4 strategy
-# (strategy_v2_4_fixed_stop.yaml) and the V5 material rules
-# (v2_positive_entry_v5.yaml / _long.yaml). A change of costs is a change here.
+# Referenced by path, never copied as numbers: the V2.3 strategy
+# (strategy_v2_3_rule_gate.yaml) and the V4 material rules
+# (v2_positive_entry_v4.yaml / _long.yaml). A change of costs is a change here.
 CZCE_FG:
   lot_size: 20
   leverage: 10
