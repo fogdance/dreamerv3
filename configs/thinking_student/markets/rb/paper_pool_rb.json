@@ -1,0 +1,56 @@
+{
+ "product": "RB",
+ "note": "RB paper aligned with the FG paper contracts (dates, main exit, directions); built by RB_PAPER_DEV_20261105/build_rb.py",
+ "files": [
+  {
+   "contract": "SHFE.rb2501",
+   "role": "paper",
+   "path": "/data/logdir/fg_single3/thinking_student/RB_PAPER_DEV_20261105/export/0020_SHFE_rb2501_main_1m.csv",
+   "env_config": "envs/SHFE_rb2501_env.yaml",
+   "aligned_to": "CZCE.FG501",
+   "sha256": "1c9947eeb2e6018c1471406113ae3ab04bace24ca5daf518e213a754081d1ddf",
+   "first_timestamp": "2024-08-19 21:01:00",
+   "last_timestamp": "2024-12-12 15:00:00"
+  },
+  {
+   "contract": "SHFE.rb2505",
+   "role": "paper",
+   "path": "/data/logdir/fg_single3/thinking_student/RB_PAPER_DEV_20261105/export/0021_SHFE_rb2505_main_1m.csv",
+   "env_config": "envs/SHFE_rb2505_env.yaml",
+   "aligned_to": "CZCE.FG505",
+   "sha256": "c22e828a695c3281cf1d261b177bde1eed7600fa4c8b463754250d038ecc0b58",
+   "first_timestamp": "2024-12-12 21:01:00",
+   "last_timestamp": "2025-04-15 15:00:00"
+  },
+  {
+   "contract": "SHFE.rb2509",
+   "role": "paper",
+   "path": "/data/logdir/fg_single3/thinking_student/RB_PAPER_DEV_20261105/export/0022_SHFE_rb2509_main_1m.csv",
+   "env_config": "envs/SHFE_rb2509_env.yaml",
+   "aligned_to": "CZCE.FG509",
+   "sha256": "2a9de1b5ae29939c4cc0f8ba315d5873f1437ada7b6ef3413bee35eb7ca44943",
+   "first_timestamp": "2025-04-15 21:01:00",
+   "last_timestamp": "2025-08-12 15:00:00"
+  },
+  {
+   "contract": "SHFE.rb2601",
+   "role": "paper",
+   "path": "/data/logdir/fg_single3/thinking_student/RB_PAPER_DEV_20261105/export/0023_SHFE_rb2601_main_1m.csv",
+   "env_config": "envs/SHFE_rb2601_env.yaml",
+   "aligned_to": "CZCE.FG601",
+   "sha256": "f4d581f5c1656846144000668687285a96bc0bca585b81c1c837533a43cd9b04",
+   "first_timestamp": "2025-08-12 21:01:00",
+   "last_timestamp": "2025-12-15 15:00:00"
+  },
+  {
+   "contract": "SHFE.rb2605",
+   "role": "paper",
+   "path": "/data/logdir/fg_single3/thinking_student/RB_PAPER_DEV_20261105/export/0024_SHFE_rb2605_main_1m.csv",
+   "env_config": "envs/SHFE_rb2605_env.yaml",
+   "aligned_to": "CZCE.FG605",
+   "sha256": "918e9d4f773e2c4c63db97ce1047629ad0c19bbee1d1efc799ad67cb3972b28a",
+   "first_timestamp": "2025-12-15 21:01:00",
+   "last_timestamp": "2025-12-31 15:00:00"
+  }
+ ]
+}
