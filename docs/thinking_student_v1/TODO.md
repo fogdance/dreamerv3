@@ -824,4 +824,5 @@
   - [x] 测试（只跑相关的）：gym `test_rule_gate.py` 11、`test_ts_v2_positive.py`、`test_ts_v2_minimal.py`；dreamer GPU `test_ts_v2_3.py` 4，全过；ruff 0 → 0
   - [x] V5 材料 → 18 个语料 → 教师检查 → review 导出（`V2_4_DEV_20261105/`）：ADD 21,492（SHORT 10,733 / LONG 10,759），WAIT_IN_RULE 7,933，规则位置 74,979，标签覆盖 39%；STOP_LINE_DIFFERS 0；review 29,425 条。途中修复：review 导出里不能成交的 WAIT（NOT_FILLED，2 条）取合约方向（gym 3a1609e）；成本预设恢复原字节（dreamer 75e71e0，语料记录其 sha256）
   - [x] GPU smoke（`SMOKE_V2_4_20261105`，`checks/smoke.json` ok）：TRAIN 采集的 ADD 和 CF 分支 100% 在规则位置，止损全部 FIXED；DEV / TRAIN_SMOKE 考试合规率 1
-  - [ ] 1x（用户在 tmux d3 启动 `formal_v2_4.yaml`）→ paper
+  - [x] 1x `FORMAL_V2_4_1X_20261105`（14:22–18:19，9 轮）：best_dev pi_0005（DEV 每市场分钟奖励 -0.00044），最终 pi_0009
+  - [x] paper `PAPER_V2_4_1X_20261105`（FG501–FG605）：合规率 1，止损全部 FIXED；pi_0005 -12,168（随机 -17,318 ± 3,631，赢 4/5；always-ADD -12,853），pi_0009 -11,041（随机 -16,573 ± 2,877，5/5）；胜率 33.4% / 33.6%，保本线约 34.7%（TP 10 / SL 5 加手续费 0.21 点）；review 清单已登记 r0001，validate 通过
