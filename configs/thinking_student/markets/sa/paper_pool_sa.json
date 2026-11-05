@@ -8,7 +8,9 @@
    "path": "/data/logdir/fg_single3/thinking_student/SA_PAPER_DEV_20261105/export/0020_CZCE_SA501_main_1m.csv",
    "env_config": "envs/CZCE_SA501_env.yaml",
    "aligned_to": "CZCE.FG501",
-   "sha256": "1bc5a84ec97b497f4a3a2663df9e0acddb6ab948843fe4525905b5285115be04"
+   "sha256": "1bc5a84ec97b497f4a3a2663df9e0acddb6ab948843fe4525905b5285115be04",
+   "first_timestamp": "2024-08-19 21:01:00",
+   "last_timestamp": "2024-12-12 15:00:00"
   },
   {
    "contract": "CZCE.SA505",
@@ -16,7 +18,9 @@
    "path": "/data/logdir/fg_single3/thinking_student/SA_PAPER_DEV_20261105/export/0021_CZCE_SA505_main_1m.csv",
    "env_config": "envs/CZCE_SA505_env.yaml",
    "aligned_to": "CZCE.FG505",
-   "sha256": "49a2f576c71428b41e75f588d24f1ec241af685cf1314b567cbef9b96459cd87"
+   "sha256": "49a2f576c71428b41e75f588d24f1ec241af685cf1314b567cbef9b96459cd87",
+   "first_timestamp": "2024-12-12 21:01:00",
+   "last_timestamp": "2025-04-15 15:00:00"
   },
   {
    "contract": "CZCE.SA509",
@@ -24,7 +28,9 @@
    "path": "/data/logdir/fg_single3/thinking_student/SA_PAPER_DEV_20261105/export/0022_CZCE_SA509_main_1m.csv",
    "env_config": "envs/CZCE_SA509_env.yaml",
    "aligned_to": "CZCE.FG509",
-   "sha256": "0c471171d473db14e29b9d724e48b30baffca298f112822680c58d8d0a46495f"
+   "sha256": "0c471171d473db14e29b9d724e48b30baffca298f112822680c58d8d0a46495f",
+   "first_timestamp": "2025-04-15 21:01:00",
+   "last_timestamp": "2025-08-12 15:00:00"
   },
   {
    "contract": "CZCE.SA601",
@@ -32,7 +38,9 @@
    "path": "/data/logdir/fg_single3/thinking_student/SA_PAPER_DEV_20261105/export/0023_CZCE_SA601_main_1m.csv",
    "env_config": "envs/CZCE_SA601_env.yaml",
    "aligned_to": "CZCE.FG601",
-   "sha256": "00e3c31856e595c29f051b7262c7cc0465db4b86e2e3d2a1afd77d1a58c7ec29"
+   "sha256": "00e3c31856e595c29f051b7262c7cc0465db4b86e2e3d2a1afd77d1a58c7ec29",
+   "first_timestamp": "2025-08-12 21:01:00",
+   "last_timestamp": "2025-12-15 15:00:00"
   },
   {
    "contract": "CZCE.SA605",
@@ -40,7 +48,9 @@
    "path": "/data/logdir/fg_single3/thinking_student/SA_PAPER_DEV_20261105/export/0024_CZCE_SA605_main_1m.csv",
    "env_config": "envs/CZCE_SA605_env.yaml",
    "aligned_to": "CZCE.FG605",
-   "sha256": "0e97061efb7b837ed1dfce8046eef09e38fe4606e2234d4317461cbdbc7cec41"
+   "sha256": "0e97061efb7b837ed1dfce8046eef09e38fe4606e2234d4317461cbdbc7cec41",
+   "first_timestamp": "2025-12-15 21:01:00",
+   "last_timestamp": "2025-12-31 15:00:00"
   }
  ]
 }
