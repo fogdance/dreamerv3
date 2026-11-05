@@ -1,0 +1,19 @@
+# FG trading costs: the user's real costs (2026-11-05): "真实的交易成本，无滑点，
+# 1手玻璃1个点盈利20元，开仓成本2.1元，平仓成本2.1元".
+#
+# The CZCE_FG cost preset format of the original user preset, read by gym
+# fg_entry_v1.configured_fg_costs into a strategy's `costs` block:
+# trading_fee_per_lot is the fee per lot of one side and is_round_turn charges
+# it on the close too (open 2.1, close 2.1, close today 2.1 CNY per lot); spread
+# 0, and configured_fg_costs sets slippage 0. leverage 10 is the margin rate 0.1
+# of the earlier preset.
+#
+# Referenced by path, never copied as numbers: the V2.3 strategy
+# (strategy_v2_3_rule_gate.yaml) and the V4 material rules
+# (v2_positive_entry_v4.yaml / _long.yaml). A change of costs is a change here.
+CZCE_FG:
+  lot_size: 20
+  leverage: 10
+  trading_fee_per_lot: 2.1
+  is_round_turn: true
+  spread: 0

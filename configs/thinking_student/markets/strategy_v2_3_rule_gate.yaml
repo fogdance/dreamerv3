@@ -1,0 +1,43 @@
+# Thinking Student V2.3 strategy (user 2026-11-05): strategy_v2_1_structural.yaml
+# with the rule gate and the user's real costs. Applied on top of a pool env by
+# gym ts_v1_corpus.write_inputs(strategy=...) (corpus CLI, exam.py --strategy);
+# read by ts_v1_corpus.load_strategy.
+#
+# "规则决定学生能在哪里交易；大脑决定在这些位置中什么时候交易": an ADD is legal
+# only at a rule position of the V4 material rules (entry.rule_gate): inside a
+# touch of a departed prior 15m pivot high H that began on its own bar near H
+# (High >= H - 5) with RV >= 2, the decision quote within [H - 5, H] (planned
+# R <= 10); a LONG mirrors it on the prior 15m pivot low L. The student chooses
+# WAIT or ADD only there.
+version: V2_3_RULE_GATE_R10
+direction: BOTH
+# The user's real costs ("真实的交易成本，无滑点，1手玻璃1个点盈利20元，开仓成本
+# 2.1元，平仓成本2.1元"): a CZCE_FG cost preset (gym
+# fg_entry_v1.configured_fg_costs), path relative to this file, in place of the
+# costs of the pool env's master strategy.
+costs: costs_fg_real_20261105.yaml
+entry:
+  # The stop of a gated ADD is its touch's own line: SHORT SL = H + 5, TP =
+  # fill - 2R; LONG SL = L - 5, TP = fill + 2R; R = |SL - fill| (user
+  # 2026-11-05: "SL = H+5，保留 R ≤ 10"). A fill gap beyond 10 points of risk
+  # caps R at 10 (stop_source CAPPED); a fill at or through the stop takes
+  # R = 10 (GAP); otherwise RULE.
+  stop_rule: prior_15m_extreme
+  stop_above_points: 5
+  max_risk_points: 10
+  target_r: 2
+  # The lines of the V4 material (the same as V2.1 / V2.2).
+  prior_high: {pivot_left: 2, pivot_right: 2, lookback_buckets: 115, departure_points: 10}
+  # Complete 15m buckets in the student's market context.
+  context_15m_buckets: 48
+  # The rule of each side, paths relative to this file: the env opens ADD at
+  # its rule positions only (gym ts_v2_positive.rule_cursors, the material's
+  # own pass).
+  rule_gate:
+    SHORT: ../v2_positive_entry_v4.yaml
+    LONG: ../v2_positive_entry_v4_long.yaml
+reward:
+  # Each exit pays its realized net trade PnL (both fees) / 618 CNY, the scale
+  # of V2.1 and V2.2 (one full 10-point SL of 3 lots with the old fees).
+  schema: FG_SINGLE3_REWARD_NET_PNL_V1
+  reward_scale_cny: 618

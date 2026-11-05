@@ -778,7 +778,7 @@
     - 5 / 30：pi_0000 −97,068（随机 −90,923，2/5）、pi_0009 −87,774（随机 −76,658，0/5）；V1 1x pi_0006 同规则 −72,420（随机 −83,170，4/5）
     - 5 / 10：pi_0000 −343,584、pi_0009 −316,998，都 0/5；胜率 52%，盈亏平衡需 68.7%
     - 对比表 `checks/compare_fixed.md`；出场检查 `checks/fixed_exits.txt`（TP 都是 +282，SL 都是 −618 / −1,818，另有 10–29 笔跳空成交或换月平仓）
-- [ ] G-24：V2.2 = V2.1 + 恢复教材的高位放量（用户 2026-11-04；分支 `feat/ts-v2-2-volume-20261104`，worktree `/data/research/fg-s3-thinking-student-v2-2-20261104`）
+- [x] G-24：V2.2 = V2.1 + 恢复教材的高位放量（用户 2026-11-04；分支 `feat/ts-v2-2-volume-20261104`，worktree `/data/research/fg-s3-thinking-student-v2-2-20261104`）
   - [x] 教材规则 V3：每次 touch 都要由它自己接近线位且 RV ≥ 2 的那根 bar 开始（`v2_positive_entry_v3.yaml` / `_long.yaml`，`volume.activation: touch`；gym `1fa8fea`，dreamer `0bbcd3e`）
     - 新代码按 V2 规则重新生成 FG205 / FG401，与 V2.1 代码的结果逐字节相同；gym 11 个测试文件全部通过（`V2_2_DEV_20261104/`）
   - [x] review-v1 教材导出（用户的 `review-export-v1-revised.md`，只做生成端的教材，复盘端由其他 agent 对接）：gym `review_export.py`（`cd89349`），规范原文与实施说明在 `docs/thinking_student_v2/review_export_v1.md`、`REVIEW_EXPORT_IMPL.md`
@@ -786,13 +786,35 @@
   - [x] Corpus 指南：`docs/thinking_student_v2/CORPUS_GUIDE.md`（教材 → 合并 → corpus → 教师检查 → review-v1 导出的命令、目录、字段和已发布清单）
   - [x] V3 教材（SHORT + LONG，合并）：`V2_2_POSITIVE_ENTRY_{SHORT,LONG,BOTH}_20261104`（17:29，两仓 clean）；用户不要统计和图（“生成好，放着就行”）
   - [x] 规范 §12 第 2 项按复盘端建议改写（Downloads 原件和项目副本，sha `659134e6…`）；分工：run 清单、学生成交、阶段状态都由生成端导出
-  - [ ] 用户计划（2026-11-04）：V3 教材 → 1x 正式训练 → paper，期间教材和学生成交都用 review-v1
+  - [x] 用户计划（2026-11-04）：V3 教材 → 1x 正式训练 → paper，期间教材和学生成交都用 review-v1
     - [x] 18 个 V2.2 语料（`corpus_v2_2_20261104`，18:01，两仓 clean）→ 教师检查通过（ADD 9,429 / WAIT 3,355，SHORT 4,832 / 1,614，LONG 4,597 / 1,741）→ review 发布并通过 validate，12,784 条，manifest sha `3df3b2e0…`（`V2_2_DEV_20261104/corpus_build/after_build.sh`）
     - [x] run 导出：`review_export run` / `paper` / `validate`（run 清单固定教材 id+sha，progress/status 取自 run_state，学生记录取自 Native 的成交、交易和归因并逐笔核对）；formal_train 每次写 run_state 后调用，导出失败只记 `logs/review_export.log`；run_state 写 status，结束时 step 回到 done。在 V2.1 run 上试导出：20 个 dataset、13,250 条，与 run 自己的汇总一致（`REVIEW_EXPORT_IMPL.md` 第五节）
-    - [ ] formal_v2_2.yaml + 训练 worktree `fg-s3-thinking-student-v2-2-1x-20261104` + `FORMAL_V2_2_1X_20261104/v2_2_1x.sh`，用户在 tmux d3 启动 1x
+    - [x] formal_v2_2.yaml + 训练 worktree `fg-s3-thinking-student-v2-2-1x-20261104` + `FORMAL_V2_2_1X_20261104/v2_2_1x.sh`，用户在 tmux d3 启动 1x
     - [x] run 自动瘦身（用户 2026-11-04；dreamer `488d40f`，测试改在 GPU 上跑，c4/s5/s3/s2/v2_minimal 共 53 个通过）（“每一步完成后，自动删掉它不再读取的中间文件”）：CF 完成后删 work/ 和 TRAIN 采集的旧快照（保留 state.pkl 的硬链接）；policy 冻结后删 learner 各 checkpoint 的 agent.pkl（json 留着）；考试写完 exam.json 后删 replay/ 和旧快照。foundation 的 checkpoint、所有 policy、采集的 steps/replay/state.pkl、CF 结果、feedback、market_carry 都保留；删了什么记在 `logs/prune.log`，失败只记录不中断训练
     - [x] 旧 run 的多余文件清理（`CLEANUP_20261104/cleanup.py`，规则 R1–R4）：用户 18:23 执行，删 3,786 个路径、147 GB；thinking_student 306 GB → 159 GB，/data 剩 189 GB（`deleted.tsv`、`delete.log`）
     - [x] 1x 启动 start1（19:09）在第 4 轮 CF 时 GPU 显存不够失败（21:50）：pi_0003 的 DEV 考试还没结束，3 个合约 × 4 个 CF worker 就开始了；V2.1 1x 第 2 轮也是同一原因。start2 于 21:53 接着跑（旧代码）
     - [x] 修复：每轮 CF 开始前先等 DEV 考试结束（formal_train `_iterate` 里 `exams.join()`），用户要求直接合并到训练 worktree，从下一次启动生效；run 结束后补跑 GPU 测试：c4 24、s5 8、v2_minimal 9 个通过（`V2_2_DEV_20261104/tests/join_gpu_*`）
     - [x] 1x 完成（start2，23:26，9 轮）：best_dev pi_0007（DEV 每市场分钟奖励 -0.00118，pi_0000 为 -0.00197），最终 pi_0009；run 占 15 GB；run 清单 102 次更新无失败
     - [x] paper（`PAPER_V2_2_1X_20261104/run.sh`，规则同 V2.1，结构化策略）：没有优势。pi_0007 -117,405（随机 -111,836 ± 6,776，赢 2/5 个种子，胜率 27.9%），pi_0009 -128,301（随机 -101,378 ± 11,129，0/5，26.3%），与 V2.1 相当；已登记 `student:pi_0007/pi_0009:PAPER:r0001`，run 清单 revision 104、22 个 dataset，validate 通过
+- [x] G-25：为何无法盈利的综合分析（用户 2026-11-05：“梳理下v1 1x, v2 1x,以及当前学生大脑的整体架构等，综合分析，为何无法盈利”；只读，CPU）
+  - 报告与证据：`/data/logdir/fg_single3/thinking_student/WHY_NO_PROFIT_20261105/REPORT.md`（`analysis.py` → `results.json`，`scale.py` → `scale.json`，`required_auc.py`）
+  - 主因：env 成交规则（开平各差 1 点、TP 要穿价 1 tick）在随机游走上每笔 −(2TP+3SL)/(TP+SL+1) ≈ −2.3~−2.8 点；只用行情复现 env 随机入场（5/30：TRAIN 81.5%、DEV 86.3%、PAPER 80.6%，E0 为 80.9/85.9/80.0）；5/30 和 2R(R=10) 每分钟沿方向入场 PAPER −2.1 / −1.6 点/笔，30/30 起转正（PAPER +1.7）
+  - 学生在样本外没有选点能力（V2.2 p_tp_h AUC DEV 0.475、PAPER 0.485；z 0.52 / 0.50；TP 率 = 同频随机）；L3 只在 2.6% 的分钟上有示范，学生在规则的输家处 ADD 34%；anchor 只翻转 0.1–0.7% 的决策
+  - 方向：24 个合约中 21 个在给定方向上有利（p ≈ 1.4e-4），来源未核实；≥ 30 点尺度的正期望来自方向本身
+  - [x] 成交模型（用户 2026-11-05）：真实成本，无滑点，1 手 1 点 20 元，开仓 2.1 元、平仓 2.1 元；止盈保留穿价 1 跳；成本要可配置（“交易成本需要可配置，以前就是可配置的”：沿用 CZCE_FG 成本预设格式）→ G-26
+  - [ ] 待用户决定：方向如何处理、出场尺度与新基准（报告第 9 节）
+- [x] 主开发分支 `integration/ts-next`（用户 2026-11-05）：两仓都从 `feat/ts-v2-2-volume-20261104` 新建（dreamer `8146c5c`、gym `b6d9e05`）；开发 worktree `/data/research/fg-s3-thinking-student-v2-2-20261104` 已切到它，功能分支保留原位；训练 worktree 从它快进
+- [ ] G-26：V2.3 = 规则闸门 + 真实成本（用户 2026-11-05；计划 `docs/thinking_student_v2/V2_3_RULE_GATE_PLAN.md`；证据 `/data/logdir/fg_single3/thinking_student/V2_3_DEV_20261105/`）
+  - 用户：“外部已经判断方向。下跌趋势只有价格反弹至15分钟前高附近，并且出现2倍以上放量，学生才允许做空，上涨趋势同理。放量后的多个有效位置也可以入场。”“规则决定学生能在哪里交易；大脑决定在这些位置中什么时候交易……要求学生尽量按照这个规则来入场。如果没有按照这个规则，就要找出根本原因，并修复”
+  - 已定：正例之前的规则位置标 WAIT；SL = 本次触线 H+5，只放行计划 R ≤ 10；真实成本（开平各 2.1 元/手，spread 0，可配置）；止盈保留穿价 1 跳
+  - [x] 0：根因证据落盘（`root_cause/`：TRAIN 上学生 86.5% 的 ADD 不在规则位置，教材只覆盖 2.6% 的分钟，教师丢掉 29.4% 的正例）；新成本下的基准（`WHY_NO_PROFIT_20261105/real_costs.py`，REPORT §11）
+  - [x] A：共享规则扫描 `rule_pass` / `rule_cursors`，V4 材料的 WAIT_IN_RULE；V3 重生成 FG205 / FG401 逐字节相同（`regen_v3/regen.out`：teacher、audit、params 全部 SAME）
+  - [x] B / B2：V4 材料配置、成本预设、`strategy_v2_3_rule_gate.yaml`、`formal_v2_3.yaml`、`smoke_v2_3.yaml`；文档 DESIGN.md 的 V4 一节（写明取代 V0.5 §1 / §7 的"不加 ADD 合法性条件"）、CORPUS_GUIDE.md 第五节
+  - [x] C：env 闸门与规则止损（gym `test_rule_gate.py`：闸门 = V4 候选，因果，RULE / CAPPED / GAP）
+  - [x] D：语料 inputs 带规则文件和成本（成本可换预设；V2.2 的 inputs 逐字节不变）
+  - [ ] E：教师与 review 导出
+  - [x] F：dreamer exam / paper 的合规率（闸门下小于 1 即报错）、stop_source、区间内成交比例，基准 = 随机账户 + always-ADD 账户
+  - [x] G：测试与 ruff（`V2_3_DEV_20261105/tests/`）：gym 13 个文件全过（含新 `test_rule_gate.py`）；dreamer GPU c4 24、s5 8、v2_minimal 9、新 `test_ts_v2_3.py` 3，全过；改动文件 ruff F/E9 都是 0 → 0
+  - [x] 对照设计文档检查（V4 回到 Spec V0.3 的 [H−5, H] / R ≤ 10；闸门取代 V0.5 §1 / §7，已写入 DESIGN.md）；两仓提交
+  - [ ] V4 材料 → 18 个语料 → 教师检查 → review 导出
+  - [ ] GPU smoke → 1x 命令（用户在 tmux d3 启动）→ paper

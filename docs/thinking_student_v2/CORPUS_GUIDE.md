@@ -65,7 +65,7 @@ ROOT/review/
 | `grade` | `EXCELLENT` / `GOOD` | null |
 | `label_ready_at` | 标签可知的时刻（示范交易 TP 的那一分钟；WAIT 是所属 touch 最后一个保留的 TP） | 同左 |
 | `outcome` | `{status: CLOSED, exit_time, exit_price, exit_reason, net_pnl}`，净盈亏含双边手续费，单位 CNY | null |
-| `details` | `Positive ID`、`Prior high H` / `Prior low L`、`Touch`、`Line spike RV`、`Touch start RV`、`Decision quote`、`Risk R (points)`、`Held (market minutes)`、`MAE (points)`、`MFE (points)`、`Explanation` | `Wait type`（WAIT_FAR / WAIT_APPROACH / WAIT_NEAR_NO_VOLUME）、`Prior high H` / `Prior low L`、`Touch`、`RV`、`Explanation` |
+| `details` | `Positive ID`、`Prior high H` / `Prior low L`、`Touch`、`Line spike RV`、`Touch start RV`、`Decision quote`、`Risk R (points)`、`Held (market minutes)`、`MAE (points)`、`MFE (points)`、`Explanation` | `Wait type`（WAIT_FAR / WAIT_APPROACH / WAIT_NEAR_NO_VOLUME；V2.3 只有 WAIT_IN_RULE）、`Prior high H` / `Prior low L`、`Touch`、`RV`、`Explanation`；WAIT_IN_RULE 另有 `Decision quote`、`Planned R (points)`、`Minutes since touch began` |
 | `note` | `Native minute trace verified` | `Valid teacher WAIT` |
 
 **格式约定：**
@@ -89,3 +89,23 @@ ROOT/review/
 V2.2（规则 V3：每次 touch 都要由它自己的 RV ≥ 2 的 K 线开始）走同一条流水线：
 - 第 1 步已完成（2026-11-04 17:29）：`V2_2_POSITIVE_ENTRY_{SHORT,LONG,BOTH}_20261104`，脚本 `V2_2_DEV_20261104/v3_material.sh`；两仓 clean（gym `cd89349`，dreamer `63f4777`）。用户不要统计和图。
 - 用户的计划（2026-11-04）：V3 教材 → 1x 正式训练 → paper，期间的教材和学生成交都按 review-v1 导出。所以接着做第 2–4 步，建 `corpus_v2_2_20261104`；run 清单和学生成交由 run 导出负责（见 `REVIEW_EXPORT_IMPL.md` 第五节）。正式训练 `FORMAL_V2_2_1X_20261104`（`formal_v2_2.yaml`）启动前，脚本会检查这份教材的 review 已发布并通过 validate。
+
+## 五、V2.3（规则闸门 + 真实成本，2026-11-05）
+
+规则 V4 和闸门的设计见 `DESIGN.md` 的 V4 一节，计划见 `V2_3_RULE_GATE_PLAN.md`。流水线与前面相同，只换配置和目录：
+
+| 步 | 输出 | 配置 |
+|---|---|---|
+| 1 原始正例 | `V2_3_POSITIVE_ENTRY_SHORT_20261105`、`V2_3_POSITIVE_ENTRY_LONG_20261105` | `--config ../dreamerv3/configs/thinking_student/v2_positive_entry_v4.yaml`（LONG：`v2_positive_entry_v4_long.yaml`） |
+| 1b 合并 | `V2_3_POSITIVE_ENTRY_BOTH_20261105` | `--combine` SHORT 和 LONG 两个目录 |
+| 2 训练语料 | `corpus_v2_3_20261105/<合约>/` | `--strategy ../dreamerv3/configs/thinking_student/markets/strategy_v2_3_rule_gate.yaml --teacher .../V2_3_POSITIVE_ENTRY_BOTH_20261105` |
+| 3 教师检查 | 标签全部合法；STOP_LINE_DIFFERS 为 0；行为账户的 ADD 100% 在规则位置；标签覆盖率（`graded/summary.json` 的 `rule_gate`） | — |
+| 4 review 导出 | `corpus_v2_3_20261105/review/` | `--label "V2.3 teacher" --expect-contracts 18` |
+
+完整命令写在 `formal_v2_3.yaml` 的文件头里。
+
+**和 V2.2 的区别**
+- 语料的 `inputs/` 多两个文件 `rule_gate_short.yaml`、`rule_gate_long.yaml`（V4 规则，成本已经读成数值），`single3.yaml` 的 `costs` 换成成本预设的值。
+- 成本只写在 `markets/costs_fg_real_20261105.yaml` 一个文件里，格式与原来的 CZCE_FG 成本预设相同；以后改成本只改它（新文件名、新版本）。
+- 教材里的 WAIT 只有 `WAIT_IN_RULE`：touch 之前的 WAIT 在闸门下不是标签。
+- 学生成交的 `details` 多 `Rule touch` 和 `Touch`。

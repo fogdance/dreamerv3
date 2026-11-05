@@ -10,7 +10,10 @@ starts from the zero market carry at its first minute, as in training and
 DEV, and from the initial balance; positions are closed at each main roll,
 so the chained equity is the previous contracts' net PnL plus this
 contract's equity change. Random-entry accounts are chained per seed over
-their net PnL (the exam keeps no per-minute random equity). Writes
+their net PnL (the exam keeps no per-minute random equity), the always-ADD
+account over its net PnL. Under a rule gate (V2.3) the report adds the
+student's rule compliance, its fills inside the rule zone and its stop
+sources; exams written before them show none. Writes
 <DIR>/paper_report.json and <DIR>/paper_report.md.
 """
 import argparse
@@ -47,6 +50,10 @@ def contract_result(folder):
       random_net_pnl=[x['net_pnl'] for x in rnd['per_seed']],
       random_reward_per_minute=[x['reward_per_minute'] for x in rnd['per_seed']],
       q_flip_share=flips / max(len(legal), 1),
+      always_net_pnl=(exam.get('always_add') or {}).get('net_pnl'),
+      filled_entries=s.get('filled_entries'), rule_entries=s.get('rule_entries'),
+      zone_entries=s.get('zone_entries'), rule_compliance=s.get('rule_compliance'),
+      fill_in_zone=s.get('fill_in_zone'), stop_sources=s.get('stop_sources'),
       initial=rows[0]['equity'], times=[r['time'] for r in rows],
       equity=[r['equity'] for r in rows])
 
@@ -85,9 +92,28 @@ def policy_report(folder, contracts):
                trading_days=sum(p['trading_days'] for p in parts),
                adds=sum(p['adds'] for p in parts), tp=sum(p['tp'] for p in parts),
                sl=sum(p['sl'] for p in parts))
+  always = [p['always_net_pnl'] for p in parts]
+  sources = {}
+  for p in parts:
+    for k, v in (p['stop_sources'] or {}).items():
+      sources[k] = sources.get(k, 0) + v
+  gated = [p for p in parts if p['rule_entries'] is not None]
+  opened = sum(p['filled_entries'] for p in gated)
+  whole.update(always_net_pnl=None if None in always else float(sum(always)), stop_sources=sources or None,
+               rule_compliance=sum(p['rule_entries'] for p in gated) / opened if gated and opened else None,
+               fill_in_zone=sum(p['zone_entries'] for p in gated) / opened if gated and opened else None)
   for p in parts:
     del p['times'], p['equity']
   return dict(contracts=parts, whole=whole)
+
+
+def _value(x, spec):
+  """A number of the report, or a dash where the exam has none."""
+  return '—' if x is None else format(x, spec)
+
+
+def _sources(counts):
+  return '—' if not counts else ', '.join(f'{k} {v}' for k, v in sorted(counts.items()))
 
 
 def markdown(report):
@@ -95,10 +121,12 @@ def markdown(report):
          f"Contracts in time order: {', '.join(c.split('.')[-1] for c in report['contracts'])}. "
          'Each contract starts from the zero market carry and the initial balance; positions close at '
          'each main roll; the whole period chains the contracts as one account. Random: 5 accounts that '
-         "ADD at the student's own ADD rate, chained per seed.", '']
+         "ADD at the student's own ADD rate, chained per seed. Always-ADD: one account that ADDs at "
+         'every legal decision (under a rule gate: every rule position it is flat at).', '']
   out += ['## Whole period', '',
           '| policy | exits (TP / SL points or strategy) | period | net PnL | random net PnL (mean ± std) | beats random seeds '
-          '| max drawdown | months > 0 | ADDs | TP / SL |', '|---|---|---|---|---|---|---|---|---|---|']
+          '| always-ADD net PnL | max drawdown | months > 0 | ADDs | TP / SL | rule compliance | fills in zone '
+          '| stop sources |', '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
   for tag, r in report['policies'].items():
     w, rn = r['whole'], r['whole']['random_net_pnl']
     rules = r.get('rules') or dict(take_profit_points=5, stop_loss_points=30)
@@ -108,19 +136,24 @@ def markdown(report):
     out.append(f"| {tag} | {exits} "
                f"| {w['first'][:10]} → {w['last'][:10]} | {w['net_pnl']:.0f} "
                f"| {rn['mean']:.0f} ± {rn['std']:.0f} | {rn['beaten']}/{rn['seeds']} "
+               f"| {_value(w.get('always_net_pnl'), '.0f')} "
                f"| {w['max_drawdown']:.0f} | {w['positive_months']}/{w['months']} | {w['adds']} "
-               f"| {w['tp']} / {w['sl']} |")
+               f"| {w['tp']} / {w['sl']} | {_value(w.get('rule_compliance'), '.3f')} "
+               f"| {_value(w.get('fill_in_zone'), '.3f')} | {_sources(w.get('stop_sources'))} |")
   out += ['', '## Per contract', '',
-          '| policy | contract | days | net PnL | random net PnL (mean) | max drawdown | ADDs | ADD rate '
-          '| TP / SL | occupancy | reward/min (random) | Q flips | complete |',
-          '|---|---|---|---|---|---|---|---|---|---|---|---|---|']
+          '| policy | contract | days | net PnL | random net PnL (mean) | always-ADD net PnL | max drawdown | ADDs '
+          '| ADD rate | TP / SL | occupancy | reward/min (random) | Q flips | rule compliance | stop sources '
+          '| complete |',
+          '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
   for tag, r in report['policies'].items():
     for p in r['contracts']:
       out.append(f"| {tag} | {p['contract'].split('.')[-1]} | {p['trading_days']} | {p['net_pnl']:.0f} "
-                 f"| {np.mean(p['random_net_pnl']):.0f} | {p['max_drawdown']:.0f} | {p['adds']} "
+                 f"| {np.mean(p['random_net_pnl']):.0f} | {_value(p.get('always_net_pnl'), '.0f')} "
+                 f"| {p['max_drawdown']:.0f} | {p['adds']} "
                  f"| {p['add_rate']:.4f} | {p['tp']} / {p['sl']} | {p['occupancy']:.3f} "
                  f"| {p['reward_per_minute']:.6f} ({np.mean(p['random_reward_per_minute']):.6f}) "
-                 f"| {p['q_flip_share']:.3f} | {p['complete']} |")
+                 f"| {p['q_flip_share']:.3f} | {_value(p.get('rule_compliance'), '.3f')} "
+                 f"| {_sources(p.get('stop_sources'))} | {p['complete']} |")
   out += ['', '## Monthly net PnL', '']
   tags = list(report['policies'])
   months = sorted({m for r in report['policies'].values() for m in r['whole']['monthly']})
@@ -129,7 +162,11 @@ def markdown(report):
     out.append(f'| {m} | ' + ' | '.join(
         f"{report['policies'][t]['whole']['monthly'].get(m, 0.):.0f}" for t in tags) + ' |')
   out += ['', 'Q flips: share of ADD-legal decisions whose ADD/WAIT the Q anchor turns '
-          '(sign of z = anchor + correction differs from the sign of the correction).', '']
+          '(sign of z = anchor + correction differs from the sign of the correction).',
+          'Rule compliance: entries at a rule position / entries; fills in zone: entries filled inside '
+          "the rule zone of their touch / entries; stop sources: the student's entries by the source of "
+          'their stop (RULE / CAPPED / GAP under a rule gate). A dash: no rule gate, or an exam written '
+          'before these numbers.', '']
   return '\n'.join(out)
 
 

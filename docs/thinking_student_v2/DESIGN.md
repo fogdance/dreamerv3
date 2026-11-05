@@ -2,7 +2,7 @@
 
 日期：2026-10-31
 依据：Spec V0.3，以及用户同日对 V1 教材的 Review（FG205 截图：沿横线的多次接近都是入场点）。
-参数集中在 `dreamerv3/configs/thinking_student/v2_positive_entry.yaml`（版本 `V2_POSITIVE_ENTRY_V2`）和 `v2_positive_entry_v3.yaml`（V3，V2.2 用）；LONG 是各自的 `_long` 镜像。
+参数集中在 `dreamerv3/configs/thinking_student/v2_positive_entry.yaml`（版本 `V2_POSITIVE_ENTRY_V2`）、`v2_positive_entry_v3.yaml`（V3，V2.2 用）和 `v2_positive_entry_v4.yaml`（V4，V2.3 用）；LONG 是各自的 `_long` 镜像。
 **以下规则在生成之前就已冻结。** 之后任何改动都算新版本教材，并在 REPORT 中说明；不根据结果回头调参。
 
 ## 零、版本记录
@@ -49,6 +49,36 @@
 - 线自己的放量时刻（`line_spike`）仍然记录，但不再决定 touch 何时开始。
 - 预计代价：12-28 10:06–10:10 那次接近（RV 1.2–1.8）不再满足放量条件，V2 时用户点出的这个点会被排除（生成 V3 教材后核对）。
 - LONG 镜像同理：接近 L（Low ≤ L + 5）且 RV ≥ 2 的那根 bar 开始 touch（低位放量）。
+
+### V4（2026-11-05，V2.3：规则闸门 + 真实成本）
+- **用户：**
+  - "外部已经判断方向。下跌趋势只有价格反弹至15分钟前高附近，并且出现2倍以上放量，学生才允许做空，上涨趋势同理。放量后的多个有效位置也可以入场。"
+  - "规则决定学生能在哪里交易；大脑决定在这些位置中什么时候交易……要求学生尽量按照这个规则来入场。如果没有按照这个规则，就要找出根本原因，并修复"
+  - "真实的交易成本，无滑点，1手玻璃1个点盈利20元，开仓成本2.1元，平仓成本2.1元。"
+- 计划：`V2_3_RULE_GATE_PLAN.md`。根因证据：`/data/logdir/fg_single3/thinking_student/V2_3_DEV_20261105/root_cause/`。V2.2 在 TRAIN 上 86.5% 的 ADD 不在规则位置，因为 env 没有闸门。
+- 配置：`v2_positive_entry_v4.yaml`（SHORT）、`v2_positive_entry_v4_long.yaml`（LONG）。touch 的规则与 V3 相同，只改四处：
+
+| # | V3 | V4 | 原因 |
+|---|---|---|---|
+| 1 | 区间 [H−7, H] | [H−5, H] | 闸门只放行计划 R ≤ 10 的规则位置，这样候选正好就是 env 允许 ADD 的分钟 |
+| 2 | R ≤ 12 | R ≤ 10 | 与 env 的 `max_risk_points` 一致；V2.2 的教师因此丢掉了 3,831 个正例（RISK_ABOVE_MAX） |
+| 3 | 第一个正例之前的规则位置不标 | `timeline.wait_in_rule: true`：有正例的 touch 中，第一个正例之前的每个候选分钟标 `WAIT_IN_RULE` | 用户选"正例之前的位置标 WAIT"；V2.2 的 WAIT 全部在 touch 之前，规则位置上一条都没有 |
+| 4 | 成本取 pool env 的 master 策略 | `costs: markets/costs_fg_real_20261105.yaml`（CZCE_FG 成本预设） | 真实成本：开仓、平仓各 2.1 元/手，spread 0，无滑点。决策报价就是 Close，成交价就是下一根 Open。止盈仍要越过 1 跳（用户："保留穿价 1 跳"） |
+
+- **规则位置就是 env 的闸门。**
+  - 这一条取代 V0.5 方案 §1 和 §7 的"不把前高/2倍放量新增成 Native 硬性合法性条件""不把规则硬塞入 ADD action mask"，依据是用户 2026-11-05 的新要求（"学生才允许做空""规则决定学生能在哪里交易"）和批准的计划。学生仍然自己决定在规则位置中何时 ADD；观测不加规则状态，这一点仍按 V0.5。
+  - 策略 `markets/strategy_v2_3_rule_gate.yaml` 的 `entry.rule_gate` 指向这两份规则。
+  - env 用材料自己的单次因果扫描（`ts_v2_positive.rule_pass`，经 `rule_cursors`）算出每一分钟是不是规则位置；规则位置之外 ADD 不合法。
+  - 边界：env 传入市场的最后一分钟，所以 live 时最新一分钟也可以是规则位置；材料传入的仍是 TRAIN 的 flat_end，结果与 V3 的扫描相同（V3 配置重新生成 FG205 / FG401，逐字节一致）。
+- **止损用本次 touch 自己的线。**
+  - SL = H + 5（LONG：L − 5），R = H + 5 − fill。
+  - R > 10 记 `CAPPED`，R 取 10；成交价已经越过 SL（只会在跳空时出现）记 `GAP`，R 取 10。
+  - 开仓 fill 记录 `rule_event`（touch 编号）和 `touch`（这条线的第几次 touch）。
+- **教师（`graded_teacher`）在闸门下：**
+  - ADD = 正例，必须合法；SL 与材料的 `obs_sl` 不同直接报错。
+  - WAIT 只取 `WAIT_IN_RULE` 行。
+  - touch 之前的行（WAIT_FAR、WAIT_APPROACH、WAIT_NEAR_NO_VOLUME、ACTIVATION）在闸门下本来就不能 ADD，不做标签，计入 `dropped.WAIT_OFF_RULE`。
+- **exam：** 每个账户报告合规率（`rule_compliance`，闸门下小于 1 就报错）、成交价在区间内的比例和 stop_source 分布；基准有两个：随机账户（规则内随机时机）和 always-ADD 账户（每个规则位置都 ADD）。
 
 ## 一、范围
 
@@ -154,8 +184,9 @@
    - 每个阶段只保留首行、末行，以及不超过 8 行均匀抽样的行。
 3. `ACTIVATION`：touch 开始的游标。如果它本身也是正例，就记为 `ACTIVATION_ADD`。
 4. `ADD`：各个正例，按时间顺序。
+5. V4（`timeline.wait_in_rule`）：第一个正例之前的每个候选分钟标 `WAIT_IN_RULE`，MASKED 的候选除外，因为那一分钟不能 ADD，没有决策可教。如果 touch 开始的游标也是这样的候选，它代替 ACTIVATION 行。
 
-**touch 开始后不是正例的候选，不标为 WAIT。** 那等于用未来结果教学生等待，因此它们只出现在审计中。
+**touch 开始后不是正例的候选，不标为 WAIT。** 那等于用未来结果教学生等待，因此它们只出现在审计中。V4 的例外是第一个正例之前的候选（用户选择），第一个正例之后不是正例的候选仍然只进审计。
 
 ## 九、数据合同
 
@@ -198,3 +229,4 @@
 - 入库正例的 TP 率是 100%，因为它们本来就是按结果筛选出来的。
 - 这**不代表**规则本身有优势或盈利能力。
 - REPORT 同时给出两个基准率：全部候选的，以及每个 touch 第一个候选的。
+- V4 的 `WAIT_IN_RULE` 也是按结果选的：只在后面有正例的 touch 里标。它教的是"这次 touch 还会有更好的入场"，不是"这个位置不该做"。

@@ -30,8 +30,17 @@ The student path is run.collect of the frozen policy from the first market
 minute (market memory runs on, never reset). Each random account ADDs at a
 legal decision with probability = the student's ADDs / its legal decisions
 (gym Behavior 'probabilistic'), one account per seed over the same minutes;
-no seed is dropped for its outcome. Teachers, facts and CF never enter,
+no seed is dropped for its outcome. One more account ADDs at every legal
+decision (gym Behavior 'always_add'). Teachers, facts and CF never enter,
 nothing is trained, and TEST is never read.
+
+Under a rule gate (V2.3 strategy entry.rule_gate, user 2026-11-05: "规则决定
+学生能在哪里交易；大脑决定在这些位置中什么时候交易") an ADD is legal only at
+a rule position, so the random accounts time their entries at random inside
+the rule and the always-ADD account enters at every rule position it is flat
+at. Every account reports its entries by stop source, the share of them at a
+rule position (rule_compliance; below 1 under a gate it is a bug and the exam
+fails) and the share filled inside the rule zone of their touch.
 """
 import argparse
 import json
@@ -54,16 +63,36 @@ DEFINITIONS = dict(
     max_drawdown='largest fall of account equity (at each decision) below its running peak, CNY',
     net_pnl='equity at the last decision - initial balance, CNY',
     tp_hold_minutes='minutes from entry to exit of TAKE_PROFIT trades',
-    random_probability="the student's ADDs / its legal decisions")
+    random_probability="the student's ADDs / its legal decisions",
+    always_add='one account that ADDs at every legal decision (under a rule gate: every rule position '
+               'it is flat at)',
+    filled_entries='entries (ENTRY fills) of the account',
+    stop_sources='entries by the source of their stop: RULE / CAPPED / GAP under a rule gate, '
+                 'STRUCTURAL / CAPPED / NO_LINE under the stateless stop rule, NONE for fixed TP / SL',
+    rule_compliance='entries at a rule position (the fill names its touch) / entries; None without a '
+                    'rule gate or without entries',
+    fill_in_zone='entries filled inside the rule zone of their touch ([H-zone, H] SHORT, [L, L+zone] '
+                 'LONG) / entries; None without a rule gate or without entries')
 SCORES = ('reward', 'reward_per_minute', 'reward_per_day', 'net_pnl', 'max_drawdown')
 
 
-def metrics(rows, trades, entries, days, initial):
+def metrics(rows, trades, entries, days, initial, fills=(), zones=None):
   """One account's exam numbers. rows: per decision dict(cursor, legal,
   executed, reward, equity); trades: closed Native attributions; entries:
   positions still open after the last decision; days: official trading day
-  per cursor."""
+  per cursor; fills: the account's Native fills; zones: the rule zone in
+  points per side under a rule gate (None without one)."""
   n = len(rows)
+  opened = [f for f in fills if f['reason'] == 'ENTRY']
+  sources = {}
+  for f in opened:
+    sources[f.get('stop_source', 'NONE')] = sources.get(f.get('stop_source', 'NONE'), 0) + 1
+  rule = [f for f in opened if f.get('rule_event') is not None]
+  if zones is not None and len(rule) != len(opened):
+    raise ValueError(f'a rule-gated account has {len(opened) - len(rule)} entries off its rule positions')
+  # Inside the zone: at or below the line by at most `zone` (SHORT), at or above it (LONG).
+  inside = sum(0 <= (1 if f['side'] == 'SHORT' else -1) * (float(f['line']) - float(f['price']))
+               <= zones[f['side']] for f in rule) if zones is not None else None
   reward = float(sum(r['reward'] for r in rows))
   covered = len({days[r['cursor']] for r in rows})
   legal = sum(bool(r['legal']) for r in rows)
@@ -87,22 +116,31 @@ def metrics(rows, trades, entries, days, initial):
       tp_hold_minutes=dict(mean=float(tp.mean()), median=float(np.median(tp)),
                            p90=float(np.percentile(tp, 90))) if len(tp) else None,
       max_drawdown=float((np.maximum.accumulate(equity) - equity).max()),
-      net_pnl=float(equity[-1] - initial))
+      net_pnl=float(equity[-1] - initial), filled_entries=len(opened), stop_sources=sources,
+      rule_entries=None if zones is None else len(rule), zone_entries=inside,
+      rule_compliance=len(rule) / len(opened) if zones is not None and opened else None,
+      fill_in_zone=inside / len(opened) if zones is not None and opened else None)
 
 
 def _days(config):
+  """Official trading day per cursor, the initial balance and, under a rule
+  gate, the rule zone in points per side (None without one)."""
   from gym_trading_env.research import ts_v1_corpus as C
   from gym_trading_env.research.fg_s3_quality_teacher_v2 import official_days
   env = C.native_env(config, market=False)
-  return official_days(env), float(env.config.trading.initial_balance)
+  zones = (None if env.rule_gate is None else
+           {side: float(cfg['entry']['zone_points']) for side, cfg in env.rule_gate.items()})
+  return official_days(env), float(env.config.trading.initial_balance), zones
 
 
 def _random_job(job):
-  """One random-entry account over the first `steps` minutes."""
+  """One random-entry account (or, kind 'always_add', the account that ADDs
+  at every legal decision) over the first `steps` minutes."""
   from gym_trading_env.research import ts_v1_corpus as C
   env = C.native_env(job['config'], market=False)
-  policy = C.Behavior(dict(kind='probabilistic', probability=job['probability'], seed=[job['seed']]))
-  days, initial = _days(job['config'])
+  policy = C.Behavior(dict(kind=job.get('kind', 'probabilistic'), probability=job['probability'],
+                           seed=[job['seed']]))
+  days, initial, zones = _days(job['config'])
   obs, _ = env.reset(seed=0)
   rows, done = [], False
   while len(rows) < job['steps'] and not done:
@@ -113,14 +151,14 @@ def _random_job(job):
     row['reward'] = float(reward)
     rows.append(row)
     done = terminated or truncated
-  out = metrics(rows, env.attributions, list(env.entries.values()), days, initial)
+  out = metrics(rows, env.attributions, list(env.entries.values()), days, initial, env.fills, zones)
   return dict(seed=job['seed'], complete=bool(done and env.terminated), **out)
 
 
 def exam(policy, out, label, config, source, steps=None, seeds=5, device=None, log=print, ts=None):
   """The student's Teacher-free run on the Native env of `config` (all of it,
-  or its first `steps` minutes) and `seeds` random-entry accounts on the
-  same minutes; writes and returns out/exam.json."""
+  or its first `steps` minutes), `seeds` random-entry accounts and the
+  always-ADD account on the same minutes; writes and returns out/exam.json."""
   from .run import _write, collect, load_policy, prune_collection
   from gym_trading_env.research import ts_v1_corpus as C
   from gym_trading_env.research.ts_v1_account import StudentEnv
@@ -134,17 +172,18 @@ def exam(policy, out, label, config, source, steps=None, seeds=5, device=None, l
     run = pickle.load(f)['run']
   if any(r['mode'] != 'policy' or r['forced'] or r['explored'] for r in rows):
     raise ValueError(f'{out}: an exam is the formal policy only')
-  days, initial = _days(config)
+  days, initial, zones = _days(config)
   student = metrics([dict(r, legal=r['mask'][1] > 0.5) for r in rows], run['env']['attributions'],
-                    list(run['env']['entries'].values()), days, initial)
+                    list(run['env']['entries'].values()), days, initial, run['env']['fills'], zones)
   probability = student['adds'] / max(student['legal'], 1)
   jobs = [dict(config=str(config), probability=probability, seed=s, steps=len(rows))
           for s in range(seeds)]
+  jobs.append(dict(config=str(config), kind='always_add', probability=1., seed=0, steps=len(rows)))
   # By module path, so spawned workers find the job also when this file runs as __main__.
   from dreamerv3.thinking_student.exam import _random_job as job
-  with ProcessPoolExecutor(max(1, min(seeds, os.cpu_count())),
+  with ProcessPoolExecutor(max(1, min(len(jobs), os.cpu_count())),
                            mp_context=multiprocessing.get_context('spawn')) as pool:
-    randoms = list(pool.map(job, jobs)) if jobs else []
+    *randoms, always = list(pool.map(job, jobs))
   summary = {k: dict(mean=float(np.mean([x[k] for x in randoms])),
                      std=float(np.std([x[k] for x in randoms])),
                      min=float(np.min([x[k] for x in randoms])),
@@ -156,13 +195,16 @@ def exam(policy, out, label, config, source, steps=None, seeds=5, device=None, l
       inference=meta['inference'], student=student,
       random=dict(probability=probability, seeds=[x['seed'] for x in randoms],
                   per_seed=randoms, summary=summary),
+      always_add=always,
       advantage={k: student[k] - summary[k]['mean'] for k in SCORES if k in summary},
       advantage_per_seed=[student['reward_per_minute'] - x['reward_per_minute'] for x in randoms],
+      advantage_always_add={k: student[k] - always[k] for k in SCORES},
       definitions=DEFINITIONS, seconds=round(time.time() - began, 1))
   # Last and whole: an exam.json on the disk is a finished exam (formal_train).
   _write(out / 'exam.json', json.dumps(report, indent=1).encode())
   log(f'{label} {meta["policy"]}: reward {student["reward"]:.3f} over {student["minutes"]} minutes, '
-      f'random mean {summary.get("reward", {}).get("mean")}')
+      f'random mean {summary.get("reward", {}).get("mean")}, always-ADD {always["reward"]:.3f}'
+      + ('' if zones is None else f', rule compliance {student["rule_compliance"]}'))
   # Read from now on through exam.json, steps/ and state.pkl only (the paper
   # report, the review export): replay/ and the older snapshots go. A failure
   # here is logged and leaves the finished exam as it is.
