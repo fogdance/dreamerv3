@@ -92,6 +92,8 @@ V2.2（规则 V3：每次 touch 都要由它自己的 RV ≥ 2 的 K 线开始�
 
 ## 五、V2.3（规则闸门 + 真实成本，2026-11-05）
 
+> 已删除（用户 2026-11-05："V2.3 的 V4 材料、15 个 V4 语料和它们的配置。不再使用删掉"）：材料 `V2_3_POSITIVE_ENTRY_*`、语料 `corpus_v2_3_20261105`、配置 `v2_positive_entry_v4(_long).yaml`、`strategy_v2_3_rule_gate.yaml`、`formal_v2_3.yaml`、`smoke_v2_3.yaml`。下面只作记录，现行流程见第六节。
+
 规则 V4 和闸门的设计见 `DESIGN.md` 的 V4 一节，计划见 `V2_3_RULE_GATE_PLAN.md`。流水线与前面相同，只换配置和目录：
 
 | 步 | 输出 | 配置 |
@@ -121,4 +123,4 @@ V2.2（规则 V3：每次 touch 都要由它自己的 RV ≥ 2 的 K 线开始�
 | 2 训练语料 | `corpus_v2_4_20261105/<合约>/` | `--strategy .../markets/strategy_v2_4_fixed_stop.yaml --teacher .../V2_4_POSITIVE_ENTRY_BOTH_20261105` |
 | 4 review 导出 | `corpus_v2_4_20261105/review/` | `--label "V2.4 teacher" --expect-contracts 18` |
 
-完整命令写在 `formal_v2_4.yaml` 的文件头里。V2.3 的 V4 材料和 `corpus_v2_3_20261105`（15 个语料）原样保留，不再用于训练。
+完整命令写在 `formal_v2_4.yaml` 的文件头里。V2.3 的 V4 材料、语料和配置已删除（见第五节）。

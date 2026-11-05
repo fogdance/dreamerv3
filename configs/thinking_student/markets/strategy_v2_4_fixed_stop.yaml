@@ -1,11 +1,12 @@
 # Thinking Student V2.4 strategy (user 2026-11-05: "止损固定5点", "全部：SL =
-# 成交价+5"): strategy_v2_3_rule_gate.yaml with the rules V5 of
-# v2_positive_entry_v5(_long).yaml, whose stop is fixed from the fill. Applied
+# 成交价+5"): strategy_v2_1_structural.yaml with the rule gate of the rules V5
+# (v2_positive_entry_v5(_long).yaml, whose stop is fixed from the fill) and the
+# user's real costs. Applied
 # on top of a pool env by gym ts_v1_corpus.write_inputs(strategy=...) (corpus
 # CLI, exam.py --strategy); read by ts_v1_corpus.load_strategy.
 #
 # "规则决定学生能在哪里交易；大脑决定在这些位置中什么时候交易": an ADD is legal
-# only at a rule position (entry.rule_gate), as in V2.3; the student chooses
+# only at a rule position (entry.rule_gate); the student chooses
 # WAIT or ADD only there.
 version: V2_4_RULE_GATE_FIXED5
 direction: BOTH

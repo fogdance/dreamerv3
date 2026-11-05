@@ -1,5 +1,5 @@
 # V2.4 LONG positive entry material, rules V5 (user 2026-11-05: "止损固定5点",
-# "全部：SL = 成交价+5"): rules V4 (v2_positive_entry_v4_long.yaml) with
+# "全部：SL = 成交价+5"): rules V4 (V2.3; its files are deleted) with
 # entry.fixed_stop_points 5: every ADD, a gap fill included, has SL = fill - 5, TP = fill + 10
 # (R 5, 2R). The line still places the rule positions (the decision quote
 # within the zone) and a touch ends when the price breaks it
@@ -44,10 +44,10 @@ event:
 entry:
   # The decision-time sell quote (Close - spread) and the actual fill (next
   # Open - spread) both within [H - zone_points, H]; with the real costs
-  # (spread 0) the quote is the Close and the fill the next Open. V4: 5, so
-  # a rule position has a planned R <= 10, the env's max_risk_points.
+  # (spread 0) the quote is the Close and the fill the next Open. 5: the rule
+  # positions of V4.
   zone_points: 5
-  # SL = H + stop_above_points; planned risk R = SL - fill, 0 < R <= max_risk.
+  # A touch ends once its line breaks: a buy high at H + stop_above_points.
   stop_above_points: 5
   max_risk_points: 10
   # V5: SL = fill +/- fixed_stop_points for every ADD (R 5, TP 2R = 10);
@@ -67,7 +67,7 @@ timeline:
   # Each WAIT phase before a touch keeps its first and last row plus at
   # most this many evenly spaced rows.
   wait_rows_per_phase: 8
-  # V4 (user 2026-11-05, "正例之前的位置标 WAIT"): every rule position of a
+  # V4 / V5 (user 2026-11-05, "正例之前的位置标 WAIT"): every rule position of a
   # touch before its first positive is a WAIT_IN_RULE row; the touches
   # without a positive keep none.
   wait_in_rule: true
@@ -76,7 +76,7 @@ figures:
   max_events: 12
   per_contract: 2
 
-# The user's real costs (2026-11-05), the CZCE_FG cost preset of the V2.3
+# The user's real costs (2026-11-05), the CZCE_FG cost preset of the V2.4
 # strategy (path relative to this file): the material's own Native trades
 # pay them, as the env of the corpora does.
 costs: markets/costs_fg_real_20261105.yaml

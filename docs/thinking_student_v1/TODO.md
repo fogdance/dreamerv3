@@ -820,6 +820,7 @@
   - [ ] GPU smoke → 1x 命令（用户在 tmux d3 启动）→ paper
 - [ ] G-27：V2.4 = V2.3 + 止损固定 5 点（用户 2026-11-05："止损固定5点"，"全部：SL = 成交价+5"；取代 G-26 的 SL = H+5，G-26 剩下的步骤改在 V2.4 上做）
   - [x] 代码：规则 V5（`entry.fixed_stop_points: 5`），env 闸门止损 `FIXED`，材料 R = 5、跳空成交照常交易，教师按 `label_sl` 核对；配置 `v2_positive_entry_v5(_long).yaml`、`strategy_v2_4_fixed_stop.yaml`、`formal_v2_4.yaml`、`smoke_v2_4.yaml`；DESIGN.md V5、CORPUS_GUIDE.md 第六节
+  - [x] 用户 2026-11-05："V2.3 的 V4 材料、15 个 V4 语料和它们的配置。不再使用删掉"：已删 `V2_3_POSITIVE_ENTRY_{SHORT,LONG,BOTH}_20261105`、`corpus_v2_3_20261105`（15 个 + 3 个 .tmp，约 2.8 GB）和 5 个 V2.3 配置；env 闸门必须带 `fixed_stop_points`（H+5 闸门止损分支删除）；测试改为 V5（gym `test_rule_gate.py` 8、dreamer GPU `test_ts_v2_3.py` 3，全过）；证据目录 `V2_3_DEV_20261105/` 保留
   - [x] 测试（只跑相关的）：gym `test_rule_gate.py` 11、`test_ts_v2_positive.py`、`test_ts_v2_minimal.py`；dreamer GPU `test_ts_v2_3.py` 4，全过；ruff 0 → 0
   - [ ] V5 材料 → 18 个语料 → 教师检查 → review 导出
   - [ ] GPU smoke → 1x 命令（用户在 tmux d3 启动）→ paper

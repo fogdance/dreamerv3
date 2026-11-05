@@ -1,6 +1,7 @@
 # Thinking Student V2.4 (user 2026-11-05: "止损固定5点", "全部：SL = 成交价+5"):
-# formal_v2_4.yaml (the rule gate and the real costs) with the stop fixed from
-# the fill, SL = fill +/- 5, TP = fill -/+ 10, for every ADD. Only:
+# formal_v2_2.yaml with the rule gate (an ADD is legal only at a rule
+# position), the user's real costs and the stop fixed from the fill, SL =
+# fill +/- 5, TP = fill -/+ 10, for every ADD. Only:
 # - corpus_root: the 18 V2.4 corpora (corpus_v2_4_20261105), built with the
 #   V2.4 strategy and the combined V5 SHORT + LONG material
 #   V2_4_POSITIVE_ENTRY_BOTH_20261105;
@@ -8,7 +9,7 @@
 # - strategy: markets/strategy_v2_4_fixed_stop.yaml (DEV FG409 trades under it,
 #   as PAPER does);
 # - review.label.
-# Every other key is the V2.3 / V2.2 1x one.
+# Every other key is the V2.2 1x one (FORMAL_V2_2_1X_20261104).
 #
 # Material (CPU), from gym-trading-env/: SHORT, LONG, then combined:
 #   env PYTHONPATH=.:src /home/v/miniconda3/envs/dreamerv3/bin/python -m gym_trading_env.research.ts_v2_positive \
