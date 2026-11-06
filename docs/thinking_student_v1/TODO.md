@@ -846,3 +846,5 @@
   - 规则：区间 [H−5, H+2]（`zone_above_points 2`）；一次触线内突破 H+5 后不再结束触线，回落进区间仍可 ADD，收盘高于 H+10 时触线结束（`break_departure_points 10`，触线外被突破的线照旧作废）；放量 3x；止损仍为 H+5、R ≤ 10；出场 = V3 长线
   - [ ] paper（用户 2026-11-06："用改好的，用刚训练好的模型做paper"）：复现 run `FORMAL_V3_REPRO_1X_20261106` 的 pi_0005 / pi_0009，FG501–FG605 + SA501–SA605，`PAPER_V3_V7_REPRO_1X_20261106`，review r0003（FG）/ r0004（SA）；先用 V2.4 策略起的 `PAPER_V3_V7_ZONE_H2_VOL3_20261106` 在出结果前停掉，只有 run.sh 和日志；和 V3（FG +24,768 / +24,629，SA +27,314 / +32,771）对比
   - 2026-11-06 用户"停掉paper"：只完成 FG605 两个策略的 exam，没有导出复盘。随后用户批准清理 /data（`CLEANUP_20261106.log`），复现 run 的 policies 已删除（与 FORMAL_V2_4_1X 逐位相同），重跑时改用 FORMAL_V2_4_1X 的 pi_0005 / pi_0009
+  - 2026-11-06 用户调整（"V7再调整下>h && <H+6的回落可以做，>=h+6的回落不做"）：触线在止损报价到 H+6 时结束（`touch_break_points 6`，gym 6a58907 / dreamer 60b5940），取代"收盘高于 H+10"；`PAPER_V3_V7_REPRO_1X_20261106` 的两个 exam 用的是旧 V7，作废
+  - [ ] paper（"最后坐下paper"）：FORMAL_V2_4_1X 的 pi_0005 / pi_0009，FG + SA，`PAPER_V3_V7_H6_20261106`，review r0005（FG）/ r0006（SA）
