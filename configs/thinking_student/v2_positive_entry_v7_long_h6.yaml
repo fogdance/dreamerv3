@@ -1,0 +1,90 @@
+# Single-variable test of rules V7, paper only (user 2026-11-06: "再做第3个变量单独实验paper"; the rule:
+# "V7再调整下>h && <H+6的回落可以做，>=h+6的回落不做"): v2_positive_entry_v5_long_h5_stop.yaml with only
+#   - touch_break_points 6: a touch goes on through a L - 5 stop break while the price stays short of L - 6,
+#     so a fall back into the zone is a rule position again; at L - 6 the touch ends. The zone and volume 2x unchanged.
+#
+# Paper only (user 2026-11-05: "v2.4新建个分支，直接将止损换回结构止损（H+5），其他不变，跑paper"):
+# v2_positive_entry_v5_long.yaml without fixed_stop_points, so a gated ADD's stop is its touch's own
+# line, SL = H + 5 (LONG: L - 5), R <= 10 (RULE / CAPPED / GAP), TP 2R. The rule positions are the same.
+#
+# V2.4 LONG positive entry material, rules V5 (user 2026-11-05: "止损固定5点",
+# "全部：SL = 成交价+5"): rules V4 (V2.3; its files are deleted) with
+# entry.fixed_stop_points 5: every ADD, a gap fill included, has SL = fill - 5, TP = fill + 10
+# (R 5, 2R). The line still places the rule positions (the decision quote
+# within the zone) and a touch ends when the price breaks it
+# (stop_above_points). Read by gym gym_trading_env.research.ts_v2_positive
+# --config and by the env's rule gate (strategy_v2_4_fixed_stop.yaml); a
+# change of any value is a new version of the material.
+version: V2_POSITIVE_ENTRY_V7
+# The TRAIN direction schedule (strategy_quality_tp_v1.yaml directions) is
+# user-configured and not shown to be known ex ante.
+direction: LONG
+direction_source: DIRECTION_ASSUMED
+
+prior_high:
+  # A complete 15m bucket whose High is above the `left` buckets before it
+  # and not below the `right` buckets after it (a line); visible once the
+  # last of those is available.
+  pivot_left: 2
+  pivot_right: 2
+  # A line is used only while its bucket is at most this many complete
+  # buckets old (about one trading week); it ends earlier once broken.
+  lookback_buckets: 115
+  # A touch starts only after a 1m close at least this far below H, and
+  # ends at the next such close; the line may then be touched again.
+  departure_points: 10
+
+volume:
+  # RV = 1m volume / mean volume of the previous valid 1m bars; the first
+  # minute of each market segment (auction volume) is neither a spike nor
+  # part of the baseline. activation touch: a touch starts on a bar with
+  # RV >= ratio and High >= H - near_points (decided at that minute's close);
+  # bars near H before it wait. The line's first such bar from its own 15m
+  # bucket on is still recorded (line_spike), but no longer starts a touch.
+  activation: touch
+  baseline_minutes: 20
+  ratio: 2.0
+  exclude_segment_open: true
+
+event:
+  # A touch starts on a bar whose High is at least H - near_points.
+  near_points: 5
+
+entry:
+  # The decision-time sell quote (Close - spread) and the actual fill (next
+  # Open - spread) both within [H - zone_points, H]; with the real costs
+  # (spread 0) the quote is the Close and the fill the next Open. 5: the rule
+  # positions of V4.
+  zone_points: 5
+  # A touch ends once the SL quote reaches the line + 6 (L - 6), not at the stop.
+  touch_break_points: 6
+  # A touch ends once its line breaks: a buy high at H + stop_above_points.
+  stop_above_points: 5
+  max_risk_points: 10
+  # The teacher target TP = fill - target_r * R; parallel_r is recorded only.
+  target_r: 2.0
+  parallel_r: 1.5
+
+quality:
+  # A positive reached the target_r TP (Native); EXCELLENT / GOOD by its MAE
+  # (max High - fill, points, as a share of R) and its market minutes to TP.
+  excellent: {mae_r: 0.5, held_minutes: 120}
+  good: {mae_r: 0.8, held_minutes: 345}
+
+timeline:
+  # Each WAIT phase before a touch keeps its first and last row plus at
+  # most this many evenly spaced rows.
+  wait_rows_per_phase: 8
+  # V4 / V5 (user 2026-11-05, "正例之前的位置标 WAIT"): every rule position of a
+  # touch before its first positive is a WAIT_IN_RULE row; the touches
+  # without a positive keep none.
+  wait_in_rule: true
+
+figures:
+  max_events: 12
+  per_contract: 2
+
+# The user's real costs (2026-11-05), the CZCE_FG cost preset of the V2.4
+# strategy (path relative to this file): the material's own Native trades
+# pay them, as the env of the corpora does.
+costs: markets/costs_fg_real_20261105.yaml
