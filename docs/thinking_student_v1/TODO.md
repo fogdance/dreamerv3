@@ -851,3 +851,6 @@
 - [ ] G-36：RB V3 paper（用户 2026-11-06："~/Downloads/rb_directions_2018_2025_provisional.yaml，这里有rb的配置，然后整理下，我们用V3做一下paper"）：分支 `paper/ts-v3-rb-20261106`（gym 4296be5 = cherry-pick 619576c，dreamer a732897），worktree `/data/research/fg-s3-thinking-student-v3-rb-20261106`
   - 输入：`markets/rb/`，用户更新后的 RB 方向（2026-11-06，区间连续，rb2501 全段 SHORT），只取方向，其余同 FG（用户："rb你主要看方向那块，其他的和fg应该差不多"）；由通用工具 gym `research.product_paper`（coverage / ingest / build，gym 5c0f438）生成，dreamer 6510bc4；rb1801 和 rb1805 在 2017-12-25 之前数据库和掘金归档都没有数据（归档从 2017-12 起，ingest 8 个月份均已在库），去掉 / 从 12-25 起；FG 成本（20 元/点）；证据 `RB_V3_DEV_20261106/`（coverage.json、ingest.log、build_report.json）。第一次构建缺方向 timezone，exam 全部失败，日志在 `PAPER_RB_V3_20261106/logs_failed_timezone_20261106`
   - paper：V2.4 1x 的 pi_0005 / pi_0009，`strategy_v3_trend_trail.yaml`（区间 [H−5, H]），`PAPER_RB_V3_20261106`，review r0013
+  - 2026-11-06 用户："paper 里rb是1点10元"：`markets/rb/costs_rb_20261106.yaml`（10 元/点；手续费、点差、保证金暂沿用 FG 的 2.1 / 0 / 0.1，等 RB 的真实费率）；按 FG 成本跑的那次停掉（`stopped_fg_costs_*`），重跑
+  - 2026-11-06 用户："应该只需要改1个地方才对，这样配置冗余了"：每点价值和手续费只在策略的 `costs` 里配置（env 本来就用它覆盖合约文件）；闸门只比规则文件的点差（gym d1ffe60），各品种共用同一份规则文件；`product_paper --strategy` 只改 costs，不再复制规则文件。RB paper 跑完后用新工具重新生成 RB 策略并删除 `markets/rb/` 里的两份规则副本（数值不变）
+  - [ ] RB paper（10 元/点）结果
