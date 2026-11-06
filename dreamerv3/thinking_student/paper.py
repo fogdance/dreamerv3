@@ -54,6 +54,8 @@ def contract_result(folder):
       filled_entries=s.get('filled_entries'), rule_entries=s.get('rule_entries'),
       zone_entries=s.get('zone_entries'), rule_compliance=s.get('rule_compliance'),
       fill_in_zone=s.get('fill_in_zone'), stop_sources=s.get('stop_sources'),
+      closed=s.get('closed', 0), win_rate_net=s.get('win_rate_net'), stop_stages=s.get('stop_stages'),
+      hold_mean=(s.get('hold_minutes') or {}).get('mean'), move_points_mean=s.get('move_points_mean'),
       initial=rows[0]['equity'], times=[r['time'] for r in rows],
       equity=[r['equity'] for r in rows])
 
@@ -102,6 +104,16 @@ def policy_report(folder, contracts):
   whole.update(always_net_pnl=None if None in always else float(sum(always)), stop_sources=sources or None,
                rule_compliance=sum(p['rule_entries'] for p in gated) / opened if gated and opened else None,
                fill_in_zone=sum(p['zone_entries'] for p in gated) / opened if gated and opened else None)
+  # V3: exits by stop stage, net win rate, holding and move, over the closed trades.
+  stages, closed = {}, sum(p['closed'] for p in parts)
+  for p in parts:
+    for k, v in (p['stop_stages'] or {}).items():
+      stages[k] = stages.get(k, 0) + v
+  def weighted(key):
+    pairs = [(p[key], p['closed']) for p in parts if p['closed'] and p[key] is not None]
+    return sum(x * n for x, n in pairs) / sum(n for _, n in pairs) if pairs else None
+  whole.update(closed=closed, stop_stages=stages or None, win_rate_net=weighted('win_rate_net'),
+               hold_mean=weighted('hold_mean'), move_points_mean=weighted('move_points_mean'))
   for p in parts:
     del p['times'], p['equity']
   return dict(contracts=parts, whole=whole)
@@ -140,6 +152,19 @@ def markdown(report):
                f"| {w['max_drawdown']:.0f} | {w['positive_months']}/{w['months']} | {w['adds']} "
                f"| {w['tp']} / {w['sl']} | {_value(w.get('rule_compliance'), '.3f')} "
                f"| {_value(w.get('fill_in_zone'), '.3f')} | {_sources(w.get('stop_sources'))} |")
+  out += ['', '## Exits and holding', '',
+          '| policy | closed trades | net win rate | stop stages | hold (market minutes, mean) '
+          '| move per trade (points, mean) |', '|---|---|---|---|---|---|']
+  for tag, r in report['policies'].items():
+    w = r['whole']
+    out.append(f"| {tag} | {w.get('closed', '—')} | {_value(w.get('win_rate_net'), '.3f')} "
+               f"| {_sources(w.get('stop_stages'))} | {_value(w.get('hold_mean'), '.0f')} "
+               f"| {_value(w.get('move_points_mean'), '.2f')} |")
+  strategies = [(t, r['strategies']) for t, r in report['policies'].items() if r.get('strategies')]
+  if strategies:
+    out += ['', 'Training / paper strategy (version):']
+    out += [f"- {t}: {(s['train'] or {}).get('version', '—')} / {(s['paper'] or {}).get('version', '—')}"
+            for t, s in strategies]
   out += ['', '## Per contract', '',
           '| policy | contract | days | net PnL | random net PnL (mean) | always-ADD net PnL | max drawdown | ADDs '
           '| ADD rate | TP / SL | occupancy | reward/min (random) | Q flips | rule compliance | stop sources '
@@ -166,7 +191,9 @@ def markdown(report):
           'Rule compliance: entries at a rule position / entries; fills in zone: entries filled inside '
           "the rule zone of their touch / entries; stop sources: the student's entries by the source of "
           'their stop (RULE / CAPPED / GAP under a rule gate). A dash: no rule gate, or an exam written '
-          'before these numbers.', '']
+          'before these numbers.',
+          'Stop stages (V3, entry.exit_rule): the closed trades by the stage of their last stop '
+          '(INITIAL / BREAKEVEN / LOCK / TROUGH); net win rate: closed trades with net PnL > 0.', '']
   return '\n'.join(out)
 
 
@@ -189,6 +216,8 @@ def main(argv=None):
       source = read(Path(args.run) / t / c / 'exam.json')['source']
       if (source.get('rules') or {}) != rules or source.get('strategy') != strategy:
         raise ValueError(f'{t}: its contracts trade under different TP / SL rules or strategies')
+    report['policies'][t]['strategies'] = dict(train=meta['source'].get('train_strategy'),
+                                               paper=meta['source'].get('paper_strategy'))
     if strategy:
       report['policies'][t]['rules'] = dict(strategy=Path(strategy).name)
     else:

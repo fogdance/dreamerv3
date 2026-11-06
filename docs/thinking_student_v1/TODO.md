@@ -832,3 +832,9 @@
   - 依据：V2.5（V2.4 设置 + H+5 止损，从材料重训）`PAPER_V2_5_1X_20261106`：pi_0007 -4,008、pi_0009 +568，都输给随机（0/5）和 always-ADD +7,948；不如 V2.4 策略换 H+5 止损的 +6,558 / +8,352
   - `integration/ts-next` 现为 gym 86e551d（= `paper/ts-v2-4-h5-stop-20261105` 的 e04b144）、dreamer 214db04 + `strategy_v2_4_h5_stop.yaml` 及其规则文件；回退前的提交（V2.5、live FG701、SA / RB paper、TODO G-28 / G-29）保存在两仓分支 `archive/ts-next-v2-5-sa-live-20261106`，也分别在 `run/ts-v2-5-1x-20261105`、`live/ts-v2-4-h5-fg701-20261105`、`paper/ts-sa-v2-4-h5-20261105`
   - 以后单一测试（换止损、换品种、live 等）都新建分支，不在主开发分支上改
+- [ ] G-30：V3 长线趋势出场（用户 2026-11-06："这个是新的策略，做长线，而不是短线"，"入场方式没变"；计划 `docs/thinking_student_v2/V3_TREND_TRAIL_PLAN.md`；分支 `feat/ts-v3-trend-trail-20261106`，worktree `/data/research/fg-s3-thinking-student-v3-trend-20261106`；证据 `V3_TREND_DEV_20261106/`）
+  - 已定：保本 8 点；≥3 个波谷用倒数第二个波谷；训练用 V2.4（成交价 +5），paper 初始止损用 H+5；改完直接 paper
+  - [x] 拷贝 review_future 的 market_structure（gym，原样，sha256 记在 `__init__.py`）；swing_trail（回放 = 前缀分析，FG205 全部 1548 个桶一致）；env `entry.exit_rule`；`strategy_v3_trend_trail.yaml`
+  - [x] 训练和 paper 策略分开：formal `paths.paper_strategy`；exam 读取并记录两份策略；paper 报告新增"出场与持仓"表
+  - [x] 测试：gym `test_swing_trail.py` + `market_structure` 11 个、`test_rule_gate.py` 8 个；dreamer GPU `test_ts_v2_3.py` 3 个；ruff 0
+  - [ ] paper `PAPER_V3_TREND_V2_4_POLICIES_20261106`（V2.4 1x pi_0005 / pi_0009，FG501–FG605）→ 对比报告

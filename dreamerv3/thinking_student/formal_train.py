@@ -108,8 +108,11 @@ from .run import latest, progress, prune_cf, prune_checkpoints, prune_collection
 DEFAULTS = dict(
     # Relative paths are relative to the config file.
     # strategy: the V2 strategy overlay of the corpora, for the DEV exam's inputs.
+    # paper_strategy: the strategy a PAPER exam of the run's policies trades with
+    # (user 2026-11-06, "我们要支持v2.4这种训练和paper有差异的方式": V2.4 trained with
+    # fill + 5, papered with H + 5); None: the training strategy (exam.paper_strategy).
     paths=dict(markets=None, corpus_root=None, run_root=None, init_f1=None, init_from=None,
-               strategy=None),
+               strategy=None, paper_strategy=None),
     corpora=dict(contracts='discover', mix='uniform_contract'),
     dev=dict(contracts=[]),
     # window_start 'carry': L2-L5 windows start from the run's MarketCarry

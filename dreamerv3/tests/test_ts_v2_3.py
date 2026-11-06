@@ -80,7 +80,8 @@ def test_the_paper_report_chains_the_rule_numbers_and_shows_a_dash_for_older_exa
   old = P.policy_report(tmp_path / 'v22', ['A'])
   assert [old['whole'][k] for k in ('always_net_pnl', 'rule_compliance', 'fill_in_zone', 'stop_sources')] == [None] * 4
   text = P.markdown(dict(contracts=['CZCE.A'], policies={'pi': dict(old, rules=dict(strategy='s.yaml'))}))
-  assert '| 1/1 | — |' in text and text.count('| — | — | — |') == 1
+  # Dashes once in the whole-period rule columns and once in the V3 exits table (no stop stages).
+  assert '| 1/1 | — |' in text and text.count('| — | — | — |') == 2
 
 
 @pytest.mark.skipif(not (POOL.exists() and STRATEGY.exists()), reason='Thinking Student V2.4 configs missing')

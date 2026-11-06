@@ -72,7 +72,12 @@ DEFINITIONS = dict(
     rule_compliance='entries at a rule position (the fill names its touch) / entries; None without a '
                     'rule gate or without entries',
     fill_in_zone='entries filled inside the rule zone of their touch ([H-zone, H] SHORT, [L, L+zone] '
-                 'LONG) / entries; None without a rule gate or without entries')
+                 'LONG) / entries; None without a rule gate or without entries',
+    win_rate_net='closed trades with net PnL (both fees) > 0 / closed trades',
+    stop_stages='closed trades by the stage of their stop under entry.exit_rule (V3): INITIAL / '
+                'BREAKEVEN / LOCK / TROUGH; None without one',
+    hold_minutes='market minutes from entry to exit of the closed trades',
+    move_points_mean='mean exit - entry move of the closed trades in points (SHORT: entry - exit)')
 SCORES = ('reward', 'reward_per_minute', 'reward_per_day', 'net_pnl', 'max_drawdown')
 
 
@@ -106,6 +111,15 @@ def metrics(rows, trades, entries, days, initial, fills=(), zones=None):
   tp = np.array([t['exit_cursor'] - t['entry_cursor'] for t in trades
                  if t['reason'] == 'TAKE_PROFIT'], np.float64)
   equity = np.array([r['equity'] for r in rows], np.float64)
+  # V3 long trend (entry.exit_rule): exits by the stage of their stop, net wins, holding.
+  stages = {}
+  for t in trades:
+    if 'stop_stage' in t:
+      stages[t['stop_stage']] = stages.get(t['stop_stage'], 0) + 1
+  hold = np.array([t['exit_cursor'] - t['entry_cursor'] for t in trades], np.float64)
+  move = np.array([(1 if t['side'] == 'LONG' else -1) * (float(t['exit_price']) - float(t['entry_price']))
+                   for t in trades], np.float64)
+  net = np.array([float(t['net_trade_pnl']) for t in trades if 'net_trade_pnl' in t], np.float64)
   return dict(
       minutes=n, trading_days=covered, reward=reward, reward_per_minute=reward / n,
       reward_per_day=reward / max(covered, 1), legal=legal, adds=adds,
@@ -119,7 +133,12 @@ def metrics(rows, trades, entries, days, initial, fills=(), zones=None):
       net_pnl=float(equity[-1] - initial), filled_entries=len(opened), stop_sources=sources,
       rule_entries=None if zones is None else len(rule), zone_entries=inside,
       rule_compliance=len(rule) / len(opened) if zones is not None and opened else None,
-      fill_in_zone=inside / len(opened) if zones is not None and opened else None)
+      fill_in_zone=inside / len(opened) if zones is not None and opened else None,
+      win_rate_net=float((net > 0).mean()) if len(net) else None,
+      stop_stages=stages or None,
+      hold_minutes=dict(mean=float(hold.mean()), median=float(np.median(hold)),
+                        p90=float(np.percentile(hold, 90))) if len(hold) else None,
+      move_points_mean=float(move.mean()) if len(move) else None)
 
 
 def _days(config):
@@ -243,6 +262,29 @@ def paper_inputs(row, folder, rules, strategy=None):
   return config
 
 
+def strategy_record(path):
+  """version and sha256 of a strategy file (None: no strategy)."""
+  if not path:
+    return None
+  import hashlib
+  import yaml
+  data = Path(path).read_bytes()
+  return dict(path=str(Path(path).resolve()), version=(yaml.safe_load(data) or {}).get('version'),
+              sha256=hashlib.sha256(data).hexdigest())
+
+
+def paper_strategy(policy, given=None):
+  """(paper strategy, training strategy) of a PAPER exam of `policy` (user 2026-11-06:
+  "我们要支持v2.4这种训练和paper有差异的方式"). The training strategy is paths.strategy of the
+  policy's run (policies/pi_XXXX/../../config.yaml); the paper strategy is `given`
+  (--strategy), else the run's paths.paper_strategy, else its training strategy."""
+  import yaml
+  run = Path(policy).resolve().parents[1] / 'config.yaml'
+  paths = (yaml.safe_load(run.read_text()) or {}).get('paths', {}) if run.exists() else {}
+  train = paths.get('strategy')
+  return given or paths.get('paper_strategy') or train, train
+
+
 def main(argv=None):
   parser = argparse.ArgumentParser()
   parser.add_argument('--policy', required=True, help='frozen policy folder')
@@ -285,10 +327,12 @@ def main(argv=None):
                                 strategy=args.strategy and str(Path(args.strategy).resolve()))
   elif args.paper_pool:
     row = paper_row(args.contract, args.paper_pool)
+    strategy, train = (args.strategy, None) if rules else paper_strategy(args.policy, args.strategy)
     config = paper_inputs(row, Path(args.out) / 'inputs', rules,
-                          args.strategy and C.load_strategy(args.strategy))
+                          strategy and C.load_strategy(strategy))
     label, source = 'PAPER', dict(pool=str(Path(args.paper_pool).resolve()), row=row, rules=rules,
-                                  strategy=args.strategy and str(Path(args.strategy).resolve()))
+                                  strategy=strategy and str(Path(strategy).resolve()),
+                                  paper_strategy=strategy_record(strategy), train_strategy=strategy_record(train))
   else:
     config = Path(args.corpus) / 'inputs' / 'env.yaml'
     meta = json.loads((Path(args.corpus) / 'source.json').read_text())
