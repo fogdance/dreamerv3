@@ -1,6 +1,6 @@
-# RB master strategy for the V3 paper (user 2026-11-06: "rb_directions_2018_2025_provisional.yaml ... 整理下，我们用V3做一下paper"):
-# strategy_quality_tp_v1.yaml with product RB and the user's provisional RB directions (not verified against the
-# OHLC; [start, end) trading dates), the contracts with DB bars only. Built by RB_V3_DEV_20261106/build_rb_v3.py.
+# RB master strategy for the paper: strategy_quality_tp_v1.yaml with product RB and the
+# direction intervals of /data/logdir/fg_single3/thinking_student/RB_V3_DEV_20261106/rb_directions_2018_2025_provisional.yaml (sha256 8b051f935c86fc85b89da62610c0d8059e343d08bdddcfd8c0ca486f9c78dba8), the contracts
+# with DB bars only. Built by gym research.product_paper.
 schema: 2
 product: RB
 market_clock:
@@ -41,7 +41,7 @@ directions:
   - contract: SHFE.rb2001
     direction: SHORT
     start: '2019-09-01 00:00:00+08:00'
-    end: '2019-12-01 00:00:00+08:00'
+    end: '2020-01-16 00:00:00+08:00'
   - contract: SHFE.rb2005
     direction: SHORT
     start: '2020-01-16 00:00:00+08:00'
@@ -81,7 +81,7 @@ directions:
   - contract: SHFE.rb2305
     direction: LONG
     start: '2022-12-01 00:00:00+08:00'
-    end: '2023-03-15 00:00:00+08:00'
+    end: '2023-04-01 00:00:00+08:00'
   - contract: SHFE.rb2310
     direction: LONG
     start: '2023-04-01 00:00:00+08:00'
@@ -89,7 +89,7 @@ directions:
   - contract: SHFE.rb2401
     direction: LONG
     start: '2023-08-01 00:00:00+08:00'
-    end: '2023-12-01 00:00:00+08:00'
+    end: '2023-12-13 00:00:00+08:00'
   - contract: SHFE.rb2405
     direction: SHORT
     start: '2023-12-13 00:00:00+08:00'
@@ -99,12 +99,8 @@ directions:
     start: '2024-04-01 00:00:00+08:00'
     end: '2024-08-01 00:00:00+08:00'
   - contract: SHFE.rb2501
-    direction: LONG
-    start: '2024-08-01 00:00:00+08:00'
-    end: '2024-10-09 00:00:00+08:00'
-  - contract: SHFE.rb2501
     direction: SHORT
-    start: '2024-10-09 00:00:00+08:00'
+    start: '2024-08-01 00:00:00+08:00'
     end: '2024-12-01 00:00:00+08:00'
   - contract: SHFE.rb2505
     direction: SHORT
@@ -114,6 +110,7 @@ directions:
     direction: LONG
     start: '2025-04-01 00:00:00+08:00'
     end: '2025-08-01 00:00:00+08:00'
+  timezone: Asia/Shanghai
 costs:
   source_path: /home/v/Documents/work/gym-trading-env/1.yaml
   source_sha256: 4fe160d41e692bdaf3a613dde435c7e34de285f8c6fe9e2366cfc14554893982

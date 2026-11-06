@@ -1,9 +1,9 @@
 {
  "product": "RB",
- "note": "RB paper on the user's provisional RB directions (2026-11-06), each contract on its own direction intervals; FG costs; built by RB_V3_DEV_20261106/build_rb_v3.py. Never training material.",
+ "note": "RB paper on the direction file's intervals, each contract on its own; FG master costs and env; built by gym research.product_paper. Never training material.",
  "directions_source": {
   "path": "/data/logdir/fg_single3/thinking_student/RB_V3_DEV_20261106/rb_directions_2018_2025_provisional.yaml",
-  "sha256": "60d329a9dd8f98fa3400b3cfd1323293899b0145a85ee1ddb73d5dc3ca6f5a9b"
+  "sha256": "8b051f935c86fc85b89da62610c0d8059e343d08bdddcfd8c0ca486f9c78dba8"
  },
  "files": [
   {
@@ -76,11 +76,11 @@
    "role": "paper",
    "eligible_for_training": false,
    "path": "/data/logdir/fg_single3/thinking_student/RB_V3_DEV_20261106/export/0006_SHFE_rb2001_main_1m.csv",
-   "sha256": "6dac88b4d2d614870ae2fc3c4bfbd564f3e691c1cd2a987440995b4b4bde88ab",
-   "rows": 19995,
+   "sha256": "e58362711e44ab363883667e8f12d02fffaa78a6ed8cd22bc576dbe5dc77ae16",
+   "rows": 28498,
    "first_timestamp": "2019-09-02 09:01:00",
-   "last_timestamp": "2019-11-29 15:00:00",
-   "trading_days": 59,
+   "last_timestamp": "2020-01-15 15:00:00",
+   "trading_days": 91,
    "calendar_basis": "user_confirmed_observed_clock",
    "env_config": "envs/SHFE_rb2001_env.yaml"
   },
@@ -206,11 +206,11 @@
    "role": "paper",
    "eligible_for_training": false,
    "path": "/data/logdir/fg_single3/thinking_student/RB_V3_DEV_20261106/export/0016_SHFE_rb2305_main_1m.csv",
-   "sha256": "4159a6c182649aa5bab2729ea39dcd7b9fe78ae7d86dfed2aff1826c7805f039",
-   "rows": 23218,
+   "sha256": "373363d0e601bcc4e307700b019e22d33b6d9bd6386c93b95e4e7565e521c638",
+   "rows": 27703,
    "first_timestamp": "2022-11-30 21:01:00",
-   "last_timestamp": "2023-03-14 15:00:00",
-   "trading_days": 68,
+   "last_timestamp": "2023-03-31 15:00:00",
+   "trading_days": 81,
    "calendar_basis": "user_confirmed_observed_clock",
    "env_config": "envs/SHFE_rb2305_env.yaml"
   },
@@ -232,11 +232,11 @@
    "role": "paper",
    "eligible_for_training": false,
    "path": "/data/logdir/fg_single3/thinking_student/RB_V3_DEV_20261106/export/0018_SHFE_rb2401_main_1m.csv",
-   "sha256": "b0b93031863294a9722ae226e5c8118609aa8d70f67f829d7b8ef899769b9c64",
-   "rows": 28170,
+   "sha256": "5c69f52723b9e07b4603b94776b79bf1c06ec1570b014b16545b46163c643e27",
+   "rows": 30930,
    "first_timestamp": "2023-07-31 21:01:00",
-   "last_timestamp": "2023-11-30 15:00:00",
-   "trading_days": 82,
+   "last_timestamp": "2023-12-12 15:00:00",
+   "trading_days": 90,
    "calendar_basis": "user_confirmed_observed_clock",
    "env_config": "envs/SHFE_rb2401_env.yaml"
   },

@@ -4,7 +4,7 @@ entry:
   chunk_steps: 0
   contract: SHFE.rb2001
   contract_config: ../contracts/SHFE_rb2001_contract.yaml
-  main_exit_at: '2019-11-29 15:00:00'
+  main_exit_at: '2020-01-15 15:00:00'
   strategy_config: ../strategy_quality_tp_v1_rb.yaml
   protocol: fg_single3_v1
 strategy_mode: entry_only
