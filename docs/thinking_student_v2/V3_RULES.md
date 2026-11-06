@@ -2,14 +2,18 @@
 
 2026-11-06 整理。V3 = 入场规则 V5 + 初始止损 H+5 + 15m 波谷移动止损，没有止盈。主分支的 paper 和 live 都用这套规则（用户 2026-11-06："那么主分支还是使用最好的，v7就当作探索放着"）。
 
+**品种差异（用户 2026-11-06："明白了，FG只扩区间到 H+2， SA保持不变"）：** FG 的入场区间是 **[H−5, H+2]**，SA 是 **[H−5, H]**。其余规则两个品种完全相同。见第 3 节。
+
 下面以**做空**为例。做多是镜像：前高 H 换成前低 L，价格方向反过来。比如区间 [H−5, H] 对应 [L, L+5]，止损 H+5 对应 L−5。
 
 ## 配置文件
 
 | 用途 | 文件（`configs/thinking_student/`） |
 |---|---|
-| paper / live 策略 | `markets/strategy_v3_trend_trail.yaml`（version `V3_RULE_GATE_SWING_TRAIL`） |
-| 入场规则（做空 / 做多） | `v2_positive_entry_v5_h5_stop.yaml` / `v2_positive_entry_v5_long_h5_stop.yaml` |
+| SA paper / live 策略 | `markets/strategy_v3_trend_trail.yaml`（version `V3_RULE_GATE_SWING_TRAIL`） |
+| SA 入场规则（做空 / 做多） | `v2_positive_entry_v5_h5_stop.yaml` / `v2_positive_entry_v5_long_h5_stop.yaml` |
+| FG paper / live 策略 | `markets/strategy_v3_trend_trail_zone_h2.yaml`（version `V3_RULE_GATE_V7_ZONE_H2_SWING_TRAIL`） |
+| FG 入场规则（做空 / 做多） | `v2_positive_entry_v7_zone_h2.yaml` / `v2_positive_entry_v7_long_zone_h2.yaml`（V5 加 `zone_above_points: 2`） |
 | 训练策略 | `markets/strategy_v2_4_fixed_stop.yaml`（见第 7 节） |
 | 成本 | `markets/costs_fg_real_20261105.yaml` |
 | live | `markets/live/fg701_v3_trend/`、`markets/live/sa701_v3_trend/` |
@@ -47,18 +51,20 @@
 
 **同时满足下面两条，学生才能 ADD；否则只能等待（WAIT）：**
 1. 这一分钟在一次有效的触线里，也就是这条线还没被突破到 H+5；
-2. 这一分钟的**收盘价在 [H−5, H] 内**（`zone_points 5`）。
+2. 这一分钟的**收盘价在入场区间内**：
+   - SA：[H−5, H]（`zone_points 5`）；
+   - FG：[H−5, H+2]（再加 `zone_above_points 2`）。做多对应 [L−2, L+5]。线上方 2 点仍在止损 H+5 之内，风险最小 3 点。
 
 两条看的是不同的价格：
 
 | 条件 | 看哪个价格 | 管什么 |
 |---|---|---|
-| 收盘价在 [H−5, H] | 1m 收盘价 | 这一分钟能不能 ADD（入场区间） |
+| 收盘价在 [H−5, H]（FG [H−5, H+2]） | 1m 收盘价 | 这一分钟能不能 ADD（入场区间） |
 | 最高价没到 H+5 | 1m 最高报价 | 这条线和这次触线还有没有效 |
 
 **例子：** H = 986，止损 991。
 - 某根 1m 最高 989，收盘 984：线有效，收盘在 [981, 986] 内，**可以开仓**。
-- 某根 1m 最高 989，收盘 988：线有效，但收盘不在区间内，**不能开**。之后收盘回到 986 以下，又可以开。
+- 某根 1m 最高 989，收盘 988：线有效。SA 收盘不在区间内，**不能开**，之后收盘回到 986 以下又可以开；FG 区间到 988，**可以开**。
 - 某根 1m 最高到 991：线被突破，这次触线结束。之后回落进区间也**不能开**。
 
 其他规定：
@@ -75,7 +81,7 @@
 
 | 成交价 | stop_source | 止损 |
 |---|---|---|
-| 在 (H−5, H+5) 内，R ≤ 10 | RULE | H+5 |
+| 在 [H−5, H+5) 内，R ≤ 10 | RULE | H+5 |
 | 低于 H−5，R > 10 | CAPPED | 成交价 + 10 |
 | 已经越过 H+5 | GAP | 成交价 + 10 |
 
@@ -115,6 +121,8 @@
 
 ## 8. 结果（2026-11-06）
 
+FG 的 [H−5, H+2] 来自 `PAPER_V3_ZONE_H2_20261106`：学生 +27,371 / +30,564，每个规则位置都 ADD +24,566。下表是 V3 原规则（两个品种都用 [H−5, H]）的结果。
+
 | 品种 | 学生 pi_0005 / pi_0009 | 随机时机 | 每个规则位置都 ADD |
 |---|---|---|---|
 | FG501–FG605 | +24,768 / +24,629 | +12.1k / +11.3k | +23,507 |
@@ -122,7 +130,7 @@
 
 V3 已经从教材开始完整复现，结果和原来相同（TODO G-33）。
 
-V7 是探索分支，没有并入主分支（TODO G-34）：
-- 改动：区间 [H−5, H+2]，突破后在 H+6 以内回落可以再开，放量 3x；
-- 结果低于 V3；
-- 两个单变量实验（只改放量 3x、只扩区间到 H+2）也在这个分支上。
+V7 是探索分支，只有区间这一项并入主分支，用于 FG（TODO G-34）：
+- 改动：区间 [H−5, H+2]，突破后在 H+6 以内回落可以再开，放量 3x；三项一起改，结果低于 V3；
+- 三个单变量实验：放量 3x 两个品种都变差；H+6 回落 FG 略差、SA 明显变差；区间 H+2 FG 变好、SA 持平；
+- 这些规则是看 paper 结果选的，paper 期因此不再是样本外数据，需要用新数据或 live 结果确认。
