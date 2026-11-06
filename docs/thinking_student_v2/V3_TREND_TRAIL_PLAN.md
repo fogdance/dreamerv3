@@ -68,6 +68,7 @@
   lock_points: 5
   ```
   - 只能和 rule_gate 一起使用。初始止损就是闸门原来的止损：有 `fixed_stop_points` 时是 FIXED，没有时是 H+5（RULE / CAPPED / GAP）。两种都支持，这次 paper 用 H+5。
+  - 2026-11-06 补充（用户："V2.2 真实成本，使用V3的长线策略"；"不需要阀门"）：不再要求 rule_gate。不加闸门时初始止损是结构止损 H*+5 / L*−5（STRUCTURAL / CAPPED / NO_LINE，R ≤ 10），配置 `strategy_v2_2_structural_v3_trend.yaml`。
   - 不配 `exit_rule` 的 env 行为完全不变。
 - **planned_exit：** 有 `exit_rule` 时 `take_profit_price = None`，plan 里记录 `exit_rule`。
 - **出场判断：** `single3_exit_decision` 在 `tp_price is None` 时不再判断止盈。止损的成交规则不变：触价成交，跳空按开盘价，pending 照旧。

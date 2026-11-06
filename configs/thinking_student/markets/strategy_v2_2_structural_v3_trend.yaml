@@ -1,0 +1,41 @@
+# V2.2 with the V3 long trend exit (user 2026-11-06: "V2.2 真实成本，使用V3的长线策略，然后重新跑paper";
+# "不需要阀门"): strategy_v2_1_structural_real_costs.yaml, the strategy of the V2.2 real-cost paper
+# PAPER_V2_2_1X_REALCOST_20261105 (no ADD gate; SL = the structural H* + 5 / L* - 5, R <= 10; real
+# costs; net PnL reward), with the exit block of strategy_v3_trend_trail.yaml: no TP; the stop moves
+# with the 15m troughs (a LONG: peaks) after the fill (gym research.swing_trail):
+#   0 troughs: the initial stop; price 8 points from the fill: break-even; 1 trough: break-even;
+#   2 troughs: fill -/+ 5 (5 points locked); >= 3 troughs: the last trough but one.
+version: V2_2_STRUCTURAL_SWING_TRAIL_REAL_COSTS
+costs: costs_fg_real_20261105.yaml
+direction: BOTH
+entry:
+  # SHORT: SL = H* + 5 with H* the lowest causal prior 15m pivot high
+  # (confirmed, not broken, within the lookback, already departed by a 1m
+  # close at H - 10) at or above the fill; TP = fill - 2R.
+  # LONG, the mirror: SL = L* - 5 with L* the highest causal prior 15m pivot
+  # low (departed by a 1m close at L + 10) at or below the fill; TP = fill + 2R.
+  # R = |SL - fill| <= 10 (user 2026-10-31). Further than 10 or no such line:
+  # R = 10, recorded per trade as stop_source CAPPED / NO_LINE. Stateless.
+  stop_rule: prior_15m_extreme
+  stop_above_points: 5
+  max_risk_points: 10
+  target_r: 2
+  # The lines of the V2_1 positive material (v2_positive_entry.yaml and its
+  # LONG mirror v2_positive_entry_long.yaml).
+  prior_high: {pivot_left: 2, pivot_right: 2, lookback_buckets: 115, departure_points: 10}
+  # Complete 15m buckets in the student's market context (24 before).
+  context_15m_buckets: 48
+  # V3: the exit (the same block as strategy_v3_trend_trail.yaml). target_r above is the
+  # observation's reference TP only.
+  exit_rule:
+    kind: swing_trail
+    timeframe: 15m
+    pivot_left: 2
+    pivot_right: 2
+    breakeven_points: 8
+    lock_points: 5
+reward:
+  # Each exit pays its realized net trade PnL (both fees) / 618 CNY: one
+  # full 10-point SL of 3 lots (10 x 3 x 20 + 18 fees) is -1, LONG or SHORT.
+  schema: FG_SINGLE3_REWARD_NET_PNL_V1
+  reward_scale_cny: 618
