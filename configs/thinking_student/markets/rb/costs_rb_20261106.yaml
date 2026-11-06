@@ -1,0 +1,10 @@
+# RB trading costs for the paper (user 2026-11-06: "paper 里rb是1点10元"): 10 CNY per point per lot (10 t per
+# lot, tick 1). The fee, spread and margin are the FG preset's (costs_fg_real_20261105.yaml: 2.1 CNY per lot on
+# the open and on the close, no spread, no slippage, margin 0.1) until the user gives RB's.
+# Same format as the FG preset, read by gym fg_entry_v1.configured_fg_costs.
+SHFE_RB:
+  lot_size: 10
+  leverage: 10
+  trading_fee_per_lot: 2.1
+  is_round_turn: true
+  spread: 0

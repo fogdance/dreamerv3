@@ -1,0 +1,28 @@
+# strategy_v3_trend_trail.yaml for RB: costs costs_rb_20261106.yaml (gym research.product_paper).
+version: V3_RULE_GATE_SWING_TRAIL
+direction: BOTH
+costs: costs_rb_20261106.yaml
+entry:
+  stop_rule: prior_15m_extreme
+  stop_above_points: 5
+  max_risk_points: 10
+  target_r: 2
+  prior_high:
+    pivot_left: 2
+    pivot_right: 2
+    lookback_buckets: 115
+    departure_points: 10
+  context_15m_buckets: 48
+  rule_gate:
+    SHORT: v2_positive_entry_v5_h5_stop_rb.yaml
+    LONG: v2_positive_entry_v5_long_h5_stop_rb.yaml
+  exit_rule:
+    kind: swing_trail
+    timeframe: 15m
+    pivot_left: 2
+    pivot_right: 2
+    breakeven_points: 8
+    lock_points: 5
+reward:
+  schema: FG_SINGLE3_REWARD_NET_PNL_V1
+  reward_scale_cny: 618

@@ -112,15 +112,15 @@ directions:
     end: '2025-08-01 00:00:00+08:00'
   timezone: Asia/Shanghai
 costs:
-  source_path: /home/v/Documents/work/gym-trading-env/1.yaml
-  source_sha256: 4fe160d41e692bdaf3a613dde435c7e34de285f8c6fe9e2366cfc14554893982
+  source_path: /data/research/fg-s3-thinking-student-v3-rb-20261106/dreamerv3/configs/thinking_student/markets/rb/costs_rb_20261106.yaml
+  source_sha256: 6fee0c04c728f3eca0b555cc3801e7d0faa1b5144cef752e33f6e7b032655cc6
   cost_basis: user_configured_constant_not_historical_exchange_schedule
-  lot_size: 20.0
+  lot_size: 10.0
   margin_rate: 0.1
-  open_fee: 3.0
-  close_fee: 3.0
-  close_today_fee: 3.0
-  spread: 1.0
+  open_fee: 2.1
+  close_fee: 2.1
+  close_today_fee: 2.1
+  spread: 0.0
   slippage: 0.0
 data:
   start: '2017-12-25'

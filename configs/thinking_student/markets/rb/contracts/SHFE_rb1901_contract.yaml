@@ -1,14 +1,14 @@
 contract: SHFE.rb1901
 tick_size: 1
-lot_size: 20.0
+lot_size: 10.0
 last_open_at: '2018-11-30 15:00:00+08:00'
 liquidate_at: '2018-11-30 15:00:00+08:00'
 terms:
 - margin_rate: 0.1
-  open_fee: 3.0
-  close_fee: 3.0
-  close_today_fee: 3.0
-  spread: 1.0
+  open_fee: 2.1
+  close_fee: 2.1
+  close_today_fee: 2.1
+  spread: 0.0
   slippage: 0.0
   start: '2018-08-20 21:00:00+08:00'
   end: '2018-11-30 15:01:00+08:00'
