@@ -1,9 +1,10 @@
 # Rules V7, paper only (user 2026-11-06: "[H−5, H+2]，以及后续回落到[H−5, H+2]都可以入场"; "放量2x改为3x";
 # a paper of the V2.4 policies, no retraining): v2_positive_entry_v5_h5_stop.yaml with
 #   - zone_above_points 2: the decision quote within [H - 5, H + 2];
-#   - break_ends_touch false: a touch goes on through a H + 5 break, so a fall back into the zone is a
-#     rule position again; it ends at a close break_departure_points above the line (or the departure,
-#     the line's expiry, the boundary). A line broken outside a touch still ends;
+#   - touch_break_points 6 (user 2026-11-06: "V7再调整下>h && <H+6的回落可以做，>=h+6的回落不做"): a touch goes on
+#     through a H + 5 stop break while the price stays short of H + 6, so a fall back into the zone is a
+#     rule position again; once it reaches H + 6 the touch ends (no fall back is traded). A line broken
+#     outside a touch still ends at H + 5;
 #   - volume.ratio 3.0 (was 2.0).
 # The stop is unchanged (SL = H + 5, R <= 10; a fill at or through the stop GAP, R = 10).
 #
@@ -62,8 +63,8 @@ entry:
   zone_points: 5
   # V7: the zone also reaches 2 points past the line (still inside the stop).
   zone_above_points: 2
-  break_ends_touch: false
-  break_departure_points: 10
+  # V7: a touch ends once the SL quote reaches the line + 6 (H + 6), not at the stop.
+  touch_break_points: 6
   # A touch ends once its line breaks: a buy high at H + stop_above_points.
   stop_above_points: 5
   max_risk_points: 10
