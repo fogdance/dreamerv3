@@ -840,3 +840,4 @@
   - [x] paper `PAPER_V3_TREND_V2_4_POLICIES_20261106`（V2.4 1x pi_0005 / pi_0009，FG501–FG605）：pi_0005 +24,768（随机 +12,121 ± 6,667，赢 5/5；always-ADD +23,507），pi_0009 +24,629（随机 +11,318 ± 11,346，4/5）；净胜率 16.4%；出场 INITIAL 230 / BREAKEVEN 216 / LOCK 22 / TROUGH 63；平均持仓 125 个市场分钟；review r0003，validate 通过
   - [x] 训练出场做成短线 / 长线配置：用户 2026-11-06 取消（"这个不做"）；材料和老师照旧按短线训练
   - [x] SA paper（用户 2026-11-06："用这个也跑一下sa"）：分支 `paper/ts-v3-trend-sa-20261106`（V3 分支加上 SA 的提交），`PAPER_SA_V3_TREND_V2_4_POLICIES_20261106`：pi_0005 +27,314（随机 +10,405 ± 1,941，赢 5/5；always-ADD +16,188），pi_0009 +32,771（随机 +6,412 ± 3,942，5/5）；净胜率 17.8% / 18.6%；SA 用的是 FG 的成本
+- [x] 合并 V3 到主开发分支并复盘（用户 2026-11-06："这是非常大的里程碑。先合并到主开发分支。然后复盘下ts的演变，整理为文档，输出到docs"）：`integration/ts-next` 快进到 `feat/ts-v3-trend-trail-20261106`，再加上 SA 的两个提交（gym `ab93cbd`，与 `paper/ts-v3-trend-sa-20261106` 逐字节相同；dreamer `22ab084`）；复盘 `docs/THINKING_STUDENT_EVOLUTION_20261106.md`
