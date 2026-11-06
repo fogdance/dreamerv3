@@ -837,4 +837,5 @@
   - [x] 拷贝 review_future 的 market_structure（gym，原样，sha256 记在 `__init__.py`）；swing_trail（回放 = 前缀分析，FG205 全部 1548 个桶一致）；env `entry.exit_rule`；`strategy_v3_trend_trail.yaml`
   - [x] 训练和 paper 策略分开：formal `paths.paper_strategy`；exam 读取并记录两份策略；paper 报告新增"出场与持仓"表
   - [x] 测试：gym `test_swing_trail.py` + `market_structure` 11 个、`test_rule_gate.py` 8 个；dreamer GPU `test_ts_v2_3.py` 3 个；ruff 0
-  - [ ] paper `PAPER_V3_TREND_V2_4_POLICIES_20261106`（V2.4 1x pi_0005 / pi_0009，FG501–FG605）→ 对比报告
+  - [x] paper `PAPER_V3_TREND_V2_4_POLICIES_20261106`（V2.4 1x pi_0005 / pi_0009，FG501–FG605）：pi_0005 +24,768（随机 +12,121 ± 6,667，赢 5/5；always-ADD +23,507），pi_0009 +24,629（随机 +11,318 ± 11,346，4/5）；净胜率 16.4%；出场 INITIAL 230 / BREAKEVEN 216 / LOCK 22 / TROUGH 63；平均持仓 125 个市场分钟；review r0003，validate 通过
+  - [ ] 用户 2026-11-06："教材和老师训练的时候还是按照短线的训练或者长线来训练，这个要做成配置"：材料规则和训练策略都带可选的 `exit_rule`（不写 = 短线）；长线正例的标准待用户定
