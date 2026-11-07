@@ -857,3 +857,7 @@
   - 2026-11-06 用户："也合并过来"：`markets/rb/`（RB 方向、合约、env、主策略、paper 池、`costs_rb_20261106.yaml`、`strategy_v3_trend_trail_rb.yaml`）并入主分支
 - [x] G-37：live 开仓 / 平仓 notify-send 通知（用户 2026-11-06："live模式，开仓，平仓，通过notify-send通知，可配置，默认开启"）：gym 646bbf8（`entry_live.LiveFeed.notify_fills`，`live.notify` 默认 true；平仓带 V3 止损阶段和净盈亏；补跑的旧成交不通知；失败只记一次日志并关闭通知，不影响 live），dreamer 8767298（FG701 / SA701 live 配置写明 `notify: true`）；live worktree 已快进，重启 live 后生效
 - [x] G-38：通用新品种工具和 live 通知并入主分支（用户 2026-11-06："将通用工具，和live通知合并到主开发分支"）：gym cherry-pick RB 分支的 a916d59（RB 合约）、fa452b0（`research.product_paper`）、a13b5f6（其他品种成本预设、`--costs` / `--strategy`）、eaac241（成本只配一处：闸门只比点差）；live 通知已在主分支（646bbf8）；说明 `docs/thinking_student_v2/NEW_PRODUCT_TOOL.md`；`test_rule_gate.py`、`test_swing_trail.py` 通过。RB 的 paper 输入（`markets/rb/`）仍只在 `paper/ts-v3-rb-20261106`
+- [ ] G-43：V3 区间 [H−4, H]，重做教材、重训 1x、paper（用户 2026-11-08："V3把 区间改为[H−4, H] ，和刚才 [H−3, H+1]一样，重来一次"）：分支 `run/ts-v3-zone-h4-1x-20261108`（两仓从主分支，gym 加 cherry-pick 的合并列顺序修复 cb49b8b），worktree `/data/research/fg-s3-thinking-student-v3-zone-h4-1x-20261108`
+  - 规则：V5 加 `zone_points 4`（做空 [H−4, H]，做多 [L, L+4]），其余不变；训练 `strategy_v2_4_fixed_stop_zone_h4.yaml`，paper `strategy_v3_trend_trail_zone_h4.yaml`；FG 和 SA 用同一区间；配置 `formal_v3_zone_h4_1x.yaml`
+  - 流水线 `V3_ZONE_H4_DEV_20261108/pipeline.sh`（后台）：教材 → 18 个语料 → 教师检查 → 语料 review → 1x `FORMAL_V3_ZONE_H4_1X_20261108` → paper `PAPER_V3_ZONE_H4_1X_20261108`（FG501–FG605、SA501–SA605，review r0001 / r0002）
+  - [ ] 流水线完成，结果对比主分支 V3 和 [H−3, H+1]（G-42）

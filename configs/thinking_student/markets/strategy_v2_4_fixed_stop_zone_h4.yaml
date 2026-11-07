@@ -1,0 +1,41 @@
+# V3 zone [H-4, H] (user 2026-11-08: "V3把 区间改为[H−4, H] ，和刚才 [H−3, H+1]一样，重来一次"): strategy_v2_4_fixed_stop.yaml with the zone [H-4, H] rules only (training).
+# Thinking Student V2.4 strategy (user 2026-11-05: "止损固定5点", "全部：SL =
+# 成交价+5"): strategy_v2_1_structural.yaml with the rule gate of the rules V5
+# (v2_positive_entry_v5(_long).yaml, whose stop is fixed from the fill) and the
+# user's real costs. Applied
+# on top of a pool env by gym ts_v1_corpus.write_inputs(strategy=...) (corpus
+# CLI, exam.py --strategy); read by ts_v1_corpus.load_strategy.
+#
+# "规则决定学生能在哪里交易；大脑决定在这些位置中什么时候交易": an ADD is legal
+# only at a rule position (entry.rule_gate); the student chooses
+# WAIT or ADD only there.
+version: V2_4_RULE_GATE_FIXED5_ZONE_H4
+direction: BOTH
+# The user's real costs ("真实的交易成本，无滑点，1手玻璃1个点盈利20元，开仓成本
+# 2.1元，平仓成本2.1元"): a CZCE_FG cost preset (gym
+# fg_entry_v1.configured_fg_costs), path relative to this file, in place of the
+# costs of the pool env's master strategy.
+costs: costs_fg_real_20261105.yaml
+entry:
+  # The stop of a gated ADD is fixed from its fill: SHORT SL = fill + 5, TP =
+  # fill - 10; LONG SL = fill - 5, TP = fill + 10 (stop_source FIXED; the
+  # rules' fixed_stop_points). stop_above_points stays the line's break.
+  stop_rule: prior_15m_extreme
+  stop_above_points: 5
+  max_risk_points: 10
+  target_r: 2
+  # The lines of the V5 material (the same as V2.1 / V2.2).
+  prior_high: {pivot_left: 2, pivot_right: 2, lookback_buckets: 115, departure_points: 10}
+  # Complete 15m buckets in the student's market context.
+  context_15m_buckets: 48
+  # The rule of each side, paths relative to this file: the env opens ADD at
+  # its rule positions only (gym ts_v2_positive.rule_cursors, the material's
+  # own pass).
+  rule_gate:
+    SHORT: ../v2_positive_entry_v5_zone_h4.yaml
+    LONG: ../v2_positive_entry_v5_long_zone_h4.yaml
+reward:
+  # Each exit pays its realized net trade PnL (both fees) / 618 CNY, the scale
+  # of V2.1 and V2.2 (one full 10-point SL of 3 lots with the old fees).
+  schema: FG_SINGLE3_REWARD_NET_PNL_V1
+  reward_scale_cny: 618
