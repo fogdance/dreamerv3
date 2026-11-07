@@ -861,6 +861,6 @@
   - 切分（FG 的日期 2024-04-08 / 2024-08-19）：TRAIN rb1805–rb2405（19 个），VALIDATION rb2410，paper rb2501 / rb2505 / rb2510；`product_paper split` → `markets/rb/pool_rb.json`、`paper_pool_rb_heldout.json`
   - 成本：教材 `ts_v2_positive --costs markets/rb/costs_rb_20261106.yaml`（规则文件仍共用 V5）；语料写出的闸门规则副本改用策略的成本（FG 不变）；训练策略 `markets/rb/strategy_v2_4_fixed_stop_rb.yaml`（只改 costs，`reward_scale_cny` 313 = FG 的 618 按 10 元/点）
   - 配置 `formal_rb_1x.yaml` = formal_v3_repro.yaml，只改 markets / corpus_root / run_root / strategy / paper_strategy / dev / review.label；点数（成交价 ±5、TP 10、区间、H+5）和 init_f1（FG 的市场预训练）不变
-  - [ ] 教材、19 个语料、教师检查、语料 review（`RB_1X_DEV_20261107/prepare.sh`，CPU）
+  - [x] 教材、19 个语料、教师检查、语料 review（`RB_1X_DEV_20261107/prepare.sh`，CPU）：2026-11-07 08:20–08:48 完成；教材 `RB_POSITIVE_ENTRY_{SHORT,LONG,BOTH}_20261107`，语料 `corpus_rb_1x_20261107`；教师检查通过（ADD 7,481 / WAIT 1,552；SHORT 2,914 / 678，LONG 4,567 / 874；规则位置 24,524，标签覆盖 36.8%；FG 是 ADD 21,492 / WAIT 7,933）；review validate 通过
   - [ ] 1x 训练 `FORMAL_RB_1X_20261107`（GPU，用户在 tmux d3 启动）
   - [ ] paper rb2501 / rb2505 / rb2510（`paper_pool_rb_heldout.json`，`strategy_v3_trend_trail_rb.yaml`）
