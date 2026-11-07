@@ -1,7 +1,7 @@
 # Trough ladder (user 2026-11-07: "3-4个波谷， 2个波谷止损 / 5-6个波谷， 3个波谷止损 / 7-10个波谷， 5个波谷止损 /
-# n>11个波谷， n/2个波谷止损"): with >= 3 troughs the stop is the 2nd trough after the fill (3-4 troughs), the 3rd
-# (5-6), the 5th (7-11) or the (n // 2)-th (n >= 12), counted from the first trough after the fill, in place of the
-# last trough but one; everything else is strategy_v3_trend_trail_zone_h2.yaml.
+# n>11个波谷， n/2个波谷止损", "都是倒数"): with >= 3 troughs the stop is the 2nd trough from the last (3-4 troughs),
+# the 3rd from the last (5-6), the 5th (7-11) or the (n // 2)-th from the last (n >= 12), in place of always the last
+# trough but one; it never moves back; everything else is strategy_v3_trend_trail_zone_h2.yaml.
 # FG rules since 2026-11-06 (user: "明白了，FG只扩区间到 H+2， SA保持不变"): the FG paper and live use this;
 # SA keeps the V3 rules (v2_positive_entry_v5(_long)_h5_stop.yaml).
 # Single-variable test (user 2026-11-06: "再做2个单变量实验，2x -> 3x; 区间扩到 H+2"): strategy_v3_trend_trail.yaml
