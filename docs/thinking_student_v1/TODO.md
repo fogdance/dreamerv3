@@ -860,5 +860,5 @@
 - [ ] G-42：V3 区间 [H−3, H+1]，重做教材、重训 1x、paper（用户 2026-11-08："V3把 区间改为 [H−3, H+1] 重新做教材重新训练1x，然后做paper. 你全部做掉，不需要我来启动。不监控，做好后，继续做下一个"）：分支 `run/ts-v3-zone-h3h1-1x-20261108`（两仓从主分支 gym eaac241 / dreamer 47f01a4），worktree `/data/research/fg-s3-thinking-student-v3-zone-h3h1-1x-20261108`
   - 规则：V5 加 `zone_points 3`、`zone_above_points 1`（做空 [H−3, H+1]，做多 [L−1, L+3]），其余不变；训练 `v2_positive_entry_v5(_long)_zone_h3_h1.yaml` + `strategy_v2_4_fixed_stop_zone_h3_h1.yaml`（成交价 ±5、TP 10）；paper `v2_positive_entry_v5(_long)_h5_stop_zone_h3_h1.yaml` + `strategy_v3_trend_trail_zone_h3_h1.yaml`（H+5、长线出场）；FG 和 SA 用同一区间
   - 配置 `formal_v3_zone_h3_h1_1x.yaml`（= formal_v3_repro.yaml，只改 corpus_root / run_root / strategy / paper_strategy / review.label）
-  - 一条流水线 `V3_ZONE_H3_H1_DEV_20261108/pipeline.sh`（tmux d3，由我启动）：教材 → 18 个语料 → 教师检查 → 语料 review → 1x 训练 `FORMAL_V3_ZONE_H3_H1_1X_20261108` → paper `PAPER_V3_ZONE_H3_H1_1X_20261108`（FG501–FG605、SA501–SA605，best_dev + pi_0009，review r0001 / r0002）
+  - 一条流水线 `V3_ZONE_H3_H1_DEV_20261108/pipeline.sh`（后台直接运行，由我启动；用户 2026-11-08："不用做tmux上跑，直接跑"）：教材 → 18 个语料 → 教师检查 → 语料 review → 1x 训练 `FORMAL_V3_ZONE_H3_H1_1X_20261108` → paper `PAPER_V3_ZONE_H3_H1_1X_20261108`（FG501–FG605、SA501–SA605，best_dev + pi_0009，review r0001 / r0002）
   - [ ] 流水线完成，结果对比主分支 V3
