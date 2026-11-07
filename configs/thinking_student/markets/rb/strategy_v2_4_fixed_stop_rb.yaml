@@ -1,0 +1,23 @@
+# strategy_v2_4_fixed_stop.yaml for RB (gym research.product_paper): costs costs_rb_20261106.yaml, and for the RB
+# training (user 2026-11-07: "针对rb,单独创建教材重新训练") reward_scale_cny 313 in place of FG's 618: the same scale in
+# points, one full 10-point SL of 3 lots at 10 CNY/pt with the fees (300 + 3 x 4.2).
+version: V2_4_RULE_GATE_FIXED5
+direction: BOTH
+costs: costs_rb_20261106.yaml
+entry:
+  stop_rule: prior_15m_extreme
+  stop_above_points: 5
+  max_risk_points: 10
+  target_r: 2
+  prior_high:
+    pivot_left: 2
+    pivot_right: 2
+    lookback_buckets: 115
+    departure_points: 10
+  context_15m_buckets: 48
+  rule_gate:
+    SHORT: ../../v2_positive_entry_v5.yaml
+    LONG: ../../v2_positive_entry_v5_long.yaml
+reward:
+  schema: FG_SINGLE3_REWARD_NET_PNL_V1
+  reward_scale_cny: 313

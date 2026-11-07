@@ -857,3 +857,10 @@
   - 2026-11-06 用户："也合并过来"：`markets/rb/`（RB 方向、合约、env、主策略、paper 池、`costs_rb_20261106.yaml`、`strategy_v3_trend_trail_rb.yaml`）并入主分支
 - [x] G-37：live 开仓 / 平仓 notify-send 通知（用户 2026-11-06："live模式，开仓，平仓，通过notify-send通知，可配置，默认开启"）：gym 646bbf8（`entry_live.LiveFeed.notify_fills`，`live.notify` 默认 true；平仓带 V3 止损阶段和净盈亏；补跑的旧成交不通知；失败只记一次日志并关闭通知，不影响 live），dreamer 8767298（FG701 / SA701 live 配置写明 `notify: true`）；live worktree 已快进，重启 live 后生效
 - [x] G-38：通用新品种工具和 live 通知并入主分支（用户 2026-11-06："将通用工具，和live通知合并到主开发分支"）：gym cherry-pick RB 分支的 a916d59（RB 合约）、fa452b0（`research.product_paper`）、a13b5f6（其他品种成本预设、`--costs` / `--strategy`）、eaac241（成本只配一处：闸门只比点差）；live 通知已在主分支（646bbf8）；说明 `docs/thinking_student_v2/NEW_PRODUCT_TOOL.md`；`test_rule_gate.py`、`test_swing_trail.py` 通过。RB 的 paper 输入（`markets/rb/`）仍只在 `paper/ts-v3-rb-20261106`
+- [ ] G-39：RB 单独教材重新训练（用户 2026-11-07："针对rb,单独创建教材重新训练"，切分选 "Mirror FG dates"）：分支 `run/ts-rb-1x-20261107`（两仓都从主分支 gym eaac241 / dreamer 47f01a4），worktree `/data/research/fg-s3-thinking-student-rb-1x-20261107`；证据 `RB_1X_DEV_20261107/`
+  - 切分（FG 的日期 2024-04-08 / 2024-08-19）：TRAIN rb1805–rb2405（19 个），VALIDATION rb2410，paper rb2501 / rb2505 / rb2510；`product_paper split` → `markets/rb/pool_rb.json`、`paper_pool_rb_heldout.json`
+  - 成本：教材 `ts_v2_positive --costs markets/rb/costs_rb_20261106.yaml`（规则文件仍共用 V5）；语料写出的闸门规则副本改用策略的成本（FG 不变）；训练策略 `markets/rb/strategy_v2_4_fixed_stop_rb.yaml`（只改 costs，`reward_scale_cny` 313 = FG 的 618 按 10 元/点）
+  - 配置 `formal_rb_1x.yaml` = formal_v3_repro.yaml，只改 markets / corpus_root / run_root / strategy / paper_strategy / dev / review.label；点数（成交价 ±5、TP 10、区间、H+5）和 init_f1（FG 的市场预训练）不变
+  - [ ] 教材、19 个语料、教师检查、语料 review（`RB_1X_DEV_20261107/prepare.sh`，CPU）
+  - [ ] 1x 训练 `FORMAL_RB_1X_20261107`（GPU，用户在 tmux d3 启动）
+  - [ ] paper rb2501 / rb2505 / rb2510（`paper_pool_rb_heldout.json`，`strategy_v3_trend_trail_rb.yaml`）

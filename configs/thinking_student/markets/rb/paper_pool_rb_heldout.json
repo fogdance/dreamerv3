@@ -1,0 +1,54 @@
+{
+ "product": "RB",
+ "directions_source": {
+  "path": "/data/logdir/fg_single3/thinking_student/RB_V3_DEV_20261106/rb_directions_2018_2025_provisional.yaml",
+  "sha256": "8b051f935c86fc85b89da62610c0d8059e343d08bdddcfd8c0ca486f9c78dba8"
+ },
+ "split": {
+  "source": "/data/research/fg-s3-thinking-student-rb-1x-20261107/dreamerv3/configs/thinking_student/markets/rb/paper_pool_rb.json",
+  "train_end_inclusive": "2024-04-08",
+  "validation_end_inclusive": "2024-08-19"
+ },
+ "note": "RB held-out paper contracts after the training pool's VALIDATION; never training material.",
+ "files": [
+  {
+   "contract": "SHFE.rb2501",
+   "role": "paper",
+   "eligible_for_training": false,
+   "path": "/data/logdir/fg_single3/thinking_student/RB_V3_DEV_20261106/export/0021_SHFE_rb2501_main_1m.csv",
+   "sha256": "58ed5073e222fb34b0916a04bd160fd3542ca64f77f775ae65f56bd68f056ae5",
+   "rows": 27240,
+   "first_timestamp": "2024-07-31 21:01:00",
+   "last_timestamp": "2024-11-29 15:00:00",
+   "trading_days": 80,
+   "calendar_basis": "user_confirmed_observed_clock",
+   "env_config": "envs/SHFE_rb2501_env.yaml"
+  },
+  {
+   "contract": "SHFE.rb2505",
+   "role": "paper",
+   "eligible_for_training": false,
+   "path": "/data/logdir/fg_single3/thinking_student/RB_V3_DEV_20261106/export/0022_SHFE_rb2505_main_1m.csv",
+   "sha256": "c949328a00d5797ed1f70f2b0edddda18bec3e087986a87b880638e6ca357bcf",
+   "rows": 26895,
+   "first_timestamp": "2024-12-02 09:01:00",
+   "last_timestamp": "2025-03-31 15:00:00",
+   "trading_days": 79,
+   "calendar_basis": "user_confirmed_observed_clock",
+   "env_config": "envs/SHFE_rb2505_env.yaml"
+  },
+  {
+   "contract": "SHFE.rb2510",
+   "role": "paper",
+   "eligible_for_training": false,
+   "path": "/data/logdir/fg_single3/thinking_student/RB_V3_DEV_20261106/export/0023_SHFE_rb2510_main_1m.csv",
+   "sha256": "43e8cb1707a541ba01e0e3ebab065957bb62ea8bf91d922e456f36089be0c629",
+   "rows": 28275,
+   "first_timestamp": "2025-03-31 21:01:00",
+   "last_timestamp": "2025-07-31 15:00:00",
+   "trading_days": 83,
+   "calendar_basis": "user_confirmed_observed_clock",
+   "env_config": "envs/SHFE_rb2510_env.yaml"
+  }
+ ]
+}

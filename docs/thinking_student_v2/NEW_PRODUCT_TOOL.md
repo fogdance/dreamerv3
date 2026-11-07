@@ -45,6 +45,16 @@
 - 给了 `--strategy` 时，还会生成该策略的品种版 `<策略名>_<name>.yaml`：只把 `costs` 换成品种预设，规则文件仍然共用；
 - 数据库里没有数据的合约，写进报告后跳过。
 
+`split --configs ../dreamerv3/configs/thinking_student --name rb --train-end 2024-04-08 --validation-end 2024-08-19`（2026-11-07，RB 单独训练）：从 `paper_pool_<name>.json` 切出训练池。
+- `pool_<name>.json`：最后一根 K 线在 `--train-end` 当天或之前的合约是 TRAIN（可训练），之后到 `--validation-end` 的是 VALIDATION（DEV exam）；
+- `paper_pool_<name>_heldout.json`：更晚的合约，只用于 paper；
+- 合约文件、env 和数据都沿用 build 的。
+
+训练一个新品种：
+- 教材 `ts_v2_positive --pool markets/<name>/pool_<name>.json --config <V5 规则> --costs markets/<name>/<成本预设>`：规则文件共用，成本换成该品种的，记在 params.yaml；
+- 语料 `ts_v1_corpus --strategy markets/<name>/<训练策略>_<name>.yaml`：写出的闸门规则副本使用策略的成本，和教材一致；
+- 例子：`formal_rb_1x.yaml`、`RB_1X_DEV_20261107/prepare.sh`。
+
 ## 流程
 
 1. `coverage` 查看缺多少数据。
