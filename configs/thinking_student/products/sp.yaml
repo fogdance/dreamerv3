@@ -1,0 +1,15 @@
+# SP product profile (gym envs.entry_product; user 2026-11-08: "sp一跳2点，1点10元"; "止损固定5跳，10点";
+# "其余参数按 2 倍换算"). SHFE sp (bleached softwood kraft pulp): 10 t a lot, 2 points a tick, so every distance
+# of a strategy or rules file (in ticks) is 2x in points: the stop H + 5 ticks = H + 10 points.
+product: SP
+contract_pattern: 'SHFE\.sp\d{4}'
+tick_points: 2
+# 10 CNY a point a lot. The fee, spread and margin are the FG preset's (costs_fg_real_20261105.yaml: 2.1 CNY per
+# lot on the open and on the close, no spread, no slippage, margin 0.1) until the user gives SP's.
+costs:
+  lot_size: 10
+  leverage: 10
+  trading_fee_per_lot: 2.1
+  is_round_turn: true
+  spread: 0
+paper_pool: ../markets/sp/paper_pool_sp.json

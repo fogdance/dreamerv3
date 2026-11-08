@@ -1,0 +1,163 @@
+# SP master strategy for the paper: strategy_quality_tp_v1.yaml with product SP and the
+# direction intervals of /home/v/Downloads/sp_directions_2018_2025_provisional.yaml (sha256 76fc2dce08590f16b2d86ff0725990b4cd4c250426d28391f3aef517ff4969db), the contracts
+# with DB bars only, and its product profile /data/research/fg-s3-thinking-student-sp-v3-g-profiles-20261108/dreamerv3/configs/thinking_student/products/sp.yaml. Built by gym research.product_paper.
+schema: 2
+product: SP
+product_profile: ../../products/sp.yaml
+market_clock:
+  timezone: Asia/Shanghai
+  minutes_per_day: 345
+  segments:
+  - - '21:00'
+    - '23:00'
+  - - 09:00
+    - '10:15'
+  - - '10:30'
+    - '11:30'
+  - - '13:30'
+    - '15:00'
+directions:
+  date_basis: trading_date
+  intervals:
+  - contract: SHFE.sp1906
+    direction: SHORT
+    start: '2018-11-27 00:00:00+08:00'
+    end: '2019-05-01 00:00:00+08:00'
+  - contract: SHFE.sp1909
+    direction: SHORT
+    start: '2019-05-01 00:00:00+08:00'
+    end: '2019-08-28 00:00:00+08:00'
+  - contract: SHFE.sp2001
+    direction: SHORT
+    start: '2019-09-02 00:00:00+08:00'
+    end: '2019-12-16 00:00:00+08:00'
+  - contract: SHFE.sp2005
+    direction: SHORT
+    start: '2020-01-02 00:00:00+08:00'
+    end: '2020-04-16 00:00:00+08:00'
+  - contract: SHFE.sp2009
+    direction: LONG
+    start: '2020-04-16 00:00:00+08:00'
+    end: '2020-08-17 00:00:00+08:00'
+  - contract: SHFE.sp2101
+    direction: LONG
+    start: '2020-08-17 00:00:00+08:00'
+    end: '2020-12-15 00:00:00+08:00'
+  - contract: SHFE.sp2105
+    direction: LONG
+    start: '2020-12-15 00:00:00+08:00'
+    end: '2021-04-01 00:00:00+08:00'
+  - contract: SHFE.sp2109
+    direction: SHORT
+    start: '2021-04-01 00:00:00+08:00'
+    end: '2021-08-16 00:00:00+08:00'
+  - contract: SHFE.sp2201
+    direction: SHORT
+    start: '2021-08-16 00:00:00+08:00'
+    end: '2021-12-15 00:00:00+08:00'
+  - contract: SHFE.sp2205
+    direction: LONG
+    start: '2021-12-15 00:00:00+08:00'
+    end: '2022-04-18 00:00:00+08:00'
+  - contract: SHFE.sp2209
+    direction: LONG
+    start: '2022-04-18 00:00:00+08:00'
+    end: '2022-08-01 00:00:00+08:00'
+  - contract: SHFE.sp2209
+    direction: SHORT
+    start: '2022-08-01 00:00:00+08:00'
+    end: '2022-08-16 00:00:00+08:00'
+  - contract: SHFE.sp2301
+    direction: LONG
+    start: '2022-09-01 00:00:00+08:00'
+    end: '2022-12-15 00:00:00+08:00'
+  - contract: SHFE.sp2305
+    direction: SHORT
+    start: '2023-01-03 00:00:00+08:00'
+    end: '2023-04-17 00:00:00+08:00'
+  - contract: SHFE.sp2309
+    direction: LONG
+    start: '2023-06-01 00:00:00+08:00'
+    end: '2023-08-16 00:00:00+08:00'
+  - contract: SHFE.sp2401
+    direction: LONG
+    start: '2023-08-16 00:00:00+08:00'
+    end: '2023-12-15 00:00:00+08:00'
+  - contract: SHFE.sp2405
+    direction: LONG
+    start: '2023-12-15 00:00:00+08:00'
+    end: '2024-04-16 00:00:00+08:00'
+  - contract: SHFE.sp2409
+    direction: SHORT
+    start: '2024-04-16 00:00:00+08:00'
+    end: '2024-08-16 00:00:00+08:00'
+  - contract: SHFE.sp2501
+    direction: LONG
+    start: '2024-08-16 00:00:00+08:00'
+    end: '2024-10-08 00:00:00+08:00'
+  - contract: SHFE.sp2505
+    direction: SHORT
+    start: '2024-12-16 00:00:00+08:00'
+    end: '2025-04-16 00:00:00+08:00'
+  - contract: SHFE.sp2509
+    direction: SHORT
+    start: '2025-04-16 00:00:00+08:00'
+    end: '2025-05-01 00:00:00+08:00'
+  - contract: SHFE.sp2601
+    direction: SHORT
+    start: '2025-10-01 00:00:00+08:00'
+    end: '2025-12-01 00:00:00+08:00'
+  - contract: SHFE.sp2605
+    direction: LONG
+    start: '2025-12-15 00:00:00+08:00'
+    end: '2026-01-01 00:00:00+08:00'
+  timezone: Asia/Shanghai
+data:
+  start: '2018-11-27'
+  end_inclusive: '2025-12-31'
+  main_only: true
+  provider: JUEJIN
+  excluded_contracts: []
+  quality: user_confirmed_complete
+  split:
+    mode: main_contract_boundaries
+    train_end_inclusive: 20240408
+    validation_end_inclusive: '2024-08-19'
+expiry:
+  mode: main_qualification
+  exit: old_contract_last_executable_close
+  reward: 0
+reward:
+  candidate: C1
+  beta: 0.5
+  rho: 0.4
+  L: 3.0
+  schema: FG_SINGLE3_REWARD_MARKET_MINUTE_TP_QUALITY_V1
+  clock_protocol: S3_MARKET_MINUTE
+environment:
+  strategy_mode: entry_only
+  entry:
+    chunk_steps: 0
+  trading:
+    is_future: true
+    initial_balance: 300000
+    trade_lot: 3
+    max_long_position: 3
+    max_short_position: 3
+    data_interval: 1m
+    data_tz: Asia/Shanghai
+    obs_feature_mode: obs
+    live_mode: false
+    stop_loss_enabled: true
+    session_policy:
+      force_flatten_eod: false
+      block_open_near_eod: false
+  training:
+    window_size: 60
+    randomize_start: false
+    bar_source: csv
+    episode_policy:
+      truncate_on_session_end: false
+  debug:
+    log_level: ERROR
+protocol: fg_single3_v1
