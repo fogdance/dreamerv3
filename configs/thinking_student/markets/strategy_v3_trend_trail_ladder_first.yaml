@@ -1,0 +1,55 @@
+# Ladder counted forward (user 2026-11-08: "V3的配置，只将倒着数的波峰波谷，改为正着数，重新做paper"): strategy_v3_trend_trail_ladder.yaml with
+# trough_count_from first only: the 2nd / 3rd / 5th / (n // 2)-th trough after the fill.
+# Trough ladder (user 2026-11-07: "3-4个波谷， 2个波谷止损 / 5-6个波谷， 3个波谷止损 / 7-10个波谷， 5个波谷止损 /
+# n>11个波谷， n/2个波谷止损", "都是倒数"): with >= 3 troughs the stop is the 2nd trough from the last (3-4 troughs),
+# the 3rd from the last (5-6), the 5th (7-11) or the (n // 2)-th from the last (n >= 12), in place of always the last
+# trough but one; it never moves back; everything else is strategy_v3_trend_trail.yaml.
+# V3 long trend (user 2026-11-06: "这个是新的策略，做长线，而不是短线"; "入场方式没变"): the paper strategy of
+# the V2.4 1x policies, trained with strategy_v2_4_fixed_stop.yaml (user 2026-11-06: "v2.4 是训练用成本价+5,
+# paper使用h+5 ... 我们要支持v2.4这种训练和paper有差异的方式"). strategy_v2_4_h5_stop.yaml (the same rule gate,
+# initial stop SL = H + 5 / L - 5, R <= 10, real costs, net PnL reward) with entry.exit_rule: no TP; the stop
+# moves with the 15m troughs (a LONG: peaks) after the fill (gym research.swing_trail):
+#   0 troughs: the initial stop; price 8 points from the fill: break-even; 1 trough: break-even;
+#   2 troughs: fill -/+ 5 (5 points locked); >= 3 troughs: the last trough but one.
+version: V3_RULE_GATE_SWING_TRAIL_LADDER_FIRST
+direction: BOTH
+# The user's real costs ("真实的交易成本，无滑点，1手玻璃1个点盈利20元，开仓成本
+# 2.1元，平仓成本2.1元"): a CZCE_FG cost preset (gym
+# fg_entry_v1.configured_fg_costs), path relative to this file, in place of the
+# costs of the pool env's master strategy.
+costs: costs_fg_real_20261105.yaml
+entry:
+  # The stop of a gated ADD is its touch's own line: SHORT SL = H + 5, LONG
+  # SL = L - 5, R = |SL - fill| <= 10, TP = fill -/+ 2R (RULE; a gap beyond 10
+  # points of risk CAPPED, a fill through the stop GAP, both R = 10).
+  stop_rule: prior_15m_extreme
+  stop_above_points: 5
+  max_risk_points: 10
+  target_r: 2
+  # The lines of the V5 material (the same as V2.1 / V2.2).
+  prior_high: {pivot_left: 2, pivot_right: 2, lookback_buckets: 115, departure_points: 10}
+  # Complete 15m buckets in the student's market context.
+  context_15m_buckets: 48
+  # The rule of each side, paths relative to this file: the env opens ADD at
+  # its rule positions only (gym ts_v2_positive.rule_cursors, the material's
+  # own pass).
+  rule_gate:
+    SHORT: ../v2_positive_entry_v5_h5_stop.yaml
+    LONG: ../v2_positive_entry_v5_long_h5_stop.yaml
+  # V3: the exit. Swings of the complete 15m buckets (review-future market_structure,
+  # pivot left / right 2); break-even once the price is breakeven_points past the fill;
+  # lock_points of profit at 2 troughs. target_r above is the observation's reference TP only.
+  exit_rule:
+    kind: swing_trail
+    timeframe: 15m
+    pivot_left: 2
+    pivot_right: 2
+    breakeven_points: 8
+    lock_points: 5
+    trough_ladder: [[3, 2], [5, 3], [7, 5], [11, half]]
+    trough_count_from: first
+reward:
+  # Each exit pays its realized net trade PnL (both fees) / 618 CNY, the scale
+  # of V2.1 and V2.2 (one full 10-point SL of 3 lots with the old fees).
+  schema: FG_SINGLE3_REWARD_NET_PNL_V1
+  reward_scale_cny: 618
