@@ -120,6 +120,11 @@ def test_mae_and_mfe_labels_are_in_units_of_the_planned_risk():
   v2 = {'inputs': {'strategy': {'entry': {'stop_rule': 'prior_15m_high', 'max_risk_points': 10}}}}
   assert L.outcome_points(v2) == 10. and L.outcome_points({'inputs': {'strategy': None}}) == 30.
   assert L.outcome_points({'inputs': {}}) == 30.  # a V1 corpus built before the key
+  # outcome_points is in ticks of the corpus's product (user 2026-11-08); the labels' unit in points is
+  # outcome_scale: FG 1 point a tick, SP 2 (one R = 10 ticks = 20 points), required.
+  assert L.outcome_scale(dict(v2, tick_points=1)) == 10. and L.outcome_scale(dict(v2, tick_points=2)) == 20.
+  with pytest.raises(KeyError):
+    L.outcome_scale(v2)
   n = 2
   facts = {k: np.zeros(n, bool) for k in ('filled', 'early10_5', 'early10_5_valid', 'early10_15',
                                          'early10_15_valid', 'mae_15_complete', 'mae_60_complete',
@@ -171,7 +176,8 @@ def test_the_paper_report_names_the_strategy_not_the_v1_distances():
     return P.markdown(dict(contracts=['CZCE.FG501'], policies={'pi': dict(whole=whole, contracts=[], rules=rules)}))
   v2 = report(dict(strategy='strategy_v2_short_structural.yaml'))
   assert '| pi | strategy strategy_v2_short_structural.yaml |' in v2 and '5 / 30' not in v2
-  assert '| pi | 5 / 30 |' in report(dict(take_profit_points=5, stop_loss_points=30))
+  # Fixed distances are in ticks of the product (gym envs.entry_product, user 2026-11-08).
+  assert '| pi | 5 / 30 ticks |' in report(dict(take_profit_points=5, stop_loss_points=30))
 
 
 POOL = FT.Path(FT.__file__).parents[2] / 'configs/thinking_student/markets/pool.json'

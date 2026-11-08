@@ -2,15 +2,15 @@
 # 1手玻璃1个点盈利20元，开仓成本2.1元，平仓成本2.1元".
 #
 # The CZCE_FG cost preset format of the original user preset, read by gym
-# fg_entry_v1.configured_fg_costs into a strategy's `costs` block:
+# envs.entry_product.read_preset into a product profile's costs:
 # trading_fee_per_lot is the fee per lot of one side and is_round_turn charges
 # it on the close too (open 2.1, close 2.1, close today 2.1 CNY per lot); spread
-# 0, and configured_fg_costs sets slippage 0. leverage 10 is the margin rate 0.1
+# 0, and read_preset sets slippage 0. leverage 10 is the margin rate 0.1
 # of the earlier preset.
 #
-# Referenced by path, never copied as numbers: the V2.3 strategy
-# (strategy_v2_3_rule_gate.yaml) and the V4 material rules
-# (v2_positive_entry_v4.yaml / _long.yaml). A change of costs is a change here.
+# Referenced by path, never copied as numbers, from the product profiles
+# (products/fg.yaml, sa.yaml), the only place of a product's costs (user
+# 2026-11-08). A change of costs is a change here.
 CZCE_FG:
   lot_size: 20
   leverage: 10

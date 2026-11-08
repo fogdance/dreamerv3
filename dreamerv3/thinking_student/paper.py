@@ -141,10 +141,10 @@ def markdown(report):
           '| stop sources |', '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
   for tag, r in report['policies'].items():
     w, rn = r['whole'], r['whole']['random_net_pnl']
-    rules = r.get('rules') or dict(take_profit_points=5, stop_loss_points=30)
+    rules = r['rules']
     # A strategy file sets each trade's own SL / TP (V2): name it, never the V1 default distances.
     exits = (f"strategy {rules['strategy']}" if rules.get('strategy')
-             else f"{rules['take_profit_points']} / {rules['stop_loss_points']}")
+             else f"{rules['take_profit_points']} / {rules['stop_loss_points']} ticks")
     out.append(f"| {tag} | {exits} "
                f"| {w['first'][:10]} → {w['last'][:10]} | {w['net_pnl']:.0f} "
                f"| {rn['mean']:.0f} ± {rn['std']:.0f} | {rn['beaten']}/{rn['seeds']} "

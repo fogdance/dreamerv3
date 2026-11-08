@@ -1,10 +1,12 @@
 # Live SA701 V3 master strategy (user 2026-11-06: "将v3做一个live，fg，sa"): the V2.4 live FG701 master
 # (live/ts-v2-4-h5-fg701-20261105 dreamer dfadb89: net PnL / 618, real costs costs_fg_real_20261105.yaml),
 # product SA and the FG directions on the SA contracts of the same delivery month (user 2026-11-05:
-# "外部方向和fg一样", as sa/strategy_quality_tp_v1_sa.yaml): CZCE.SA701 SHORT. The costs are FG's
-# (the real SA fees are still open).
+# "外部方向和fg一样", as sa/strategy_quality_tp_v1_sa.yaml): CZCE.SA701 SHORT. The costs are its product
+# profile's (products/sa.yaml: FG's until the real SA fees are given).
 schema: 2
 product: SA
+# The product's own: contract names, tick, costs (gym envs.entry_product, user 2026-11-08).
+product_profile: ../../../products/sa.yaml
 market_clock:
   timezone: Asia/Shanghai
   minutes_per_day: 345
@@ -133,17 +135,6 @@ directions:
     end: '2026-12-16 00:00:00+08:00'
     start: '2026-08-19 00:00:00+08:00'
   timezone: Asia/Shanghai
-costs:
-  source_path: /data/research/fg-s3-thinking-student-v2-2-20261104/dreamerv3/configs/thinking_student/markets/costs_fg_real_20261105.yaml
-  source_sha256: e85e7ba21abb1ed739b2c9aa87d2be8bd8144265ff8778132cf9188f56cca9d6
-  cost_basis: user_configured_constant_not_historical_exchange_schedule
-  lot_size: 20.0
-  margin_rate: 0.1
-  open_fee: 2.1
-  close_fee: 2.1
-  close_today_fee: 2.1
-  spread: 0.0
-  slippage: 0.0
 data:
   start: '2018-04-10'
   end_inclusive: '2025-12-31'

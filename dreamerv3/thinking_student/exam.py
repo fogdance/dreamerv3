@@ -248,7 +248,7 @@ def paper_row(contract, pool):
 
 def paper_inputs(row, folder, rules, strategy=None):
   """write_inputs of a PAPER row with the TP / SL distances of `rules`
-  (entry.take_profit_points / stop_loss_points; none: TP5 / SL30), or with
+  (entry.take_profit_points / stop_loss_points in ticks; none: TP5 / SL30), or with
   a V2 `strategy` (load_strategy) as for the TRAIN corpora and DEV."""
   import yaml
   from gym_trading_env.research import ts_v1_corpus as C
@@ -293,8 +293,10 @@ def main(argv=None):
   parser.add_argument('--contract', default=None, help='DEV contract of --pool, PAPER contract of --paper-pool')
   parser.add_argument('--paper-pool', default=None,
                       help='paper-trading pool (markets/paper_pool.json) with the row of --contract (PAPER)')
-  parser.add_argument('--take-profit-points', type=int, default=None, help='PAPER only: TP distance (env default 5)')
-  parser.add_argument('--stop-loss-points', type=int, default=None, help='PAPER only: SL distance (env default 30)')
+  parser.add_argument('--take-profit-points', type=int, default=None,
+                      help='PAPER only: TP distance in ticks of the product (env default 5)')
+  parser.add_argument('--stop-loss-points', type=int, default=None,
+                      help='PAPER only: SL distance in ticks of the product (env default 30)')
   parser.add_argument('--strategy', default=None,
                       help='DEV and PAPER: V2 strategy overlay (gym ts_v1_corpus.load_strategy)')
   parser.add_argument('--beta-q', type=float, default=None,

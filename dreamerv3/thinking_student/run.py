@@ -336,7 +336,9 @@ class Autonomous:
                explored=bool(out['explored'][0]), reward=float(reward),
                equity=equity, status=info['status'],
                reject_reason=info.get('reject_reason'),
-               **{k: float(out[f'answer/{k}'][0]) for k in ANSWER_KEYS},
+               # The MFE answers come in ticks (student.answer_sheet); recorded in points of the env's product.
+               **{k: float(out[f'answer/{k}'][0]) * (env.tick_points if k in L.MFE_HORIZONS else 1)
+                  for k in ANSWER_KEYS},
                **{k: info.get(k) for k in ACCOUNT_KEYS})
     # Decision-time arrays; `reward` is what this action produced in Native.
     arrays = {k: np.asarray(obs[k]) for k in DECISION_OBS}
@@ -897,7 +899,7 @@ def main(argv=None):
   parser.add_argument('--context-15m', type=int, default=None,
                       help='ts.market.context_15m of a new student: complete 15m buckets')
   parser.add_argument('--outcome-points', type=float, default=None,
-                      help='ts.outcome_points of a new student: points per MAE / MFE unit '
+                      help='ts.outcome_points of a new student: ticks per MAE / MFE unit '
                            '(the corpora\'s, labels.outcome_points)')
   parser.add_argument('--init-f1', default=None)
   parser.add_argument('--init-from', default=None,
@@ -1093,7 +1095,7 @@ def main(argv=None):
     for c in corpora:  # the MAE / MFE labels and the student's heads share one unit
       if c.outcome_points != float(ts.outcome_points):
         parser.error(f'{c.source["contract"]}: MAE / MFE labels in units of {c.outcome_points} '
-                     f'points, the student\'s ts.outcome_points is {ts.outcome_points}')
+                     f'ticks, the student\'s ts.outcome_points is {ts.outcome_points}')
     kw = dict(mix=args.mix, holdout=args.holdout, accounts=accounts)
     # Windows that start from the stored carry need no burn-in.
     if stage == 'L2':

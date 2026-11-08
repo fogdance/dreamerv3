@@ -10,11 +10,6 @@
 # WAIT or ADD only there.
 version: V2_4_RULE_GATE_FIXED5
 direction: BOTH
-# The user's real costs ("真实的交易成本，无滑点，1手玻璃1个点盈利20元，开仓成本
-# 2.1元，平仓成本2.1元"): a CZCE_FG cost preset (gym
-# fg_entry_v1.configured_fg_costs), path relative to this file, in place of the
-# costs of the pool env's master strategy.
-costs: costs_fg_real_20261105.yaml
 entry:
   # The stop of a gated ADD is fixed from its fill: SHORT SL = fill + 5, TP =
   # fill - 10; LONG SL = fill - 5, TP = fill + 10 (stop_source FIXED; the

@@ -857,3 +857,18 @@
   - 2026-11-06 用户："也合并过来"：`markets/rb/`（RB 方向、合约、env、主策略、paper 池、`costs_rb_20261106.yaml`、`strategy_v3_trend_trail_rb.yaml`）并入主分支
 - [x] G-37：live 开仓 / 平仓 notify-send 通知（用户 2026-11-06："live模式，开仓，平仓，通过notify-send通知，可配置，默认开启"）：gym 646bbf8（`entry_live.LiveFeed.notify_fills`，`live.notify` 默认 true；平仓带 V3 止损阶段和净盈亏；补跑的旧成交不通知；失败只记一次日志并关闭通知，不影响 live），dreamer 8767298（FG701 / SA701 live 配置写明 `notify: true`）；live worktree 已快进，重启 live 后生效
 - [x] G-38：通用新品种工具和 live 通知并入主分支（用户 2026-11-06："将通用工具，和live通知合并到主开发分支"）：gym cherry-pick RB 分支的 a916d59（RB 合约）、fa452b0（`research.product_paper`）、a13b5f6（其他品种成本预设、`--costs` / `--strategy`）、eaac241（成本只配一处：闸门只比点差）；live 通知已在主分支（646bbf8）；说明 `docs/thinking_student_v2/NEW_PRODUCT_TOOL.md`；`test_rule_gate.py`、`test_swing_trail.py` 通过。RB 的 paper 输入（`markets/rb/`）仍只在 `paper/ts-v3-rb-20261106`
+- [ ] G-44：品种档案和通用 paper 入口（用户 2026-11-08："后续品种可能增加，这些你要在这次看下怎么设计方案……不然到时候不好维护"；"我们先基于主开发分支修改"；"按着这个开发做，你选的都正确"）。分支 `feat/ts-product-profiles-20261108`（两仓，从 `integration/ts-next`），worktree `/data/research/fg-s3-thinking-student-product-profiles-20261108`；说明 `docs/thinking_student_v2/NEW_PRODUCT_TOOL.md`
+  - [x] gym `envs/entry_product.py`：档案（合约名、一跳点数、成本、paper 池、规则差异），距离按跳换算的参数清单；`configured_fg_costs` 和档案共用一份实现
+  - [x] gym 合约名改为通用格式（不再写死 FG / SA / RB），`ContractTerms` 不再要求 5 点是整跳；env 读主策略的 `product_profile`，加载时把规则、止损和出场距离乘以一跳点数，`entry.product_rules` 套用档案的规则差异；`ts_v2_positive.check_config` 可对改过的规则重新检查
+  - [x] gym `write_inputs` / `load_strategy`：`costs: product`；档案复制成 `product.yaml`；策略的成本和档案不一致时报错
+  - [x] gym `product_paper build --profile`（替代 `--costs` / `--strategy`）
+  - [x] dreamer `products/{fg,sa,rb}.yaml`；三个主策略加 `product_profile`；`markets/strategy_v3.yaml`（一份对所有品种）
+  - [x] dreamer `thinking_student/paper_run.py`：多品种 paper，自动取 review 编号
+  - 第二轮，一次做完、不留兼容（用户 2026-11-08："这样做不对吧，一次性改好。教材生成这次没有改"；"别急着改。目前我们是在开发阶段，尽量不做兼容，一次性做好"）：
+    - [x] 档案必需；成本只在档案：主策略、策略、规则文件写 `costs` 都报错，`costs: product`、`load_costs`、`configured_fg_costs` 删除，成本预设只由 `entry_product.read_preset` 读
+    - [x] 教材 `ts_v2_positive`：`produce` 开头把规则换成点数一次；Native 交易的 TP / SL 按跳给 env（修掉重复换算）；`source.json` 记品种和 `tick_points`；教材规则和 env 闸门按点数比较；`combine` 只合并同一品种
+    - [x] 语料和教师：语料 `source.json` 记 `tick_points`；交易事实阈值、早期不利 10 跳、V1 质量奖励、V1 评级阈值按跳
+    - [x] 标签和学生：`ts.outcome_points` 单位是跳，标签用 `labels.outcome_scale`（跳 × 语料的 tick_points）；学生的 MFE 回答按跳输出，采集时记成点数
+    - [x] 观测：账户和持仓槽的距离缩放按跳
+    - [x] 删除按品种复制的配置：`strategy_v3_trend_trail_zone_h2.yaml`、v7 zone_h2 两份规则（V7 版本号一起去掉）、`rb/strategy_v3_trend_trail_rb.yaml`、`strategy_v2_1_structural_real_costs.yaml`（现在和 `strategy_v2_1_structural.yaml` 只差版本名）；live FG701 / SA701 改为 V5 规则 + `product_rules`
+  - [ ] 测试、验证（FG 教材和语料与主分支逐行一致；通用 V3 策略重跑 FG / SA 的 paper，逐笔和原结果一致）、合并

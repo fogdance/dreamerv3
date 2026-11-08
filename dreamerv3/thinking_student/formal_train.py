@@ -121,7 +121,7 @@ DEFAULTS = dict(
                  log_every=100, window_start='zero', carry_parallel=1,
                  # ts.market (student.yaml) of every new student; V2: no MACD, 48 buckets.
                  market=dict(macd=True, context_15m=24),
-                 # ts.outcome_points: points per MAE / MFE unit, the corpora's (V2: 10).
+                 # ts.outcome_points: ticks per MAE / MFE unit, the corpora's (V2: 10).
                  outcome_points=30.0),
     foundation=dict(market_updates=0, outcome_updates=0, policy_updates=0, save_every=0,
                     holdout=0, demo_balance=1.0),
@@ -189,7 +189,7 @@ def load_config(path):
   if it['cf_coverage'] not in ('representative', 'exploratory'):
     raise ValueError(f'{path}: iteration.cf_coverage is representative or exploratory')
   if not (isinstance(config['student']['outcome_points'], (int, float)) and config['student']['outcome_points'] > 0):
-    raise ValueError(f'{path}: student.outcome_points is a positive number of points')
+    raise ValueError(f'{path}: student.outcome_points is a positive number of ticks')
   if it['q_return'] not in (Q_NATIVE, Q_NET_PNL):
     raise ValueError(f'{path}: iteration.q_return is {Q_NATIVE} or {Q_NET_PNL}')
   l6 = it['l6']

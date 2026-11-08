@@ -75,8 +75,3 @@ timeline:
 figures:
   max_events: 12
   per_contract: 2
-
-# The user's real costs (2026-11-05), the CZCE_FG cost preset of the V2.4
-# strategy (path relative to this file): the material's own Native trades
-# pay them, as the env of the corpora does.
-costs: markets/costs_fg_real_20261105.yaml

@@ -1,0 +1,8 @@
+# SA product profile (gym envs.entry_product; user 2026-11-08). CZCE SA: 20 t a lot, 1 point a tick.
+product: SA
+contract_pattern: 'CZCE\.SA\d{3,4}'
+tick_points: 1
+# FG's real costs until the user gives SA's (user 2026-11-05: "SA和FG一样").
+costs: ../markets/costs_fg_real_20261105.yaml
+paper_pool: ../markets/sa/paper_pool_sa.json
+# No rule differences: the zone [H-5, H] of the rules (ts-per-product-rules: SA keeps V3).

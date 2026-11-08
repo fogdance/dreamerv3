@@ -7,11 +7,6 @@
 #   2 troughs: fill -/+ 5 (5 points locked); >= 3 troughs: the last trough but one.
 version: V3_RULE_GATE_SWING_TRAIL
 direction: BOTH
-# The user's real costs ("真实的交易成本，无滑点，1手玻璃1个点盈利20元，开仓成本
-# 2.1元，平仓成本2.1元"): a CZCE_FG cost preset (gym
-# fg_entry_v1.configured_fg_costs), path relative to this file, in place of the
-# costs of the pool env's master strategy.
-costs: costs_fg_real_20261105.yaml
 entry:
   # The stop of a gated ADD is its touch's own line: SHORT SL = H + 5, LONG
   # SL = L - 5, R = |SL - fill| <= 10, TP = fill -/+ 2R (RULE; a gap beyond 10

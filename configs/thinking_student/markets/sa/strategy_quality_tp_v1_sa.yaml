@@ -2,6 +2,8 @@
 # on the SA contracts of the same delivery month. Written by V2_4 SA_PAPER_DEV_20261105/build_sa.py.
 schema: 2
 product: SA
+# The product's own: contract names, tick, costs (gym envs.entry_product, user 2026-11-08).
+product_profile: ../../products/sa.yaml
 market_clock:
   timezone: Asia/Shanghai
   minutes_per_day: 345
@@ -126,17 +128,6 @@ directions:
     start: '2018-04-11 00:00:00+08:00'
     end: '2018-08-09 00:00:00+08:00'
   timezone: Asia/Shanghai
-costs:
-  source_path: /home/v/Documents/work/gym-trading-env/1.yaml
-  source_sha256: 4fe160d41e692bdaf3a613dde435c7e34de285f8c6fe9e2366cfc14554893982
-  cost_basis: user_configured_constant_not_historical_exchange_schedule
-  lot_size: 20.0
-  margin_rate: 0.1
-  open_fee: 3.0
-  close_fee: 3.0
-  close_today_fee: 3.0
-  spread: 1.0
-  slippage: 0.0
 data:
   start: '2018-04-10'
   end_inclusive: '2025-12-31'

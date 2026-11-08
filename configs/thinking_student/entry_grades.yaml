@@ -8,6 +8,9 @@
 #
 # A change of these thresholds is new teaching material: regrade every corpus
 # (ts_v1_grades --replace) and train a new run.
+#
+# mae_points and room_points are in ticks of the product (gym
+# envs.entry_product, user 2026-11-08); FG is 1 point a tick.
 
 # Market minutes from the fill to the TP within the same official trading
 # day: EXCELLENT <= 15, GOOD <= 120, FAIR later that day.

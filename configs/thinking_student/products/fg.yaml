@@ -1,0 +1,13 @@
+# FG product profile (gym envs.entry_product; user 2026-11-08: "后续品种可能增加，这些你要在这次看下怎么设计方案"):
+# what is FG's own, in one place. Master strategies point to it with product_profile. Distances of the
+# strategies and the rules are in ticks; FG has 1 point a tick, so its numbers are its points.
+product: FG
+contract_pattern: 'CZCE\.FG\d{3,4}'
+tick_points: 1
+# The user's real costs (2026-11-05: "无滑点，1手玻璃1个点盈利20元，开仓成本2.1元，平仓成本2.1元").
+costs: ../markets/costs_fg_real_20261105.yaml
+paper_pool: ../markets/paper_pool.json
+# Applied by a strategy with entry.product_rules (paper / live only; training keeps its rules): the zone
+# reaches 2 ticks above the line, [H-5, H+2] (user 2026-11-06, rules V7 zone H+2, ts-per-product-rules).
+rule_overrides:
+  entry: {zone_above_points: 2}

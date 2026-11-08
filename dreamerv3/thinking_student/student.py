@@ -363,7 +363,8 @@ class StudentModel(embodied.jax.Agent):
 
 def answer_sheet(t, dist, points):
   """B1.2 student answer recorded before the action is executed; `points`
-  per unit of the MFE head (ts.outcome_points)."""
+  per unit of the MFE head (ts.outcome_points, in ticks of the product: the
+  MFE answers are in ticks, run.Collection records them in points)."""
   o, q, d = t['outcome'], t['q'], t['decision']
   return {
       'answer/p_add': dist.prob(jnp.ones(d['alpha'].shape, jnp.int32)),
@@ -382,7 +383,7 @@ def answer_sheet(t, dist, points):
       'answer/p_other_h': o['p_other_h'],
       'answer/p_open_h': o['p_open_h'],
       'answer/quality': o['quality'] * o['valid'],
-      # MFE answers in points, like the graded table's targets.
+      # MFE answers in ticks (the graded table's targets are in points: run.Collection converts).
       **{f'answer/{name}': o['mfe'][..., i] * points * o['valid']
          for i, name in enumerate(labels.MFE_HORIZONS)},
   }

@@ -32,10 +32,13 @@ RISK_FLAGS = ('early10_5', 'early10_15')
 MAE_HORIZONS = ('mae_15', 'mae_60', 'mae_full')
 MAE_COMPLETE = {'mae_15': 'mae_15_complete', 'mae_60': 'mae_60_complete',
                 'mae_full': 'path_complete'}
-# Points per unit of the MAE / MFE heads (student ts.outcome_points): the V1
+# Ticks per unit of the MAE / MFE heads (student ts.outcome_points): the V1
 # SL distance 30 for the corpora of fixed TP / SL distances; under the V2
 # structural stop its max_risk_points (10), so 1.0 is one planned R
-# (outcome_points; user 2026-11-03).
+# (outcome_points; user 2026-11-03). Ticks of the corpus's product (gym
+# envs.entry_product, user 2026-11-08): one student setting for every
+# product; the labels divide the MAE / MFE facts (points) by
+# outcome_scale, the unit in points.
 MAE_SCALE = 30.0
 MFE_HORIZONS = ('mfe_15', 'mfe_60', 'mfe_120')
 MFE_SCALE = MAE_SCALE
@@ -97,16 +100,23 @@ def empty_labels(batch_shape=()):
 
 
 def outcome_points(source):
-  """Points per unit of the MAE / MFE labels of a corpus (its source.json):
-  the max_risk_points of a V2 structural stop, else MAE_SCALE."""
+  """Ticks per unit of the MAE / MFE labels of a corpus (its source.json; the
+  student's ts.outcome_points): the max_risk_points of a V2 structural
+  stop, else MAE_SCALE."""
   entry = ((source['inputs'].get('strategy') or {}).get('entry') or {})
   return float(entry['max_risk_points']) if entry.get('stop_rule') else MAE_SCALE
+
+
+def outcome_scale(source):
+  """Points per unit of the MAE / MFE labels of a corpus: outcome_points in
+  points of its product (source.json tick_points, gym ts_v1_corpus)."""
+  return outcome_points(source) * source['tick_points']
 
 
 def outcome_labels(facts, kinds, graded, points=MAE_SCALE):
   """Outcome labels of every cursor of a corpus facts table whose `kind`
   codes index `kinds` (gym ts_v1_corpus.KINDS), with the MFE targets of its
-  graded table; MAE / MFE in units of `points` (outcome_points). A cursor
+  graded table; MAE / MFE in units of `points` (outcome_scale). A cursor
   has a label exactly when its ADD filled; unknown parts stay zero with
   valid=0."""
   n = len(facts['filled'])

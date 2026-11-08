@@ -2,6 +2,8 @@
 # (live/ts-v2-4-h5-fg701-20261105 dreamer dfadb89: net PnL / 618, real costs costs_fg_real_20261105.yaml).
 schema: 2
 product: FG
+# The product's own: contract names, tick, costs (gym envs.entry_product, user 2026-11-08).
+product_profile: ../../../products/fg.yaml
 market_clock:
   timezone: Asia/Shanghai
   minutes_per_day: 345
@@ -130,17 +132,6 @@ directions:
     end: '2026-12-16 00:00:00+08:00'
     start: '2026-08-19 00:00:00+08:00'
   timezone: Asia/Shanghai
-costs:
-  source_path: /data/research/fg-s3-thinking-student-v2-2-20261104/dreamerv3/configs/thinking_student/markets/costs_fg_real_20261105.yaml
-  source_sha256: e85e7ba21abb1ed739b2c9aa87d2be8bd8144265ff8778132cf9188f56cca9d6
-  cost_basis: user_configured_constant_not_historical_exchange_schedule
-  lot_size: 20.0
-  margin_rate: 0.1
-  open_fee: 2.1
-  close_fee: 2.1
-  close_today_fee: 2.1
-  spread: 0.0
-  slippage: 0.0
 data:
   start: '2018-04-10'
   end_inclusive: '2025-12-31'
